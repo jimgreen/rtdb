@@ -452,6 +452,45 @@ def _compile_where(expression: Optional[Union[str, Mapping[str, Any], Callable[[
     return compare
 
 
+def _parse_equality_mapping(expression: Any) -> Optional[dict[str, Any]]:
+    """Extract a JSON-safe ``field = value [AND ...]`` predicate.
+
+    The relation API already accepts mapping predicates.  SQL callers use a
+    string, so recognising this small equality subset lets fixed tables share
+    the indexed slot path without changing the general SQL predicate parser.
+    ``None`` deliberately means "keep the normal snapshot path".
+    """
+
+    if not isinstance(expression, str) or not expression.strip():
+        return None
+    parts = _split_keyword(_strip_outer_parentheses(expression), "AND")
+    if not parts or any(not part for part in parts):
+        return None
+    result: dict[str, Any] = {}
+    for part in parts:
+        match = re.match(
+            rf"^\s*(?P<field>{_IDENTIFIER}(?:\.{_IDENTIFIER})?)\s*=\s*(?P<value>.+?)\s*$",
+            part,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        field = _unquote_identifier(match.group("field"))
+        if "." in field:
+            field = field.rsplit(".", 1)[1]
+        if field in result:
+            # A mapping cannot represent ``field = 1 AND field = 2`` without
+            # changing the predicate's meaning.
+            return None
+        try:
+            value = _parse_scalar(match.group("value"))
+            json.dumps(value, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            return None
+        result[field] = value
+    return result or None
+
+
 def _parse_order_by(order_by: Optional[Union[str, Sequence[Any]]]) -> list[tuple[str, bool]]:
     if order_by is None or order_by == "":
         return []
@@ -1239,6 +1278,200 @@ class _FixedRecordStore:
             raise ValueError(f"key {key[0] if len(key) == 1 else key!r} is not unique in fixed table {self.path}")
         return positions[0]
 
+    def _equal_slots_locked(
+        self,
+        mapping: mmap.mmap,
+        generation: int,
+        key_columns: Sequence[str],
+        key: tuple[Any, ...],
+    ) -> Optional[list[tuple[int, int]]]:
+        """Return matching slots in insertion order for an equality map.
+
+        ``None`` means the fixed backend cannot index the requested fields
+        (for example an unknown or unhashable condition), allowing the
+        relation layer to retain its general snapshot implementation.
+        """
+
+        try:
+            hash(key)
+        except TypeError:
+            return None
+        try:
+            index = self._key_index_locked(mapping, generation, key_columns)
+        except KeyError:
+            return None
+        except StorageError as exc:
+            # Object/list columns can be valid fixed fields but cannot serve
+            # as hash indexes.  Preserve the general snapshot fallback for
+            # that case while still surfacing CRC/layout corruption.
+            if "unhashable fixed key" in str(exc):
+                return None
+            raise
+        positions = index.get(key, ())
+        fields = tuple(field for field in self.fields if field.name in key_columns)
+        matches: list[tuple[int, int]] = []
+        for slot in positions:
+            order, row = self._read_record(mapping, slot, fields=fields)
+            if row is not None and tuple(row.get(column) for column in key_columns) == key:
+                matches.append((order, slot))
+        matches.sort(key=lambda item: item[0])
+        return matches
+
+    def select_equal(
+        self,
+        key_columns: Sequence[str],
+        key: tuple[Any, ...],
+        *,
+        columns: Optional[Sequence[str]] = None,
+        order_by: Optional[Union[str, Sequence[Any]]] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Select equality matches without materialising a table snapshot."""
+
+        if limit == 0:
+            return []
+        self._recover_if_needed()
+        header = self._read_header()
+        normalised_key_columns = tuple(_unquote_identifier(str(column)) for column in key_columns)
+        normalised_key = tuple(key)
+        selected = None if columns is None else tuple(_unquote_identifier(str(column)) for column in columns)
+        order_items = _parse_order_by(order_by)
+        field_map = {field.name: field for field in self.fields}
+        requested = tuple(self.definition.column_names) if selected is None else selected
+        needed_names = tuple(dict.fromkeys(normalised_key_columns + requested + tuple(item[0] for item in order_items)))
+        if any(name not in field_map for name in needed_names):
+            return None
+        decode_fields = tuple(field_map[name] for name in needed_names)
+        with self._mapped() as (_handle, mapping):
+            matches = self._equal_slots_locked(mapping, header["generation"], normalised_key_columns, normalised_key)
+            if matches is None:
+                return None
+            decode_matches = matches
+            if not order_items:
+                # Equality indexes already return insertion order.  Apply the
+                # window before decoding records so ``LIMIT 1`` does not
+                # deserialize every row sharing a secondary key.
+                stop = None if limit is None else offset + limit
+                decode_matches = matches[offset:stop]
+                offset = 0
+                limit = None
+            rows: list[dict[str, Any]] = []
+            for order, slot in decode_matches:
+                _current_order, row = self._read_record(mapping, slot, fields=decode_fields)
+                if row is not None:
+                    rows.append(row)
+        # ``matches`` is already in insertion order.  Sorting by ORDER BY is
+        # stable, so ties retain the same persisted order as snapshot reads.
+        _sort_rows(rows, order_by)
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        if selected is not None:
+            rows = [{column: row.get(column) for column in selected} for row in rows]
+        else:
+            # The decode set starts with predicate and ORDER BY fields to
+            # support projected reads.  Rebuild the default result in schema
+            # order so the fixed path has the same observable column order as
+            # the snapshot path and the web API.
+            rows = [
+                {column: row.get(column) for column in self.definition.column_names}
+                for row in rows
+            ]
+        return [self._detach_row(row) for row in rows]
+
+    def update_equal(
+        self,
+        key_columns: Sequence[str],
+        key: tuple[Any, ...],
+        patch: Mapping[str, Any],
+        *,
+        limit: Optional[int] = None,
+    ) -> Optional[int]:
+        """Patch equality matches through one fixed-table WAL transaction."""
+
+        if limit == 0:
+            return 0
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                matches = self._equal_slots_locked(mapping, header["generation"], key_columns, key)
+                if matches is None:
+                    return None
+                selected = matches if limit is None else matches[:limit]
+                entries: list[tuple[int, bytes]] = []
+                primary_keys = self.definition.primary_keys
+                primary_index = self._key_index_locked(mapping, header["generation"], primary_keys)
+                used_primary = set(primary_index)
+                for _order, slot in selected:
+                    current_order, current = self._read_record(mapping, slot)
+                    if current is None:
+                        continue
+                    updated = dict(current)
+                    updated.update(copy.deepcopy(dict(patch)))
+                    self._validate_row(updated)
+                    updated_primary = tuple(updated.get(column) for column in primary_keys)
+                    current_primary = tuple(current.get(column) for column in primary_keys)
+                    if updated_primary != current_primary:
+                        conflicting = primary_index.get(updated_primary, ())
+                        if any(candidate != slot for candidate in conflicting) or (updated_primary in used_primary and updated_primary != current_primary):
+                            raise SchemaError(f"duplicate primary key {updated_primary!r}")
+                        used_primary.discard(current_primary)
+                        used_primary.add(updated_primary)
+                    entries.append((slot, self._encode_record(updated, current_order)))
+            if not entries:
+                return 0
+            # An update that touches no column used by any cached equality
+            # index leaves every cached slot map valid.  Advancing their
+            # generation here avoids rebuilding a full max-elements scan for
+            # each repeated non-primary condition update.  If a key column is
+            # patched, invalidate conservatively so the next operation sees
+            # the new value.
+            changed_columns = {str(column) for column in patch}
+            with self._cache_guard:
+                preserve_key_cache = all(
+                    not changed_columns.intersection(cache_key)
+                    for cache_key in self._key_cache
+                )
+            self._commit_locked(
+                entries,
+                header["row_count"],
+                preserve_key_cache=preserve_key_cache,
+            )
+            return len(entries)
+
+    def delete_equal(
+        self,
+        key_columns: Sequence[str],
+        key: tuple[Any, ...],
+        *,
+        limit: Optional[int] = None,
+    ) -> Optional[int]:
+        """Delete equality matches through one fixed-table WAL transaction."""
+
+        if limit == 0:
+            return 0
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                matches = self._equal_slots_locked(mapping, header["generation"], key_columns, key)
+                if matches is None:
+                    return None
+                selected = matches if limit is None else matches[:limit]
+                slots = [slot for _order, slot in selected]
+            if not slots:
+                return 0
+            self._commit_locked(
+                [(slot, bytes(self.record_size)) for slot in slots],
+                header["row_count"] - len(slots),
+                preserve_key_cache=True,
+                key_cache_removals=slots,
+            )
+            return len(slots)
+
     def _free_slot(self, mapping: mmap.mmap, preferred: int = 0) -> int:
         """Find a free slot, starting at the expected append position."""
 
@@ -1259,6 +1492,7 @@ class _FixedRecordStore:
         *,
         preserve_key_cache: bool = False,
         key_cache_additions: Optional[tuple[tuple[str, ...], Sequence[tuple[tuple[Any, ...], int]]]] = None,
+        key_cache_removals: Optional[Sequence[int]] = None,
     ) -> None:
         self._recover_locked()
         header = self._read_header()
@@ -1282,10 +1516,18 @@ class _FixedRecordStore:
                 updated_cache: dict[tuple[str, ...], tuple[int, dict[tuple[Any, ...], tuple[int, ...]]]] = {}
                 additions_columns = key_cache_additions[0] if key_cache_additions is not None else None
                 additions = dict(key_cache_additions[1]) if key_cache_additions is not None else {}
+                removals = set(key_cache_removals or ())
                 for cache_key, (_old_generation, index) in self._key_cache.items():
                     updated_index = index
+                    if removals:
+                        updated_index = {
+                            key: tuple(slot for slot in positions if slot not in removals)
+                            for key, positions in index.items()
+                            if any(slot not in removals for slot in positions)
+                        }
                     if additions_columns is not None and cache_key == additions_columns and additions:
-                        updated_index = dict(index)
+                        if updated_index is index:
+                            updated_index = dict(index)
                         for key, slot in additions.items():
                             updated_index[key] = tuple(updated_index.get(key, ())) + (slot,)
                     updated_cache[cache_key] = (next_generation, updated_index)
@@ -2602,17 +2844,22 @@ class Table(MutableSequence[dict[str, Any]]):
         if offset < 0:
             raise ValueError("offset must be non-negative")
         predicate = _compile_where(where)
+        fixed_equality_where: Optional[Mapping[str, Any]] = None
+        if isinstance(where, Mapping) and where:
+            fixed_equality_where = where
+        elif self._fixed_store is not None and self._fixed_store.active:
+            fixed_equality_where = _parse_equality_mapping(where)
         if (
             self._fixed_store is not None
             and self._fixed_store.active
             and self.definition is not None
-            and isinstance(where, Mapping)
-            and len(where) == len(self.definition.primary_keys)
-            and {str(field) for field in where} == set(self.definition.primary_keys)
+            and fixed_equality_where is not None
+            and len(fixed_equality_where) == len(self.definition.primary_keys)
+            and {str(field) for field in fixed_equality_where} == set(self.definition.primary_keys)
         ):
             if limit == 0 or offset > 0:
                 return []
-            key = tuple(where[column] for column in self.definition.primary_keys)
+            key = tuple(fixed_equality_where[column] for column in self.definition.primary_keys)
             selected: Optional[list[str]] = None
             fetch_fields: Optional[tuple[str, ...]] = None
             if columns is not None:
@@ -2632,6 +2879,35 @@ class Table(MutableSequence[dict[str, Any]]):
             # second deepcopy here used to dominate hot primary-key SELECTs
             # for primitive fixed-width columns.
             return [row]
+        if (
+            self._fixed_store is not None
+            and self._fixed_store.active
+            and fixed_equality_where is not None
+        ):
+            # A pure equality mapping can be answered from fixed slots.  The
+            # backend returns ``None`` when a requested field cannot be
+            # indexed or projected, so the general snapshot path below keeps
+            # the existing behaviour for unknown, unhashable and unusual
+            # predicates.
+            equal_columns = tuple(str(field) for field in fixed_equality_where)
+            try:
+                equal_key = tuple(fixed_equality_where[field] for field in fixed_equality_where)
+                selected_columns: Optional[tuple[str, ...]] = None
+                if columns is not None:
+                    column_items = [columns] if isinstance(columns, str) else columns
+                    selected_columns = tuple(_unquote_identifier(str(column)) for column in column_items)
+                indexed_rows = self._fixed_store.select_equal(
+                    equal_columns,
+                    equal_key,
+                    columns=selected_columns,
+                    order_by=order_by,
+                    limit=limit,
+                    offset=offset,
+                )
+            except (KeyError, TypeError):
+                indexed_rows = None
+            if indexed_rows is not None:
+                return indexed_rows
         snapshot = self._read_snapshot()
         positions = self._candidate_positions(snapshot, where)
         if positions is None:
@@ -2737,9 +3013,15 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
 
+        indexed_where: Optional[Mapping[str, Any]] = None
         if isinstance(where, Mapping) and where:
+            indexed_where = where
+        elif self._fixed_store is not None and self._fixed_store.active:
+            indexed_where = _parse_equality_mapping(where)
+
+        if indexed_where is not None:
             try:
-                where_values = copy.deepcopy(dict(where))
+                where_values = copy.deepcopy(dict(indexed_where))
                 json.dumps(where_values, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"where contains a non-JSON value: {exc}") from exc
@@ -2754,6 +3036,20 @@ class Table(MutableSequence[dict[str, Any]]):
                         return self._fixed_store.update(key_columns, key_values, patch)
                     except KeyError:
                         return 0
+
+                equal_columns = tuple(str(field) for field in where_values)
+                try:
+                    equal_key = tuple(where_values[field] for field in where_values)
+                    indexed_changed = self._fixed_store.update_equal(
+                        equal_columns,
+                        equal_key,
+                        patch,
+                        limit=limit,
+                    )
+                except (KeyError, TypeError):
+                    indexed_changed = None
+                if indexed_changed is not None:
+                    return indexed_changed
 
             def apply_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
                 changed = 0
@@ -2801,9 +3097,15 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
 
+        indexed_where: Optional[Mapping[str, Any]] = None
         if isinstance(where, Mapping) and where:
+            indexed_where = where
+        elif self._fixed_store is not None and self._fixed_store.active:
+            indexed_where = _parse_equality_mapping(where)
+
+        if indexed_where is not None:
             try:
-                where_values = copy.deepcopy(dict(where))
+                where_values = copy.deepcopy(dict(indexed_where))
                 json.dumps(where_values, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"where contains a non-JSON value: {exc}") from exc
@@ -2818,6 +3120,19 @@ class Table(MutableSequence[dict[str, Any]]):
                         return self._fixed_store.delete(key_columns, key_values)
                     except KeyError:
                         return 0
+
+                equal_columns = tuple(str(field) for field in where_values)
+                try:
+                    equal_key = tuple(where_values[field] for field in where_values)
+                    indexed_removed = self._fixed_store.delete_equal(
+                        equal_columns,
+                        equal_key,
+                        limit=limit,
+                    )
+                except (KeyError, TypeError):
+                    indexed_removed = None
+                if indexed_removed is not None:
+                    return indexed_removed
 
             def remove_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
                 removed = 0

@@ -34,6 +34,7 @@ THREAD_WORKERS = 8
 THREAD_READS = 60
 THREAD_WRITES = 5
 KEY_BATCH_ROWS = 500
+NON_PRIMARY_UPDATES = 100
 
 
 def _db(root: str) -> FileMappedDatabase:
@@ -142,6 +143,24 @@ def _condition_batch_update(root: str) -> float:
     return _timed(work)[0]
 
 
+def _non_primary_condition_update(root: str) -> float:
+    """Update one row at a time through a secondary equality condition."""
+
+    table = _db(root)["records"]
+
+    def work():
+        for index in range(NON_PRIMARY_UPDATES):
+            changed = table.update(
+                {"value": 940_000 + index},
+                {"group": index % 16},
+                limit=1,
+            )
+            if changed != 1:
+                raise AssertionError(changed)
+
+    return _timed(work)[0]
+
+
 def _batch_insert(root: str) -> float:
     db = _db(root)
     table = db["records"]
@@ -222,6 +241,7 @@ def run() -> dict[str, Any]:
         point_update = _point_update(root)
         key_value_update = _key_value_update(root)
         condition_batch_update = _condition_batch_update(root)
+        non_primary_condition_update = _non_primary_condition_update(root)
         key_value_batch_update = _key_value_batch_update(root)
         batch_insert = _batch_insert(root)
         process_append = _multi_process_append(root)
@@ -238,6 +258,7 @@ def run() -> dict[str, Any]:
                 "thread_reads": THREAD_READS,
                 "thread_writes": THREAD_WRITES,
                 "key_batch_rows": KEY_BATCH_ROWS,
+                "non_primary_updates": NON_PRIMARY_UPDATES,
             },
             "seconds": {
                 "point_read": point_read,
@@ -245,6 +266,7 @@ def run() -> dict[str, Any]:
                 "point_update": point_update,
                 "key_value_update": key_value_update,
                 "condition_batch_update": condition_batch_update,
+                "non_primary_condition_update": non_primary_condition_update,
                 "key_value_batch_update": key_value_batch_update,
                 "batch_insert": batch_insert,
                 "multi_process_append": process_append,

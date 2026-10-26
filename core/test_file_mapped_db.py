@@ -302,6 +302,72 @@ class FileMappedDatabaseTests(unittest.TestCase):
             with self.assertRaises(file_mapped_db.SchemaError):
                 table.update({"id": 2}, {"id": 3})
 
+    def test_fixed_equality_crud_uses_indexed_slots_and_preserves_order(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = Table(
+                Path(root) / "users.table",
+                name="users",
+                definition=self._users_definition(root),
+            )
+            table.insert_many([
+                {"id": 1, "name": "Alice", "group": "a"},
+                {"id": 2, "name": "Bob", "group": "b"},
+                {"id": 3, "name": "Cara", "group": "a"},
+                {"id": 4, "name": "Dan", "group": "a"},
+            ])
+            self.assertEqual(
+                table.execute("UPDATE users SET name = 'Alicia' WHERE group = 'a' LIMIT 1").rowcount,
+                1,
+            )
+
+            # The non-primary equality path decodes only the requested
+            # projection and honours persisted insertion order before ORDER BY.
+            self.assertEqual(
+                table.select(
+                    {"group": "a"},
+                    columns=["id", "name"],
+                    order_by="id DESC",
+                    limit=2,
+                    offset=0,
+                ),
+                [{"id": 4, "name": "Dan"}, {"id": 3, "name": "Cara"}],
+            )
+            self.assertEqual(
+                table.select({"group": "a"})[0],
+                {"id": 1, "name": "Alicia", "group": "a"},
+            )
+            self.assertEqual(
+                table.select({"group": "a"}, columns=["id"], limit=1, offset=1),
+                [{"id": 3}],
+            )
+
+            # A local slot update changes only the first matching row when a
+            # limit is supplied, and a primary-key collision is rejected
+            # atomically before any slot is published.
+            self.assertEqual(table.update({"name": "updated"}, {"group": "a"}, limit=1), 1)
+            self.assertEqual(table.kv[1]["name"], "updated")
+            self.assertEqual(table.kv[3]["name"], "Cara")
+            self.assertEqual(table.update({"group": "c"}, {"group": "a"}, limit=1), 1)
+            self.assertEqual([row["id"] for row in table.select({"group": "a"})], [3, 4])
+            self.assertEqual([row["id"] for row in table.select({"group": "c"})], [1])
+            with self.assertRaises(file_mapped_db.SchemaError):
+                table.update({"id": 2}, {"group": "a"}, limit=1)
+            self.assertEqual(table.kv[1]["id"], 1)
+            self.assertEqual(table.kv[2]["group"], "b")
+
+            self.assertEqual(table.delete({"group": "a"}, limit=1), 1)
+            self.assertEqual([row["id"] for row in table.all()], [1, 2, 4])
+            self.assertEqual(table.delete({"group": "a"}), 1)
+            self.assertEqual(table.delete({"group": "c"}), 1)
+            self.assertEqual(table.all(), [{"id": 2, "name": "Bob", "group": "b"}])
+
+            reopened = Table(
+                Path(root) / "users.table",
+                name="users",
+                definition=self._users_definition(root),
+            )
+            self.assertEqual(reopened.all(), [{"id": 2, "name": "Bob", "group": "b"}])
+
 
 if __name__ == "__main__":
     unittest.main()
