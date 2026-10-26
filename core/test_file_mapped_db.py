@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 
+import core.file_mapped_db as file_mapped_db
 from core import FileMappedDatabase
 
 
@@ -82,6 +83,58 @@ class FileMappedDatabaseTests(unittest.TestCase):
             self.assertEqual(len(reopened), 82)
             self.assertEqual(reopened[0]["name"], "Alice")
             self.assertEqual(reopened.select(where={"id": 319})[0]["name"], "N319")
+
+    def test_wal_replays_after_reopen_and_repairs_partial_tail(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = FileMappedDatabase(root)["events"]
+            table.insert_many([{"id": 1, "value": "a"}, {"id": 2, "value": "b"}])
+            with table.wal_path.open("ab") as handle:
+                handle.write(b"RTDBWAL")
+            reopened = FileMappedDatabase(root)["events"]
+            self.assertEqual(reopened.all(), [{"id": 1, "value": "a"}, {"id": 2, "value": "b"}])
+            self.assertEqual(reopened.update({"value": "updated"}, {"id": 1}), 1)
+            self.assertEqual(reopened.delete({"id": 2}), 1)
+            self.assertEqual(FileMappedDatabase(root)["events"].all(), [{"id": 1, "value": "updated"}])
+            reopened.append({"id": 3, "value": "c"})
+            self.assertEqual(len(FileMappedDatabase(root)["events"]), 2)
+
+    def test_wal_checksum_corruption_is_not_silently_ignored(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = FileMappedDatabase(root)["events"]
+            table.append({"id": 1})
+            with table.wal_path.open("r+b") as handle:
+                handle.seek(file_mapped_db._WAL_HEADER.size)
+                original = handle.read(1)
+                handle.seek(file_mapped_db._WAL_HEADER.size)
+                handle.write(bytes([original[0] ^ 0x01]))
+            with self.assertRaises(file_mapped_db.StorageError):
+                FileMappedDatabase(root)["events"].all()
+
+    def test_wal_sequence_gap_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = FileMappedDatabase(root)["events"]
+            table.append({"id": 1})
+            frame = file_mapped_db._wal_frame(
+                {"version": 1, "seq": 3, "op": "append", "rows": [{"id": 3}]}
+            )
+            with table.wal_path.open("ab") as handle:
+                handle.write(frame)
+                handle.flush()
+            with self.assertRaises(file_mapped_db.StorageError):
+                FileMappedDatabase(root)["events"].all()
+
+    def test_wal_checkpoint_rotation_is_safe_with_an_old_base(self):
+        old_threshold = file_mapped_db._WAL_COMPACT_BYTES
+        file_mapped_db._WAL_COMPACT_BYTES = 1
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                table = FileMappedDatabase(root)["events"]
+                old_base = table.path.read_bytes()
+                table.insert_many([{"id": 1}, {"id": 2}])
+                table.path.write_bytes(old_base)
+                self.assertEqual(FileMappedDatabase(root)["events"].all(), [{"id": 1}, {"id": 2}])
+        finally:
+            file_mapped_db._WAL_COMPACT_BYTES = old_threshold
 
 
 if __name__ == "__main__":

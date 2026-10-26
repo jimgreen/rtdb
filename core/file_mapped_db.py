@@ -19,8 +19,8 @@ Rows are mappings (normally dictionaries) containing JSON-serialisable values.
 The implementation favours predictable correctness and short transactions:
 writers serialize read/modify/write transactions, while readers use an
 optimistic immutable-snapshot path and retry if a replacement is observed.
-The in-process snapshot cache avoids reparsing an unchanged file on hot read
-paths and is invalidated by the file's mtime/size.
+The in-process snapshot cache avoids reparsing unchanged base/WAL files on hot
+read paths and is invalidated by their filesystem signatures.
 """
 
 from __future__ import annotations
@@ -75,6 +75,13 @@ class StorageBusyError(StorageError):
 _MAGIC = b"RTDBMAP1"  # eight bytes
 _HEADER = struct.Struct(">8sQQQ")  # magic, payload length, generation, crc32
 _MAX_PAYLOAD = 512 * 1024 * 1024
+_WAL_MAGIC = b"RTDBWAL1"
+_WAL_HEADER = struct.Struct(">8sQI")  # magic, payload length, crc32
+_WAL_END_MAGIC = b"RTDBEND1"
+_WAL_TRAILER = struct.Struct(">8sQ")  # end magic, payload length
+_MAX_WAL_RECORD = 64 * 1024 * 1024
+_WAL_COMPACT_BYTES = 4 * 1024 * 1024
+_WAL_BATCH_MAX_ROWS = 256
 _IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_]*|`[^`]+`|\"[^\"]+\"|\[[^\]]+\])"
 _IDENTIFIER_RE = re.compile(rf"^\s*(?P<name>{_IDENTIFIER})\s*$")
 
@@ -470,12 +477,53 @@ def _snapshot_payload(rows: list[dict[str, Any]], columns: list[str], generation
     return _HEADER.pack(_MAGIC, len(payload), generation, checksum) + payload
 
 
+def _file_signature(path: Path) -> tuple[int, int, int, int]:
+    """Return a cache-safe signature for an atomically replaced file."""
+
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (0, 0, 0, 0)
+    return (
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+        int(getattr(stat, "st_ctime_ns", 0)),
+        int(getattr(stat, "st_ino", 0)),
+    )
+
+
+class _WalRecordTooLarge(ValueError):
+    """Internal signal to fall back to a full snapshot for one mutation."""
+
+
+def _wal_frame(record: Mapping[str, Any]) -> bytes:
+    try:
+        payload = json.dumps(
+            dict(record),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise StorageError(f"WAL record is not JSON serialisable: {exc}") from exc
+    if len(payload) > _MAX_WAL_RECORD:
+        raise _WalRecordTooLarge(
+            f"WAL record is {len(payload)} bytes; maximum is {_MAX_WAL_RECORD}"
+        )
+    checksum = zlib.crc32(payload) & 0xFFFFFFFF
+    return (
+        _WAL_HEADER.pack(_WAL_MAGIC, len(payload), checksum)
+        + payload
+        + _WAL_TRAILER.pack(_WAL_END_MAGIC, len(payload))
+    )
+
+
 @dataclass(frozen=True)
 class _Snapshot:
     rows: list[dict[str, Any]]
     columns: list[str]
     generation: int
-    cache_key: tuple[int, int]
+    cache_key: tuple[int, ...]
     indexes: dict[str, dict[Any, tuple[int, ...]]]
     primary_index: dict[tuple[Any, ...], tuple[int, ...]]
 
@@ -575,6 +623,7 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError("lock_timeout must be positive or None")
         self.lock_timeout = lock_timeout
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.wal_path = self.path.with_suffix(self.path.suffix + ".wal")
         self._cache: Optional[_Snapshot] = None
         self._cache_guard = threading.RLock()
         self._ensure_exists()
@@ -594,20 +643,67 @@ class Table(MutableSequence[dict[str, Any]]):
         observed while the file is being mapped.
         """
 
+        if not self.path.exists():
+            self._write_snapshot_locked([], [], 0)
+        self._recover_wal_tail_locked()
         return self._read_snapshot()
 
     def _read_snapshot(self) -> _Snapshot:
         if not self.path.exists():
-            self._write_snapshot_locked([], [], 0)
+            # Creation is always protected by the inter-process lock.  The
+            # constructor normally creates the file, but this also handles a
+            # table directory that was removed and recreated externally.
+            with _locked(self.lock_path, timeout=self.lock_timeout):
+                if not self.path.exists():
+                    self._write_snapshot_locked([], [], 0)
         last_error: Optional[Exception] = None
         for _attempt in range(4):
             try:
-                stat = self.path.stat()
-                cache_key = (stat.st_mtime_ns, stat.st_size)
+                base_signature = _file_signature(self.path)
+                wal_signature = _file_signature(self.wal_path)
                 with self._cache_guard:
                     cached = self._cache
-                if cached is not None and cached.cache_key == cache_key:
+                if cached is not None and cached.cache_key[:8] == base_signature + wal_signature:
                     return cached
+                if (
+                    cached is not None
+                    and cached.cache_key[:4] == base_signature
+                    and cached.cache_key[7] == wal_signature[3]
+                    and wal_signature[1] >= cached.cache_key[5]
+                ):
+                    incremental_records, _incomplete, _valid_end = self._read_wal_records(
+                        start_offset=cached.cache_key[5]
+                    )
+                    after_base_signature = _file_signature(self.path)
+                    after_wal_signature = _file_signature(self.wal_path)
+                    if after_base_signature != base_signature or after_wal_signature != wal_signature:
+                        continue
+                    incremental_rows = list(cached.rows)
+                    incremental_columns = list(cached.columns)
+                    incremental_rows, incremental_columns, current_generation = self._replay_wal(
+                        incremental_rows,
+                        incremental_columns,
+                        cached.generation,
+                        incremental_records,
+                    )
+                    if self.definition is not None:
+                        try:
+                            self.definition.validate_rows(incremental_rows)
+                        except SchemaError as exc:
+                            raise StorageError(f"table {self.name!r} does not match its definition: {exc}") from exc
+                    indexes, primary_index = _build_snapshot_indexes(incremental_rows, self.definition)
+                    snapshot = _Snapshot(
+                        incremental_rows,
+                        incremental_columns,
+                        current_generation,
+                        base_signature + wal_signature + (cached.cache_key[8], current_generation),
+                        indexes,
+                        primary_index,
+                    )
+                    with self._cache_guard:
+                        self._cache = snapshot
+                    return snapshot
+                stat = self.path.stat()
                 with self.path.open("rb") as handle:
                     if stat.st_size < _HEADER.size:
                         raise StorageError(f"table file is truncated: {self.path}")
@@ -618,9 +714,10 @@ class Table(MutableSequence[dict[str, Any]]):
                         if payload_size > _MAX_PAYLOAD or _HEADER.size + payload_size > stat.st_size:
                             raise StorageError(f"invalid payload length in {self.path}")
                         payload = mapped[_HEADER.size : _HEADER.size + payload_size]
-                after = self.path.stat()
-                after_key = (after.st_mtime_ns, after.st_size)
-                if after_key != cache_key:
+                records, _incomplete, _valid_end = self._read_wal_records()
+                after_base_signature = _file_signature(self.path)
+                after_wal_signature = _file_signature(self.wal_path)
+                if after_base_signature != base_signature or after_wal_signature != wal_signature:
                     continue
                 if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
                     raise StorageError(f"checksum mismatch in {self.path}")
@@ -635,6 +732,12 @@ class Table(MutableSequence[dict[str, Any]]):
                         raise StorageError(f"table row is not an object: {self.path}")
                     normalised_rows.append(dict(row))
                 normalised_columns = [_validate_identifier(str(column), label="column name") for column in columns]
+                normalised_rows, normalised_columns, current_generation = self._replay_wal(
+                    normalised_rows,
+                    normalised_columns,
+                    int(generation),
+                    records,
+                )
                 if self.definition is not None:
                     try:
                         self.definition.validate_rows(normalised_rows)
@@ -644,8 +747,8 @@ class Table(MutableSequence[dict[str, Any]]):
                 snapshot = _Snapshot(
                     normalised_rows,
                     normalised_columns,
-                    int(generation),
-                    cache_key,
+                    current_generation,
+                    base_signature + wal_signature + (int(generation), current_generation),
                     indexes,
                     primary_index,
                 )
@@ -661,6 +764,335 @@ class Table(MutableSequence[dict[str, Any]]):
         if isinstance(last_error, StorageError):
             raise last_error
         raise StorageError(f"cannot read table {self.path}: {last_error}") from last_error
+
+    def _read_wal_records(self, *, start_offset: int = 0) -> tuple[list[dict[str, Any]], bool, int]:
+        """Read complete WAL frames and report a possibly incomplete tail.
+
+        A short final frame is safe to ignore while a writer is still flushing
+        it, and is also the only condition that may be repaired after a crash.
+        A complete frame with a bad CRC is reported as corruption instead.
+        """
+
+        if not self.wal_path.exists():
+            return [], False, 0
+        records: list[dict[str, Any]] = []
+        valid_end = start_offset
+        try:
+            with self.wal_path.open("rb") as handle:
+                if start_offset:
+                    handle.seek(start_offset)
+                while True:
+                    header = handle.read(_WAL_HEADER.size)
+                    if not header:
+                        return records, False, valid_end
+                    if len(header) < _WAL_HEADER.size:
+                        return records, True, valid_end
+                    magic, payload_size, checksum = _WAL_HEADER.unpack(header)
+                    if magic != _WAL_MAGIC:
+                        raise StorageError(f"invalid WAL header: {self.wal_path}")
+                    if payload_size > _MAX_WAL_RECORD:
+                        raise StorageError(f"invalid WAL payload length: {self.wal_path}")
+                    payload = handle.read(payload_size)
+                    if len(payload) < payload_size:
+                        return records, True, valid_end
+                    trailer = handle.read(_WAL_TRAILER.size)
+                    if len(trailer) < _WAL_TRAILER.size:
+                        return records, True, valid_end
+                    end_magic, end_length = _WAL_TRAILER.unpack(trailer)
+                    if end_magic != _WAL_END_MAGIC or end_length != payload_size:
+                        raise StorageError(f"invalid WAL trailer: {self.wal_path}")
+                    if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+                        raise StorageError(f"WAL checksum mismatch: {self.wal_path}")
+                    try:
+                        record = json.loads(payload.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as exc:
+                        raise StorageError(f"invalid WAL payload: {self.wal_path}") from exc
+                    if not isinstance(record, dict) or record.get("version") != 1:
+                        raise StorageError(f"invalid WAL record: {self.wal_path}")
+                    if not isinstance(record.get("seq"), int) or isinstance(record.get("seq"), bool):
+                        raise StorageError(f"invalid WAL sequence: {self.wal_path}")
+                    records.append(record)
+                    valid_end += _WAL_HEADER.size + payload_size + _WAL_TRAILER.size
+        except StorageError:
+            raise
+        except OSError as exc:
+            raise StorageError(f"cannot read WAL {self.wal_path}: {exc}") from exc
+
+    def _replay_wal(
+        self,
+        rows: list[dict[str, Any]],
+        columns: list[str],
+        generation: int,
+        records: Sequence[Mapping[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str], int]:
+        """Apply WAL records newer than the base snapshot generation."""
+
+        current = generation
+        replay_indexes: dict[str, Optional[dict[Any, tuple[int, ...]]]] = {}
+        for record in records:
+            sequence = int(record["seq"])
+            if sequence <= generation:
+                continue
+            operation = record.get("op")
+            if operation == "checkpoint":
+                if sequence < current:
+                    raise StorageError(f"WAL sequence moved backwards: {self.wal_path}")
+                raw_rows = record.get("rows")
+                raw_columns = record.get("columns")
+                if not isinstance(raw_rows, list) or not isinstance(raw_columns, list):
+                    raise StorageError(f"invalid WAL checkpoint: {self.wal_path}")
+                rows = []
+                for row in raw_rows:
+                    if not isinstance(row, Mapping):
+                        raise StorageError(f"invalid WAL checkpoint row: {self.wal_path}")
+                    rows.append(dict(row))
+                columns = [_validate_identifier(str(column), label="column name") for column in raw_columns]
+                replay_indexes.clear()
+                current = sequence
+                continue
+            if sequence != current + 1:
+                raise StorageError(
+                    f"WAL sequence gap in {self.wal_path}: expected {current + 1}, got {sequence}"
+                )
+            if operation == "append":
+                raw_rows = record.get("rows")
+                if not isinstance(raw_rows, list):
+                    raise StorageError(f"invalid WAL append: {self.wal_path}")
+                for row in raw_rows:
+                    if not isinstance(row, Mapping):
+                        raise StorageError(f"invalid WAL append row: {self.wal_path}")
+                    rows.append(dict(row))
+                columns = self._columns_after(rows, columns, (key for row in raw_rows for key in row))
+                replay_indexes.clear()
+            elif operation in {"update_pk", "delete_pk", "update_where", "delete_where"}:
+                if operation in {"update_where", "delete_where"}:
+                    raw_where = record.get("where")
+                    if not isinstance(raw_where, Mapping):
+                        raise StorageError(f"invalid WAL WHERE clause: {self.wal_path}")
+                    predicate = _compile_where(raw_where)
+                    raw_limit = record.get("limit")
+                    if raw_limit is not None and (not isinstance(raw_limit, int) or raw_limit < 0):
+                        raise StorageError(f"invalid WAL limit: {self.wal_path}")
+                    candidate_positions: Optional[tuple[int, ...]] = None
+                    if len(raw_where) == 1:
+                        field, value = next(iter(raw_where.items()))
+                        field = str(field)
+                        if field not in replay_indexes:
+                            replay_indexes[field] = _build_column_index(rows, field)
+                        indexed = replay_indexes[field]
+                        if indexed is not None:
+                            try:
+                                candidate_positions = indexed.get(value, ())
+                            except TypeError:
+                                candidate_positions = None
+                    changed = 0
+                    if operation == "update_where":
+                        values = record.get("values")
+                        if not isinstance(values, Mapping):
+                            raise StorageError(f"invalid WAL update: {self.wal_path}")
+                        source = enumerate(rows) if candidate_positions is None else ((position, rows[position]) for position in candidate_positions)
+                        for position, row in source:
+                            if predicate(row) and (raw_limit is None or changed < raw_limit):
+                                updated = dict(row)
+                                updated.update(dict(values))
+                                rows[position] = updated
+                                changed += 1
+                        columns = self._columns_after(rows, columns, values.keys())
+                        for field in values:
+                            replay_indexes.pop(str(field), None)
+                    else:
+                        kept: list[dict[str, Any]] = []
+                        selected = None if candidate_positions is None else set(candidate_positions)
+                        for position, row in enumerate(rows):
+                            if (selected is None or position in selected) and predicate(row) and (raw_limit is None or changed < raw_limit):
+                                changed += 1
+                            else:
+                                kept.append(row)
+                        rows = kept
+                        replay_indexes.clear()
+                    current = sequence
+                    continue
+                if self.definition is None or not self.definition.primary_keys:
+                    raise StorageError(f"primary-key WAL requires a table definition: {self.name}")
+                raw_key = record.get("key")
+                if not isinstance(raw_key, list) or len(raw_key) != len(self.definition.primary_keys):
+                    raise StorageError(f"invalid WAL primary key: {self.wal_path}")
+                target = tuple(raw_key)
+                matches = [
+                    index
+                    for index, row in enumerate(rows)
+                    if tuple(row.get(column) for column in self.definition.primary_keys) == target
+                ]
+                if len(matches) != 1:
+                    raise StorageError(f"WAL primary key target is not unique: {self.wal_path}")
+                position = matches[0]
+                if operation == "update_pk":
+                    values = record.get("values")
+                    if not isinstance(values, Mapping):
+                        raise StorageError(f"invalid WAL update: {self.wal_path}")
+                    updated = dict(rows[position])
+                    updated.update(dict(values))
+                    rows[position] = updated
+                    columns = self._columns_after(rows, columns, values.keys())
+                    replay_indexes.clear()
+                else:
+                    del rows[position]
+                    replay_indexes.clear()
+            else:
+                raise StorageError(f"unsupported WAL operation {operation!r}: {self.wal_path}")
+            current = sequence
+        return rows, columns, current
+
+    def _recover_wal_tail_locked(self) -> None:
+        if not self.wal_path.exists():
+            return
+        try:
+            file_size = self.wal_path.stat().st_size
+            if file_size >= _WAL_TRAILER.size:
+                with self.wal_path.open("rb") as handle:
+                    handle.seek(-_WAL_TRAILER.size, os.SEEK_END)
+                    trailer = handle.read(_WAL_TRAILER.size)
+                end_magic, end_length = _WAL_TRAILER.unpack(trailer)
+                if end_magic == _WAL_END_MAGIC and end_length <= _MAX_WAL_RECORD:
+                    return
+        except (OSError, struct.error) as exc:
+            raise StorageError(f"cannot inspect WAL tail {self.wal_path}: {exc}") from exc
+        valid_end = 0
+        incomplete = False
+        try:
+            with self.wal_path.open("rb") as handle:
+                while True:
+                    header = handle.read(_WAL_HEADER.size)
+                    if not header:
+                        break
+                    if len(header) < _WAL_HEADER.size:
+                        incomplete = True
+                        break
+                    magic, payload_size, checksum = _WAL_HEADER.unpack(header)
+                    if magic != _WAL_MAGIC or payload_size > _MAX_WAL_RECORD:
+                        raise StorageError(f"invalid WAL frame: {self.wal_path}")
+                    payload = handle.read(payload_size)
+                    if len(payload) < payload_size:
+                        incomplete = True
+                        break
+                    trailer = handle.read(_WAL_TRAILER.size)
+                    if len(trailer) < _WAL_TRAILER.size:
+                        incomplete = True
+                        break
+                    end_magic, end_length = _WAL_TRAILER.unpack(trailer)
+                    if end_magic != _WAL_END_MAGIC or end_length != payload_size:
+                        raise StorageError(f"invalid WAL trailer: {self.wal_path}")
+                    if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+                        raise StorageError(f"WAL checksum mismatch: {self.wal_path}")
+                    valid_end += _WAL_HEADER.size + payload_size + _WAL_TRAILER.size
+            if not incomplete:
+                return
+            with self.wal_path.open("r+b") as handle:
+                handle.truncate(valid_end)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StorageError(f"cannot repair WAL tail {self.wal_path}: {exc}") from exc
+
+    def _append_wal_record_locked(self, record: Mapping[str, Any]) -> None:
+        frame = _wal_frame(record)
+        self.wal_path.parent.mkdir(parents=True, exist_ok=True)
+        self._recover_wal_tail_locked()
+        existed = self.wal_path.exists()
+        try:
+            with self.wal_path.open("ab") as handle:
+                handle.write(frame)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not existed and os.name != "nt":  # pragma: no cover - POSIX durability detail
+                directory_fd = os.open(self.wal_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except OSError as exc:
+            raise StorageError(f"cannot append WAL {self.wal_path}: {exc}") from exc
+
+    def _cache_snapshot(
+        self,
+        rows: list[dict[str, Any]],
+        columns: list[str],
+        generation: int,
+        *,
+        base_generation: int,
+    ) -> None:
+        indexes, primary_index = _build_snapshot_indexes(rows, self.definition)
+        snapshot = _Snapshot(
+            rows,
+            list(columns),
+            generation,
+            _file_signature(self.path) + _file_signature(self.wal_path) + (base_generation, generation),
+            indexes,
+            primary_index,
+        )
+        with self._cache_guard:
+            self._cache = snapshot
+
+    def _replace_wal_with_checkpoint_locked(self, record: Mapping[str, Any]) -> None:
+        encoded = _wal_frame(record)
+        temporary: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "wb", prefix=f".{self.wal_path.name}.", suffix=".tmp", dir=self.wal_path.parent, delete=False
+            ) as handle:
+                temporary = handle.name
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    os.replace(temporary, self.wal_path)
+                    temporary = None
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.002)
+            if os.name != "nt":  # pragma: no cover - POSIX durability detail
+                directory_fd = os.open(self.wal_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except OSError as exc:
+            raise StorageError(f"cannot rotate WAL {self.wal_path}: {exc}") from exc
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+    def _compact_locked(self, rows: list[dict[str, Any]], columns: list[str], generation: int) -> None:
+        """Publish a checkpoint before rotating the WAL.
+
+        The checkpoint makes every intermediate combination safe: an old base
+        can recover through the new WAL, while a new base can ignore the
+        checkpoint at the same generation.  Only after the base is durable is
+        the WAL replaced by the checkpoint-only file.
+        """
+
+        checkpoint = self._checkpoint_record(rows, columns, generation)
+        self._append_wal_record_locked(checkpoint)
+        self._write_snapshot_locked(rows, columns, generation)
+        self._replace_wal_with_checkpoint_locked(checkpoint)
+        self._cache_snapshot(rows, columns, generation, base_generation=generation)
+
+    @staticmethod
+    def _checkpoint_record(rows: list[dict[str, Any]], columns: list[str], generation: int) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "seq": generation,
+            "op": "checkpoint",
+            "columns": list(columns),
+            "rows": rows,
+        }
 
     def _write_snapshot_locked(self, rows: list[dict[str, Any]], columns: list[str], generation: int) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -688,11 +1120,7 @@ class Table(MutableSequence[dict[str, Any]]):
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
-            stat = self.path.stat()
-            indexes, primary_index = _build_snapshot_indexes(rows, self.definition)
-            snapshot = _Snapshot(rows, list(columns), generation, (stat.st_mtime_ns, stat.st_size), indexes, primary_index)
-            with self._cache_guard:
-                self._cache = snapshot
+            self._cache_snapshot(rows, columns, generation, base_generation=generation)
         except (OSError, TypeError, ValueError) as exc:
             raise StorageError(f"cannot write table {self.path}: {exc}") from exc
         finally:
@@ -753,6 +1181,8 @@ class Table(MutableSequence[dict[str, Any]]):
             if self.definition is not None:
                 self.definition.validate_rows(rows)
             self._write_snapshot_locked(rows, columns, generation + 1)
+            if self.wal_path.exists() and self.wal_path.stat().st_size >= _WAL_COMPACT_BYTES:
+                self._compact_locked(rows, columns, generation + 1)
             return result
 
     def _mutate_with_snapshot(
@@ -770,6 +1200,48 @@ class Table(MutableSequence[dict[str, Any]]):
             if self.definition is not None:
                 self.definition.validate_rows(rows)
             self._write_snapshot_locked(rows, columns, generation + 1)
+            if self.wal_path.exists() and self.wal_path.stat().st_size >= _WAL_COMPACT_BYTES:
+                self._compact_locked(rows, columns, generation + 1)
+            return result
+
+    def _mutate_incremental(
+        self,
+        function: Callable[[list[dict[str, Any]], list[str], _Snapshot], tuple[Any, dict[str, Any]]],
+        *,
+        copy_rows: bool = False,
+    ) -> Any:
+        """Commit an eligible mutation through one durable WAL frame."""
+
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            snapshot = self._read_snapshot_locked()
+            rows = copy.deepcopy(snapshot.rows) if copy_rows else list(snapshot.rows)
+            columns = list(snapshot.columns)
+            result, record = function(rows, columns, snapshot)
+            record = dict(record)
+            record_columns = record.pop("columns", ())
+            columns = self._columns_after(rows, columns, record_columns)
+            if self.definition is not None:
+                self.definition.validate_rows(rows)
+            generation = snapshot.generation + 1
+            record.update({"version": 1, "seq": generation})
+            try:
+                self._append_wal_record_locked(record)
+            except _WalRecordTooLarge:
+                # A large batch is still committed atomically, but serialising
+                # it as a full snapshot avoids imposing an arbitrary row-size
+                # limit on the public API.
+                self._write_snapshot_locked(rows, columns, generation)
+            else:
+                wal_size = self.wal_path.stat().st_size
+                if wal_size >= _WAL_COMPACT_BYTES:
+                    self._compact_locked(rows, columns, generation)
+                else:
+                    self._cache_snapshot(
+                        rows,
+                        columns,
+                        generation,
+                        base_generation=snapshot.generation,
+                    )
             return result
 
     def _read_rows(self) -> list[dict[str, Any]]:
@@ -821,6 +1293,11 @@ class Table(MutableSequence[dict[str, Any]]):
         """Return the unique primary-key position or raise ``KeyError``."""
 
         snapshot = self._read_snapshot()
+        return self._primary_key_position_in_snapshot(snapshot, key)
+
+    def _primary_key_position_in_snapshot(self, snapshot: _Snapshot, key: Any) -> int:
+        """Return a primary-key position from one already-read snapshot."""
+
         if self.definition is not None and len(self.definition.primary_keys) > 1:
             lookup = key if isinstance(key, tuple) else (key,)
         else:
@@ -833,33 +1310,54 @@ class Table(MutableSequence[dict[str, Any]]):
     def get_by_pk(self, key: Any) -> dict[str, Any]:
         """Read one row by the declared primary key without a table scan."""
 
-        return copy.deepcopy(self._read_snapshot().rows[self._primary_key_position(key)])
+        snapshot = self._read_snapshot()
+        return copy.deepcopy(snapshot.rows[self._primary_key_position_in_snapshot(snapshot, key)])
 
     def update_by_pk(self, key: Any, values: Mapping[str, Any]) -> int:
         """Update one row by primary key and return the affected row count."""
 
         if self.definition is None:
             raise KeyError(key)
-        if len(self.definition.primary_keys) == 1:
-            where: Mapping[str, Any] = {self.definition.primary_keys[0]: key}
-        else:
-            if not isinstance(key, tuple) or len(key) != len(self.definition.primary_keys):
-                raise KeyError(key)
-            where = dict(zip(self.definition.primary_keys, key))
-        return self.update(values, where, limit=1)
+        patch = self._normalise_row(values)
+        key_values = self._normalise_primary_key(key)
+
+        def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            position = self._primary_key_position_in_snapshot(snapshot, key)
+            updated = dict(rows[position])
+            updated.update(copy.deepcopy(patch))
+            rows[position] = updated
+            return 1, {"op": "update_pk", "key": list(key_values), "values": patch, "columns": patch.keys()}
+
+        return int(self._mutate_incremental(apply))
 
     def delete_by_pk(self, key: Any) -> int:
         """Delete one row by primary key and return the affected row count."""
 
         if self.definition is None:
             raise KeyError(key)
+        key_values = self._normalise_primary_key(key)
+
+        def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            position = self._primary_key_position_in_snapshot(snapshot, key)
+            del rows[position]
+            return 1, {"op": "delete_pk", "key": list(key_values)}
+
+        return int(self._mutate_incremental(remove))
+
+    def _normalise_primary_key(self, key: Any) -> tuple[Any, ...]:
+        if self.definition is None:
+            raise KeyError(key)
         if len(self.definition.primary_keys) == 1:
-            where: Mapping[str, Any] = {self.definition.primary_keys[0]: key}
+            values = (key,)
+        elif isinstance(key, tuple) and len(key) == len(self.definition.primary_keys):
+            values = key
         else:
-            if not isinstance(key, tuple) or len(key) != len(self.definition.primary_keys):
-                raise KeyError(key)
-            where = dict(zip(self.definition.primary_keys, key))
-        return self.delete(where, limit=1)
+            raise KeyError(key)
+        try:
+            json.dumps(list(values), ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise KeyError(key) from exc
+        return values
 
     # ---- relation-oriented API -------------------------------------------------
     def select(
@@ -928,22 +1426,36 @@ class Table(MutableSequence[dict[str, Any]]):
     def insert_one(self, row: Mapping[str, Any]) -> int:
         row = self._normalise_row(row)
 
-        def add(rows: list[dict[str, Any]], columns: list[str]) -> int:
+        def add(rows: list[dict[str, Any]], columns: list[str], _snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             index = len(rows)
             rows.append(row)
-            return index
+            return index, {"op": "append", "rows": [row], "columns": row.keys()}
 
-        return int(self._mutate(add, copy_rows=False, new_columns=row.keys()))
+        return int(self._mutate_incremental(add))
 
     def insert_many(self, rows: Iterable[Mapping[str, Any]]) -> int:
         values = [self._normalise_row(row) for row in rows]
 
-        def add(current: list[dict[str, Any]], columns: list[str]) -> int:
-            current.extend(values)
-            return len(values)
+        if not values:
+            return 0
 
-        new_columns = {key for row in values for key in row}
-        return int(self._mutate(add, copy_rows=False, new_columns=new_columns))
+        if len(values) > _WAL_BATCH_MAX_ROWS:
+            def add_snapshot(current: list[dict[str, Any]], columns: list[str]) -> int:
+                current.extend(values)
+                return len(values)
+
+            new_columns = {key for row in values for key in row}
+            return int(self._mutate(add_snapshot, copy_rows=False, new_columns=new_columns))
+
+        def add(current: list[dict[str, Any]], columns: list[str], _snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            current.extend(values)
+            return len(values), {
+                "op": "append",
+                "rows": values,
+                "columns": (key for row in values for key in row),
+            }
+
+        return int(self._mutate_incremental(add))
 
     def update(
         self,
@@ -958,6 +1470,34 @@ class Table(MutableSequence[dict[str, Any]]):
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
+
+        if isinstance(where, Mapping) and where:
+            try:
+                where_values = copy.deepcopy(dict(where))
+                json.dumps(where_values, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(f"where contains a non-JSON value: {exc}") from exc
+
+            def apply_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+                changed = 0
+                positions = self._candidate_positions(snapshot, where_values)
+                selected = range(len(rows)) if positions is None else positions
+                for position in selected:
+                    row = rows[position]
+                    if predicate(row) and (limit is None or changed < limit):
+                        updated = dict(row)
+                        updated.update(copy.deepcopy(patch))
+                        rows[position] = updated
+                        changed += 1
+                return changed, {
+                    "op": "update_where",
+                    "where": where_values,
+                    "values": patch,
+                    "limit": limit,
+                    "columns": patch.keys(),
+                }
+
+            return int(self._mutate_incremental(apply_mapping))
 
         def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> int:
             changed = 0
@@ -983,6 +1523,28 @@ class Table(MutableSequence[dict[str, Any]]):
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
+
+        if isinstance(where, Mapping) and where:
+            try:
+                where_values = copy.deepcopy(dict(where))
+                json.dumps(where_values, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(f"where contains a non-JSON value: {exc}") from exc
+
+            def remove_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+                removed = 0
+                kept: list[dict[str, Any]] = []
+                positions = self._candidate_positions(snapshot, where_values)
+                selected = None if positions is None else set(positions)
+                for position, row in enumerate(rows):
+                    if (selected is None or position in selected) and predicate(row) and (limit is None or removed < limit):
+                        removed += 1
+                    else:
+                        kept.append(row)
+                rows[:] = kept
+                return removed, {"op": "delete_where", "where": where_values, "limit": limit}
+
+            return int(self._mutate_incremental(remove_mapping))
 
         def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> int:
             removed = 0

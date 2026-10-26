@@ -50,6 +50,20 @@ available. The explicit `get_by_pk`, `update_by_pk`, and `delete_by_pk`
 methods avoid a scan for declared primary keys. For many writes, prefer
 `insert_many`/`extend` so one atomic snapshot is written for the whole batch.
 
+Small append batches and equality-based or primary-key CRUD operations use a
+durable side-car `<name>.table.wal` frame log; larger `insert_many` batches use
+one atomic full snapshot so a large reader does not have to replay a large
+append frame. Each frame contains a sequence number, length, and CRC32; the
+frame is flushed and `fsync`-ed before the in-process snapshot
+is published. On reopen, the base snapshot and complete WAL frames are
+replayed together. A torn final frame is discarded safely, while a complete
+frame with a bad checksum raises `StorageError` instead of being silently
+ignored. The WAL is periodically checkpointed: a complete checkpoint frame is
+published before the base file and only then is the WAL atomically rotated.
+This ordering keeps old-base/new-WAL and new-base/old-WAL reader combinations
+recoverable during a crash. Complex predicates and physical list-position
+operations continue to use the atomic full-snapshot path.
+
 Lock waits are bounded by default. Pass `lock_timeout=None` to retain an
 unbounded wait or set a positive number of seconds to receive
 `StorageBusyError` when contention lasts too long.
