@@ -8,6 +8,7 @@ from .file_mapped_db import (
     MappedTable,
     QueryResult,
     RelationTable,
+    StorageBusyError,
     StorageError,
     Table,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "MappedTable",
     "QueryResult",
     "RelationTable",
+    "StorageBusyError",
     "StorageError",
     "Table",
     "ColumnDefinition",

@@ -45,6 +45,9 @@ class TableSchemaTests(unittest.TestCase):
             db = FileMappedDatabase(dat, schema_directory=root)
             users = db["users"]
             users.append({"user_id": 1, "name": "Alice", "status": "启用"})
+            self.assertEqual(users.get_by_pk(1)["name"], "Alice")
+            self.assertEqual(users.update_by_pk(1, {"name": "Alicia"}), 1)
+            self.assertEqual(users.get_by_pk(1)["name"], "Alicia")
             with self.assertRaises(SchemaError):
                 users.append({"user_id": 1, "name": "Duplicate", "status": "停用"})
             with self.assertRaises(SchemaError):
@@ -55,6 +58,7 @@ class TableSchemaTests(unittest.TestCase):
             ])
             with self.assertRaises(SchemaError):
                 users.append({"user_id": 4, "name": "Dan", "status": "启用"})
+            self.assertEqual(users.delete_by_pk(1), 1)
 
     def test_database_discovers_default_sibling_definition_directory(self):
         with tempfile.TemporaryDirectory() as directory:

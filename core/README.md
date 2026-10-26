@@ -2,10 +2,12 @@
 
 `file_mapped_db.py` provides a dependency-free relation-style data store. Each
 table is one `<name>.table` file under the database directory and is read using
-`mmap`. A side-car `<name>.table.lock` file serializes complete operations
-across processes; a process-local re-entrant lock additionally protects threads.
-Writes use a temporary file, `fsync`, and `os.replace`, so readers never see a
-partially written snapshot.
+`mmap`. A side-car `<name>.table.lock` file serializes write transactions
+across processes; a process-local re-entrant lock additionally protects
+writers in one process. Readers use an optimistic immutable-snapshot path, so
+multiple threads can read concurrently while Windows writers retry an atomic
+replace if a reader still has the old file open. Writes use a temporary file,
+`fsync`, and `os.replace`, so readers never see a partially written snapshot.
 
 ```python
 from core import FileMappedDatabase
@@ -43,8 +45,14 @@ Supported SQL is intentionally small and explicit:
 `IS NOT NULL`. Values must be JSON-compatible mappings; column and table names
 use Python/SQL identifier syntax. `QueryResult` is a list with `rowcount` and
 `lastrowid` attributes. Reads of an unchanged file use the in-process parsed
-snapshot cache; for many writes, prefer `insert_many`/`extend` so one atomic
-snapshot is written for the whole batch.
+snapshot cache. Equality queries use a primary-key or `id` index when
+available. The explicit `get_by_pk`, `update_by_pk`, and `delete_by_pk`
+methods avoid a scan for declared primary keys. For many writes, prefer
+`insert_many`/`extend` so one atomic snapshot is written for the whole batch.
+
+Lock waits are bounded by default. Pass `lock_timeout=None` to retain an
+unbounded wait or set a positive number of seconds to receive
+`StorageBusyError` when contention lasts too long.
 
 Optional JSON definitions can be placed in `def/table` next to the data
 directory. `FileMappedDatabase` automatically discovers one `<table>.json`

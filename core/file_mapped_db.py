@@ -17,9 +17,10 @@ The API has two layers:
 
 Rows are mappings (normally dictionaries) containing JSON-serialisable values.
 The implementation favours predictable correctness and short transactions:
-readers take the same file lock as writers so a mapped snapshot is never read
-while it is being replaced.  The in-process snapshot cache avoids reparsing an
-unchanged file on hot read paths and is invalidated by the file's mtime/size.
+writers serialize read/modify/write transactions, while readers use an
+optimistic immutable-snapshot path and retry if a replacement is observed.
+The in-process snapshot cache avoids reparsing an unchanged file on hot read
+paths and is invalidated by the file's mtime/size.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ __all__ = [
     "MappedTable",
     "QueryResult",
     "RelationTable",
+    "StorageBusyError",
     "StorageError",
     "Table",
 ]
@@ -64,6 +66,10 @@ __all__ = [
 
 class StorageError(RuntimeError):
     """Raised when a table file is missing, truncated or otherwise corrupt."""
+
+
+class StorageBusyError(StorageError):
+    """Raised when a thread or process cannot acquire a table lock in time."""
 
 
 _MAGIC = b"RTDBMAP1"  # eight bytes
@@ -90,15 +96,17 @@ def _thread_lock(path: Path) -> threading.RLock:
 
 
 class _FileLock:
-    """A blocking advisory lock that works for both threads and processes."""
+    """A bounded advisory lock that works for both threads and processes."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, timeout: Optional[float] = 30.0) -> None:
         self.path = path
+        self.timeout = timeout
         self._handle: Any = None
 
     def __enter__(self) -> "_FileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = open(self.path, "a+b")
+        deadline = None if self.timeout is None else time.monotonic() + self.timeout
         # msvcrt.locking locks bytes starting at the current offset.  Keep one
         # byte in the side-car file and always seek to its beginning.
         if os.name == "nt":
@@ -116,9 +124,22 @@ class _FileLock:
                     msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
-                    time.sleep(0.01)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        self._handle.close()
+                        self._handle = None
+                        raise StorageBusyError(f"timed out waiting for table lock: {self.path}")
+                    time.sleep(0.002)
         else:  # pragma: no cover - selected on POSIX only
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        self._handle.close()
+                        self._handle = None
+                        raise StorageBusyError(f"timed out waiting for table lock: {self.path}")
+                    time.sleep(0.002)
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -136,12 +157,18 @@ class _FileLock:
 
 
 @contextmanager
-def _locked(lock_path: Path) -> Iterator[None]:
+def _locked(lock_path: Path, timeout: Optional[float] = 30.0) -> Iterator[None]:
     """Hold both the local and inter-process lock for one table operation."""
 
-    with _thread_lock(lock_path):
-        with _FileLock(lock_path):
+    thread_lock = _thread_lock(lock_path)
+    acquired = thread_lock.acquire() if timeout is None else thread_lock.acquire(timeout=timeout)
+    if not acquired:
+        raise StorageBusyError(f"timed out waiting for thread lock: {lock_path}")
+    try:
+        with _FileLock(lock_path, timeout=timeout):
             yield
+    finally:
+        thread_lock.release()
 
 
 def _unquote_identifier(value: str) -> str:
@@ -449,6 +476,56 @@ class _Snapshot:
     columns: list[str]
     generation: int
     cache_key: tuple[int, int]
+    indexes: dict[str, dict[Any, tuple[int, ...]]]
+    primary_index: dict[tuple[Any, ...], tuple[int, ...]]
+
+
+def _build_column_index(rows: Sequence[Mapping[str, Any]], column: str) -> Optional[dict[Any, tuple[int, ...]]]:
+    """Build an equality index when every row has a hashable value."""
+
+    index: dict[Any, list[int]] = {}
+    for position, row in enumerate(rows):
+        if column not in row:
+            return None
+        value = row[column]
+        try:
+            index.setdefault(value, []).append(position)
+        except TypeError:
+            return None
+    return {value: tuple(positions) for value, positions in index.items()}
+
+
+def _build_snapshot_indexes(
+    rows: Sequence[Mapping[str, Any]],
+    definition: Optional[TableDefinition],
+) -> tuple[dict[str, dict[Any, tuple[int, ...]]], dict[tuple[Any, ...], tuple[int, ...]]]:
+    """Build the small set of indexes used by the hot equality paths.
+
+    Primary-key columns declared in the JSON definition are indexed.  Tables
+    without a definition retain the historic flexible API and opportunistically
+    index an ``id`` column when it is present in every row.
+    """
+
+    columns: list[str] = list(definition.primary_keys) if definition is not None else []
+    if not columns and rows and all("id" in row for row in rows):
+        columns.append("id")
+    indexes: dict[str, dict[Any, tuple[int, ...]]] = {}
+    for column in dict.fromkeys(columns):
+        built = _build_column_index(rows, column)
+        if built is not None:
+            indexes[column] = built
+
+    primary_index: dict[tuple[Any, ...], list[int]] = {}
+    if definition is not None and definition.primary_keys:
+        for position, row in enumerate(rows):
+            try:
+                key = tuple(row[column] for column in definition.primary_keys)
+                hash(key)
+            except (KeyError, TypeError):
+                primary_index.clear()
+                break
+            primary_index.setdefault(key, []).append(position)
+    return indexes, {key: tuple(positions) for key, positions in primary_index.items()}
 
 
 class QueryResult(list):
@@ -483,6 +560,7 @@ class Table(MutableSequence[dict[str, Any]]):
         *,
         name: Optional[str] = None,
         definition: Optional[TableDefinition] = None,
+        lock_timeout: Optional[float] = 30.0,
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         if self.path.suffix == "":
@@ -493,59 +571,96 @@ class Table(MutableSequence[dict[str, Any]]):
                 f"table definition {definition.eng_name!r} does not match table {self.name!r}"
             )
         self.definition = definition
+        if lock_timeout is not None and lock_timeout <= 0:
+            raise ValueError("lock_timeout must be positive or None")
+        self.lock_timeout = lock_timeout
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._cache: Optional[_Snapshot] = None
+        self._cache_guard = threading.RLock()
         self._ensure_exists()
 
     def _ensure_exists(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with _locked(self.lock_path):
+        with _locked(self.lock_path, timeout=self.lock_timeout):
             if not self.path.exists():
                 self._write_snapshot_locked([], [], 0)
 
     def _read_snapshot_locked(self) -> _Snapshot:
+        """Read the current immutable snapshot.
+
+        The method name is retained for the write path, but readers no longer
+        need to hold the table's exclusive file lock.  Writers publish with
+        ``os.replace``; the optimistic read below retries if a replacement is
+        observed while the file is being mapped.
+        """
+
+        return self._read_snapshot()
+
+    def _read_snapshot(self) -> _Snapshot:
         if not self.path.exists():
             self._write_snapshot_locked([], [], 0)
-        try:
-            stat = self.path.stat()
-            cache_key = (stat.st_mtime_ns, stat.st_size)
-            if self._cache is not None and self._cache.cache_key == cache_key:
-                return self._cache
-            with self.path.open("rb") as handle:
-                if stat.st_size < _HEADER.size:
-                    raise StorageError(f"table file is truncated: {self.path}")
-                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
-                    magic, payload_size, generation, checksum = _HEADER.unpack(mapped[:_HEADER.size])
-                    if magic != _MAGIC:
-                        raise StorageError(f"invalid table header: {self.path}")
-                    if payload_size > _MAX_PAYLOAD or _HEADER.size + payload_size > stat.st_size:
-                        raise StorageError(f"invalid payload length in {self.path}")
-                    payload = mapped[_HEADER.size : _HEADER.size + payload_size]
-            if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
-                raise StorageError(f"checksum mismatch in {self.path}")
-            value = json.loads(payload.decode("utf-8"))
-            rows = value.get("rows")
-            columns = value.get("columns", [])
-            if value.get("version") != 1 or not isinstance(rows, list) or not isinstance(columns, list):
-                raise StorageError(f"invalid table payload: {self.path}")
-            normalised_rows: list[dict[str, Any]] = []
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    raise StorageError(f"table row is not an object: {self.path}")
-                normalised_rows.append(dict(row))
-            normalised_columns = [_validate_identifier(str(column), label="column name") for column in columns]
-            if self.definition is not None:
-                try:
-                    self.definition.validate_rows(normalised_rows)
-                except SchemaError as exc:
-                    raise StorageError(f"table {self.name!r} does not match its definition: {exc}") from exc
-            snapshot = _Snapshot(normalised_rows, normalised_columns, int(generation), cache_key)
-            self._cache = snapshot
-            return snapshot
-        except StorageError:
-            raise
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise StorageError(f"cannot read table {self.path}: {exc}") from exc
+        last_error: Optional[Exception] = None
+        for _attempt in range(4):
+            try:
+                stat = self.path.stat()
+                cache_key = (stat.st_mtime_ns, stat.st_size)
+                with self._cache_guard:
+                    cached = self._cache
+                if cached is not None and cached.cache_key == cache_key:
+                    return cached
+                with self.path.open("rb") as handle:
+                    if stat.st_size < _HEADER.size:
+                        raise StorageError(f"table file is truncated: {self.path}")
+                    with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                        magic, payload_size, generation, checksum = _HEADER.unpack(mapped[:_HEADER.size])
+                        if magic != _MAGIC:
+                            raise StorageError(f"invalid table header: {self.path}")
+                        if payload_size > _MAX_PAYLOAD or _HEADER.size + payload_size > stat.st_size:
+                            raise StorageError(f"invalid payload length in {self.path}")
+                        payload = mapped[_HEADER.size : _HEADER.size + payload_size]
+                after = self.path.stat()
+                after_key = (after.st_mtime_ns, after.st_size)
+                if after_key != cache_key:
+                    continue
+                if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+                    raise StorageError(f"checksum mismatch in {self.path}")
+                value = json.loads(payload.decode("utf-8"))
+                rows = value.get("rows")
+                columns = value.get("columns", [])
+                if value.get("version") != 1 or not isinstance(rows, list) or not isinstance(columns, list):
+                    raise StorageError(f"invalid table payload: {self.path}")
+                normalised_rows: list[dict[str, Any]] = []
+                for row in rows:
+                    if not isinstance(row, Mapping):
+                        raise StorageError(f"table row is not an object: {self.path}")
+                    normalised_rows.append(dict(row))
+                normalised_columns = [_validate_identifier(str(column), label="column name") for column in columns]
+                if self.definition is not None:
+                    try:
+                        self.definition.validate_rows(normalised_rows)
+                    except SchemaError as exc:
+                        raise StorageError(f"table {self.name!r} does not match its definition: {exc}") from exc
+                indexes, primary_index = _build_snapshot_indexes(normalised_rows, self.definition)
+                snapshot = _Snapshot(
+                    normalised_rows,
+                    normalised_columns,
+                    int(generation),
+                    cache_key,
+                    indexes,
+                    primary_index,
+                )
+                with self._cache_guard:
+                    self._cache = snapshot
+                return snapshot
+            except StorageError as exc:
+                last_error = exc
+                break
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                last_error = exc
+                time.sleep(0.001 * (_attempt + 1))
+        if isinstance(last_error, StorageError):
+            raise last_error
+        raise StorageError(f"cannot read table {self.path}: {last_error}") from last_error
 
     def _write_snapshot_locked(self, rows: list[dict[str, Any]], columns: list[str], generation: int) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -557,8 +672,16 @@ class Table(MutableSequence[dict[str, Any]]):
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-            temporary = None
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    os.replace(temporary, self.path)
+                    temporary = None
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.002)
             if os.name != "nt":  # pragma: no cover - POSIX durability detail
                 directory_fd = os.open(self.path.parent, os.O_RDONLY)
                 try:
@@ -566,7 +689,10 @@ class Table(MutableSequence[dict[str, Any]]):
                 finally:
                     os.close(directory_fd)
             stat = self.path.stat()
-            self._cache = _Snapshot(copy.deepcopy(rows), list(columns), generation, (stat.st_mtime_ns, stat.st_size))
+            indexes, primary_index = _build_snapshot_indexes(rows, self.definition)
+            snapshot = _Snapshot(rows, list(columns), generation, (stat.st_mtime_ns, stat.st_size), indexes, primary_index)
+            with self._cache_guard:
+                self._cache = snapshot
         except (OSError, TypeError, ValueError) as exc:
             raise StorageError(f"cannot write table {self.path}: {exc}") from exc
         finally:
@@ -580,7 +706,10 @@ class Table(MutableSequence[dict[str, Any]]):
     def _normalise_row(row: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(row, Mapping):
             raise TypeError("rows must be mapping objects, such as dict")
-        result = dict(row)
+        # Detach nested JSON values from caller-owned objects.  This lets the
+        # post-write cache safely reuse the newly built snapshot without a
+        # second deep copy of the entire table.
+        result = copy.deepcopy(dict(row))
         for key in result:
             _validate_identifier(str(key), label="column name")
         # Validate JSON compatibility before taking the table lock for a write.
@@ -591,35 +720,60 @@ class Table(MutableSequence[dict[str, Any]]):
         return result
 
     @staticmethod
-    def _columns_after(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> list[str]:
+    def _columns_after(rows: Sequence[Mapping[str, Any]], columns: Sequence[str], new_columns: Iterable[str] = ()) -> list[str]:
         result = list(columns)
-        for row in rows:
-            for key in row:
-                key = str(key)
-                if key not in result:
-                    result.append(key)
+        for key in new_columns:
+            key = str(key)
+            if key not in result:
+                result.append(key)
         return result
 
     @contextmanager
-    def _transaction(self) -> Iterator[tuple[list[dict[str, Any]], list[str], int]]:
-        with _locked(self.lock_path):
+    def _transaction(
+        self,
+        *,
+        copy_rows: bool = True,
+    ) -> Iterator[tuple[list[dict[str, Any]], list[str], int, _Snapshot]]:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
             snapshot = self._read_snapshot_locked()
-            rows = copy.deepcopy(snapshot.rows)
+            rows = copy.deepcopy(snapshot.rows) if copy_rows else list(snapshot.rows)
             columns = list(snapshot.columns)
-            yield rows, columns, snapshot.generation
+            yield rows, columns, snapshot.generation, snapshot
 
-    def _mutate(self, function: Callable[[list[dict[str, Any]], list[str]], Any]) -> Any:
-        with self._transaction() as (rows, columns, generation):
+    def _mutate(
+        self,
+        function: Callable[[list[dict[str, Any]], list[str]], Any],
+        *,
+        copy_rows: bool = True,
+        new_columns: Iterable[str] = (),
+    ) -> Any:
+        with self._transaction(copy_rows=copy_rows) as (rows, columns, generation, _snapshot):
             result = function(rows, columns)
-            columns = self._columns_after(rows, columns)
+            columns = self._columns_after(rows, columns, new_columns)
+            if self.definition is not None:
+                self.definition.validate_rows(rows)
+            self._write_snapshot_locked(rows, columns, generation + 1)
+            return result
+
+    def _mutate_with_snapshot(
+        self,
+        function: Callable[[list[dict[str, Any]], list[str], _Snapshot], Any],
+        *,
+        copy_rows: bool = True,
+        new_columns: Iterable[str] = (),
+    ) -> Any:
+        """Run a mutation with the exact snapshot held by the write lock."""
+
+        with self._transaction(copy_rows=copy_rows) as (rows, columns, generation, snapshot):
+            result = function(rows, columns, snapshot)
+            columns = self._columns_after(rows, columns, new_columns)
             if self.definition is not None:
                 self.definition.validate_rows(rows)
             self._write_snapshot_locked(rows, columns, generation + 1)
             return result
 
     def _read_rows(self) -> list[dict[str, Any]]:
-        with _locked(self.lock_path):
-            return copy.deepcopy(self._read_snapshot_locked().rows)
+        return copy.deepcopy(self._read_snapshot().rows)
 
     @property
     def columns(self) -> list[str]:
@@ -632,6 +786,80 @@ class Table(MutableSequence[dict[str, Any]]):
         """Return the loaded JSON definition, if this table has one."""
 
         return self.definition
+
+    @staticmethod
+    def _candidate_positions(
+        snapshot: _Snapshot,
+        where: Optional[Union[str, Mapping[str, Any], Callable[[Mapping[str, Any]], bool]]],
+    ) -> Optional[list[int]]:
+        """Return candidate row positions for equality predicates.
+
+        A missing index returns ``None`` so callers retain the original full
+        scan behaviour.  Indexed candidates are still passed through the full
+        predicate, which keeps combined conditions correct.
+        """
+
+        if not isinstance(where, Mapping) or not where:
+            return None
+        candidate_sets: list[set[int]] = []
+        for field, value in where.items():
+            index = snapshot.indexes.get(str(field))
+            if index is None:
+                continue
+            try:
+                candidate_sets.append(set(index.get(value, ())))
+            except TypeError:
+                return None
+        if not candidate_sets:
+            return None
+        positions = candidate_sets[0]
+        for candidate in candidate_sets[1:]:
+            positions.intersection_update(candidate)
+        return sorted(positions)
+
+    def _primary_key_position(self, key: Any) -> int:
+        """Return the unique primary-key position or raise ``KeyError``."""
+
+        snapshot = self._read_snapshot()
+        if self.definition is not None and len(self.definition.primary_keys) > 1:
+            lookup = key if isinstance(key, tuple) else (key,)
+        else:
+            lookup = (key,)
+        positions = snapshot.primary_index.get(lookup)
+        if not positions or len(positions) != 1:
+            raise KeyError(key)
+        return positions[0]
+
+    def get_by_pk(self, key: Any) -> dict[str, Any]:
+        """Read one row by the declared primary key without a table scan."""
+
+        return copy.deepcopy(self._read_snapshot().rows[self._primary_key_position(key)])
+
+    def update_by_pk(self, key: Any, values: Mapping[str, Any]) -> int:
+        """Update one row by primary key and return the affected row count."""
+
+        if self.definition is None:
+            raise KeyError(key)
+        if len(self.definition.primary_keys) == 1:
+            where: Mapping[str, Any] = {self.definition.primary_keys[0]: key}
+        else:
+            if not isinstance(key, tuple) or len(key) != len(self.definition.primary_keys):
+                raise KeyError(key)
+            where = dict(zip(self.definition.primary_keys, key))
+        return self.update(values, where, limit=1)
+
+    def delete_by_pk(self, key: Any) -> int:
+        """Delete one row by primary key and return the affected row count."""
+
+        if self.definition is None:
+            raise KeyError(key)
+        if len(self.definition.primary_keys) == 1:
+            where: Mapping[str, Any] = {self.definition.primary_keys[0]: key}
+        else:
+            if not isinstance(key, tuple) or len(key) != len(self.definition.primary_keys):
+                raise KeyError(key)
+            where = dict(zip(self.definition.primary_keys, key))
+        return self.delete(where, limit=1)
 
     # ---- relation-oriented API -------------------------------------------------
     def select(
@@ -648,11 +876,24 @@ class Table(MutableSequence[dict[str, Any]]):
         if offset < 0:
             raise ValueError("offset must be non-negative")
         predicate = _compile_where(where)
-        with _locked(self.lock_path):
-            # Do not expose cached row dictionaries to a user-supplied
-            # predicate.  A callable is allowed to inspect a row and may
-            # mutate its argument; that must never mutate the read cache.
-            rows = [row for row in copy.deepcopy(self._read_snapshot_locked().rows) if predicate(row)]
+        snapshot = self._read_snapshot()
+        positions = self._candidate_positions(snapshot, where)
+        if positions is None:
+            source = enumerate(snapshot.rows)
+        else:
+            source = ((position, snapshot.rows[position]) for position in positions)
+        # A user-supplied callable may mutate its argument.  Mapping and SQL
+        # predicates are read-only, so they can inspect the cached row directly
+        # and avoid copying the full table before filtering.
+        callable_predicate = callable(where)
+        rows: list[dict[str, Any]] = []
+        stop_after = None if order_by is not None or limit is None else offset + limit
+        for _position, row in source:
+            candidate = copy.deepcopy(row) if callable_predicate else row
+            if predicate(candidate):
+                rows.append(row)
+                if stop_after is not None and len(rows) >= stop_after:
+                    break
         _sort_rows(rows, order_by)
         if offset:
             rows = rows[offset:]
@@ -677,8 +918,12 @@ class Table(MutableSequence[dict[str, Any]]):
 
     def count(self, where: Optional[Union[str, Mapping[str, Any], Callable[[Mapping[str, Any]], bool]]] = None) -> int:
         predicate = _compile_where(where)
-        with _locked(self.lock_path):
-            return sum(1 for row in copy.deepcopy(self._read_snapshot_locked().rows) if predicate(row))
+        snapshot = self._read_snapshot()
+        positions = self._candidate_positions(snapshot, where)
+        rows = snapshot.rows if positions is None else (snapshot.rows[position] for position in positions)
+        if callable(where):
+            return sum(1 for row in rows if predicate(copy.deepcopy(row)))
+        return sum(1 for row in rows if predicate(row))
 
     def insert_one(self, row: Mapping[str, Any]) -> int:
         row = self._normalise_row(row)
@@ -688,7 +933,7 @@ class Table(MutableSequence[dict[str, Any]]):
             rows.append(row)
             return index
 
-        return int(self._mutate(add))
+        return int(self._mutate(add, copy_rows=False, new_columns=row.keys()))
 
     def insert_many(self, rows: Iterable[Mapping[str, Any]]) -> int:
         values = [self._normalise_row(row) for row in rows]
@@ -697,7 +942,8 @@ class Table(MutableSequence[dict[str, Any]]):
             current.extend(values)
             return len(values)
 
-        return int(self._mutate(add))
+        new_columns = {key for row in values for key in row}
+        return int(self._mutate(add, copy_rows=False, new_columns=new_columns))
 
     def update(
         self,
@@ -713,15 +959,20 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
 
-        def apply(rows: list[dict[str, Any]], columns: list[str]) -> int:
+        def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> int:
             changed = 0
-            for row in rows:
-                if predicate(row) and (limit is None or changed < limit):
-                    row.update(copy.deepcopy(patch))
+            positions = self._candidate_positions(snapshot, where)
+            selected = range(len(rows)) if positions is None else positions
+            for position in selected:
+                row = rows[position]
+                candidate = copy.deepcopy(row) if callable(where) else row
+                if predicate(candidate) and (limit is None or changed < limit):
+                    rows[position] = copy.deepcopy(row)
+                    rows[position].update(copy.deepcopy(patch))
                     changed += 1
             return changed
 
-        return int(self._mutate(apply))
+        return int(self._mutate_with_snapshot(apply, copy_rows=False, new_columns=patch.keys()))
 
     def delete(
         self,
@@ -733,18 +984,21 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError("limit must be non-negative")
         predicate = _compile_where(where)
 
-        def remove(rows: list[dict[str, Any]], columns: list[str]) -> int:
+        def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> int:
             removed = 0
             kept: list[dict[str, Any]] = []
-            for row in rows:
-                if predicate(row) and (limit is None or removed < limit):
+            positions = self._candidate_positions(snapshot, where)
+            selected = None if positions is None else set(positions)
+            for position, row in enumerate(rows):
+                candidate = copy.deepcopy(row) if callable(where) else row
+                if (selected is None or position in selected) and predicate(candidate) and (limit is None or removed < limit):
                     removed += 1
                 else:
                     kept.append(row)
             rows[:] = kept
             return removed
 
-        return int(self._mutate(remove))
+        return int(self._mutate_with_snapshot(remove, copy_rows=False))
 
     def sort(self, *, key: Optional[str] = None, reverse: bool = False) -> None:
         """Sort the physical row order, like ``list.sort``."""
@@ -754,12 +1008,11 @@ class Table(MutableSequence[dict[str, Any]]):
         def reorder(rows: list[dict[str, Any]], columns: list[str]) -> None:
             _sort_rows(rows, order)
 
-        self._mutate(reorder)
+        self._mutate(reorder, copy_rows=False)
 
     # ---- list-like API ---------------------------------------------------------
     def __len__(self) -> int:
-        with _locked(self.lock_path):
-            return len(self._read_snapshot_locked().rows)
+        return len(self._read_snapshot().rows)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return iter(self._read_rows())
@@ -784,13 +1037,13 @@ class Table(MutableSequence[dict[str, Any]]):
             else:
                 rows[index] = replacement  # type: ignore[list-item]
 
-        self._mutate(assign)
+        self._mutate(assign, copy_rows=False, new_columns=(key for row in replacement for key in row))
 
     def __delitem__(self, index: Union[int, slice]) -> None:
         def remove(rows: list[dict[str, Any]], columns: list[str]) -> None:
             del rows[index]
 
-        self._mutate(remove)
+        self._mutate(remove, copy_rows=False)
 
     def insert(self, index: int, value: Mapping[str, Any]) -> None:
         row = self._normalise_row(value)
@@ -798,7 +1051,7 @@ class Table(MutableSequence[dict[str, Any]]):
         def add(rows: list[dict[str, Any]], columns: list[str]) -> None:
             rows.insert(index, row)
 
-        self._mutate(add)
+        self._mutate(add, copy_rows=False, new_columns=row.keys())
 
     def append(self, value: Mapping[str, Any]) -> None:
         self.insert_one(value)
@@ -810,7 +1063,7 @@ class Table(MutableSequence[dict[str, Any]]):
         def remove(rows: list[dict[str, Any]], columns: list[str]) -> dict[str, Any]:
             return rows.pop(index)
 
-        return copy.deepcopy(self._mutate(remove))
+        return copy.deepcopy(self._mutate(remove, copy_rows=False))
 
     def clear(self) -> None:
         self.delete()
@@ -970,12 +1223,11 @@ class Table(MutableSequence[dict[str, Any]]):
             rows.extend(parsed)
             return first, len(parsed)
 
-        first, count = self._mutate(add)
+        first, count = self._mutate(add, copy_rows=False, new_columns=(key for row in parsed for key in row))
         return QueryResult(rowcount=count, lastrowid=(first if count else None))
 
     def _read_snapshot_columns(self) -> list[str]:
-        with _locked(self.lock_path):
-            return list(self._read_snapshot_locked().columns)
+        return list(self._read_snapshot().columns)
 
     def _execute_update(self, statement: str) -> QueryResult:
         match = re.match(rf"^UPDATE\s+(?P<table>{_IDENTIFIER})\s+SET\s+(?P<tail>.+)$", statement, re.IGNORECASE | re.DOTALL)
@@ -1019,11 +1271,15 @@ class FileMappedDatabase:
         directory: Union[str, os.PathLike[str]],
         *,
         schema_directory: Optional[Union[str, os.PathLike[str]]] = None,
+        lock_timeout: Optional[float] = 30.0,
     ) -> None:
         self.directory = Path(directory).expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self._tables: dict[str, Table] = {}
         self._lock = threading.RLock()
+        if lock_timeout is not None and lock_timeout <= 0:
+            raise ValueError("lock_timeout must be positive or None")
+        self.lock_timeout = lock_timeout
         if schema_directory is None:
             candidate = self.directory.parent / "def" / "table"
             schema_directory = candidate if candidate.exists() else None
@@ -1038,7 +1294,12 @@ class FileMappedDatabase:
                 definition = None
                 if self.schema_registry is not None and name in self.schema_registry.names():
                     definition = self.schema_registry.load(name)
-                table = Table(self.directory / f"{name}.table", name=name, definition=definition)
+                table = Table(
+                    self.directory / f"{name}.table",
+                    name=name,
+                    definition=definition,
+                    lock_timeout=self.lock_timeout,
+                )
                 self._tables[name] = table
             return table
 
