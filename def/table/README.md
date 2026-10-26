@@ -60,7 +60,7 @@ users.json
 - `head.max_elements`：非负整数，表示表允许保存的最大行数。
 - `columns[].chn_name`：列中文名。
 - `columns[].eng_name`：列英文名，必须是 Python/SQL 英文标识符。
-- `columns[].primary_key`：是否主键；每张表至少有一个主键列。
+- `columns[].primary_key`：是否主键；每张表至少有一个主键列。可以将多个列同时设为 `true`，这些列按定义文件中的列顺序组成联合主键。
 - `columns[].data_type`：存储类型，例如 `int`、`float`、`str`、`datetime`。
 - `columns[].data_length`：非负整数，表示列长度或精度上限。
 - `columns[].disp_type`：显示类型，例如 `数字`、`文本`、`下拉框`。
@@ -74,6 +74,10 @@ from core import FileMappedDatabase, SchemaRegistry, load_table_definition
 definition = load_table_definition(r"D:\\codex\\rtdb\\def\\table", "users")
 print(definition.primary_keys)
 print(definition.column("status").disp_menu_items)
+
+# 联合主键的顺序与 columns 中 primary_key=true 的列顺序一致，例如：
+# definition.primary_keys == ("site", "device")
+# table.kv[("site-a", 7)]
 
 registry = SchemaRegistry(r"D:\\codex\\rtdb\\def\\table")
 print(registry.names())

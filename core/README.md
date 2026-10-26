@@ -52,9 +52,14 @@ Supported SQL is intentionally small and explicit:
 `QueryResult` is a list with `rowcount` and `lastrowid` attributes. Equality
 queries use a primary-key or `id` index when available. The explicit
 `get_by_pk`, `update_by_pk`, and `delete_by_pk` methods avoid a scan for
-declared primary keys. For many writes, prefer `insert_many`/`extend` or the
-key-value `update_many` method so one lock and one WAL transaction covers the
-whole batch.
+declared primary keys. A definition may mark multiple columns as
+`primary_key: true`; their declaration order is the composite-key order and
+the Python key is passed as a tuple, for example
+`table.get_by_pk((site_id, device_id))` or `table.kv[(site_id, device_id)]`.
+Lists with the same values are accepted at the API boundary and normalized to
+tuples. For many writes, prefer `insert_many`/`extend` or the key-value
+`update_many` method so one lock and one WAL transaction covers the whole
+batch.
 
 For dictionary-style hot paths, use the indexed key-value view. It uses the
 declared primary-key index by default (a table without a definition defaults to
@@ -72,6 +77,16 @@ users.kv.update_many({
 })                                       # one lock and one WAL frame
 rows = users.kv.get_many([1001, 1002])
 events_by_token = db["events"].key_value("token")
+```
+
+For a composite primary key, omit the `key_column` argument and pass all key
+parts in the declared column order:
+
+```python
+links = db["links"]
+links.kv[("site-a", 7)]
+links.kv.update(("site-a", 7), {"state": "down"})
+links.kv.delete_many([("site-a", 7), ("site-b", 3)])
 ```
 
 `get`, `require`, `contains`, `keys`, `values`, `items`, `get_many`,

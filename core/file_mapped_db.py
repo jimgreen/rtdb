@@ -2393,7 +2393,7 @@ class Table(MutableSequence[dict[str, Any]]):
         """Return a primary-key position from one already-read snapshot."""
 
         if self.definition is not None and len(self.definition.primary_keys) > 1:
-            lookup = key if isinstance(key, tuple) else (key,)
+            lookup = tuple(key) if isinstance(key, (tuple, list)) else (key,)
         else:
             lookup = (key,)
         positions = snapshot.primary_index.get(lookup)
@@ -2490,8 +2490,8 @@ class Table(MutableSequence[dict[str, Any]]):
             raise KeyError(key)
         if len(self.definition.primary_keys) == 1:
             values = (key,)
-        elif isinstance(key, tuple) and len(key) == len(self.definition.primary_keys):
-            values = key
+        elif isinstance(key, (tuple, list)) and len(key) == len(self.definition.primary_keys):
+            values = tuple(key)
         else:
             raise KeyError(key)
         try:
@@ -3057,8 +3057,8 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
     def _normalise_key(self, key: Any, *, for_write: bool = True) -> tuple[Any, ...]:
         if len(self.key_columns) == 1:
             values = (key,)
-        elif isinstance(key, tuple) and len(key) == len(self.key_columns):
-            values = key
+        elif isinstance(key, (tuple, list)) and len(key) == len(self.key_columns):
+            values = tuple(key)
         else:
             raise KeyError(key)
         try:

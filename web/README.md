@@ -68,6 +68,23 @@ DELETE /api/tables/users?delete_data=true
 JSON 对象，例如 `{"status":"启用"}`，也可以是核心层支持的条件表达式，例如
 `age >= 18`。
 
+如果表结构将多个列标记为 `primary_key: true`，这些列组成联合主键，列的
+定义顺序就是主键值顺序。WEB 查询、更新和删除可以在 `where` 中同时给出
+这些列，例如：
+
+```text
+GET /api/data/links?where={"site":"a","device":2}
+```
+
+对应的更新请求为：
+
+```json
+{
+  "where": {"site": "a", "device": 2},
+  "values": {"state": "down"}
+}
+```
+
 ## 健康检查
 
 ```text

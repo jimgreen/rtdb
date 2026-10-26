@@ -233,13 +233,31 @@ class FileMappedDatabaseTests(unittest.TestCase):
                 "links",
             )
             table = Table(Path(root) / "links.table", name="links", definition=definition)
-            table.insert_many([{"site": 1, "device": 2, "state": "up"}])
+            table.insert_many([
+                {"site": 1, "device": 2, "state": "up"},
+                {"site": 1, "device": 3, "state": "up"},
+            ])
             view = table.kv
             self.assertEqual(view[(1, 2)]["state"], "up")
             self.assertEqual(view.update((1, 2), {"state": "down"}), 1)
             self.assertEqual(view[(1, 2)]["state"], "down")
+            self.assertEqual(table.get_by_pk([1, 2])["state"], "down")
+            self.assertEqual(table.select({"site": 1, "device": 2}), [{"site": 1, "device": 2, "state": "down"}])
+            self.assertEqual(
+                view.get_many([[1, 2], (1, 3)]),
+                {
+                    (1, 2): {"site": 1, "device": 2, "state": "down"},
+                    (1, 3): {"site": 1, "device": 3, "state": "up"},
+                },
+            )
+            self.assertEqual(view.update_many({(1, 2): {"state": "ready"}, (1, 3): {"state": "standby"}}), 2)
+            with self.assertRaises(file_mapped_db.SchemaError):
+                table.insert_one({"site": 1, "device": 2, "state": "duplicate"})
+            self.assertEqual(table.delete_by_pk([1, 3]), 1)
+            reopened = FileMappedDatabase(root)["links"]
+            self.assertEqual(reopened.kv[(1, 2)]["state"], "ready")
             with self.assertRaises(KeyError):
-                _ = view[(2, 1)]
+                _ = reopened.kv[(2, 1)]
 
     def test_fixed_primary_key_update_refreshes_index_and_rejects_duplicates(self):
         with tempfile.TemporaryDirectory() as root:
