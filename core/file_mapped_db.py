@@ -120,7 +120,10 @@ _thread_locks_guard = threading.Lock()
 
 
 def _thread_lock(path: Path) -> threading.RLock:
-    key = str(path.resolve())
+    # Table paths are normalised once by ``Table`` construction.  Resolving
+    # the same Windows path on every CRUD call performs an avoidable kernel
+    # round-trip and shows up in short transactions.
+    key = str(path)
     with _thread_locks_guard:
         lock = _thread_locks.get(key)
         if lock is None:
@@ -1304,21 +1307,40 @@ class _FixedRecordStore:
                 detached[field.name] = copy.deepcopy(detached[field.name])
         return detached
 
-    def get(self, key_columns: Sequence[str], key: tuple[Any, ...]) -> dict[str, Any]:
+    def get(
+        self,
+        key_columns: Sequence[str],
+        key: tuple[Any, ...],
+        *,
+        fields: Optional[Sequence[str]] = None,
+    ) -> dict[str, Any]:
+        requested: Optional[tuple[str, ...]] = None
+        decode_fields: Optional[tuple[_FixedField, ...]] = None
+        if fields is not None:
+            requested = tuple(str(field) for field in fields)
+            field_map = {field.name: field for field in self.fields}
+            if all(name in field_map for name in requested):
+                names = tuple(dict.fromkeys(tuple(str(column) for column in key_columns) + requested))
+                decode_fields = tuple(field_map[name] for name in names)
         for _attempt in range(3):
             self._recover_if_needed()
             header = self._read_header()
             cache_key = (tuple(key_columns), key)
-            with self._cache_guard:
-                cached_row = self._row_cache.get(cache_key)
-            if cached_row is not None and cached_row[0] == header["generation"]:
-                return self._detach_row(cached_row[1])
+            if requested is None:
+                with self._cache_guard:
+                    cached_row = self._row_cache.get(cache_key)
+                if cached_row is not None and cached_row[0] == header["generation"]:
+                    return self._detach_row(cached_row[1])
             index = self._key_index(key_columns, header=header)
             slot = self._find_slot(key_columns, key, index)
             try:
                 with self._mapped() as (_handle, mapping):
-                    row = self._row_for_slot(mapping, slot)
+                    row = self._read_record(mapping, slot, fields=decode_fields)[1]
+                    if row is None:
+                        raise KeyError(slot)
                 if tuple(row.get(column) for column in key_columns) == key:
+                    if requested is not None and decode_fields is not None:
+                        return self._detach_row({name: row.get(name) for name in requested})
                     with self._cache_guard:
                         self._row_cache[(tuple(key_columns), key)] = (header["generation"], row)
                     return self._detach_row(row)
@@ -2587,15 +2609,19 @@ class Table(MutableSequence[dict[str, Any]]):
             if limit == 0 or offset > 0:
                 return []
             key = tuple(where[column] for column in self.definition.primary_keys)
+            selected: Optional[list[str]] = None
+            fetch_fields: Optional[tuple[str, ...]] = None
+            if columns is not None:
+                column_items = [columns] if isinstance(columns, str) else columns
+                selected = [_unquote_identifier(str(column)) for column in column_items]
+                fetch_fields = tuple(dict.fromkeys(tuple(self.definition.primary_keys) + tuple(selected)))
             try:
-                row = self._fixed_store.get(self.definition.primary_keys, key)
+                row = self._fixed_store.get(self.definition.primary_keys, key, fields=fetch_fields)
             except KeyError:
                 return []
             if not predicate(row):
                 return []
-            if columns is not None:
-                column_items = [columns] if isinstance(columns, str) else columns
-                selected = [_unquote_identifier(str(column)) for column in column_items]
+            if selected is not None:
                 row = {column: row.get(column) for column in selected}
                 return [row]
             # ``_FixedRecordStore.get`` already returns a detached copy.  A
