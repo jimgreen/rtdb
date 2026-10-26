@@ -896,10 +896,13 @@ class _FixedRecordStore:
 
     @contextmanager
     def _mapped(self, *, write: bool = False) -> Iterator[tuple[Any, mmap.mmap]]:
+        handle: Any = None
         try:
             handle = self.path.open("r+b" if write else "rb")
             mapping = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_WRITE if write else mmap.ACCESS_READ)
         except (OSError, ValueError) as exc:
+            if handle is not None:
+                handle.close()
             raise StorageError(f"cannot map fixed table {self.path}: {exc}") from exc
         try:
             yield handle, mapping
@@ -1108,6 +1111,34 @@ class _FixedRecordStore:
             handle.flush()
             os.fsync(handle.fileno())
 
+    def _apply_entries_and_header_locked(
+        self,
+        entries: Sequence[tuple[int, bytes]],
+        generation: int,
+        row_count: int,
+    ) -> None:
+        """Publish records and their generation header with one table fsync.
+
+        The WAL has already been fsynced by the caller.  Updating the mapped
+        slots and the redundant header before one final table fsync preserves
+        the original crash ordering while removing one extra open/fsync pair
+        from every fixed-table write.
+        """
+
+        slot_data = self._header_slot(self._header_body(generation, row_count))
+        header_offset = (generation & 1) * _FIXED_HEADER_SLOT
+        with self._mapped(write=True) as (handle, mapping):
+            for slot, record in entries:
+                offset = self._slot_offset(slot)
+                mapping[offset : offset + self.record_size] = record
+            mapping.flush()
+            handle.seek(header_offset)
+            handle.write(slot_data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with self._cache_guard:
+            self._header_cache = None
+
     def _recover_locked(self) -> None:
         if not self.active or not self.wal_path.exists():
             return
@@ -1116,15 +1147,24 @@ class _FixedRecordStore:
             return
         header = self._read_header()
         changed = False
+        recovered_entries: list[tuple[int, bytes]] = []
+        recovered_generation = header["generation"]
+        recovered_row_count = header["row_count"]
         for generation, row_count, entries in records:
             if generation <= header["generation"]:
                 continue
-            if generation != header["generation"] + 1:
+            if generation != recovered_generation + 1:
                 raise StorageError(f"fixed WAL sequence gap: {self.wal_path}")
-            self._apply_entries_locked(entries)
-            self._write_header_locked(generation, row_count)
-            header = {"generation": generation, "row_count": row_count}
+            recovered_entries.extend(entries)
+            recovered_generation = generation
+            recovered_row_count = row_count
             changed = True
+        if changed:
+            self._apply_entries_and_header_locked(
+                recovered_entries,
+                recovered_generation,
+                recovered_row_count,
+            )
         self._truncate_wal_locked(0 if incomplete or records else valid_end)
         if changed:
             with self._cache_guard:
@@ -1213,8 +1253,7 @@ class _FixedRecordStore:
         header = self._read_header()
         next_generation = header["generation"] + 1 if generation is None else generation
         self._append_wal_locked(next_generation, row_count, entries)
-        self._apply_entries_locked(entries)
-        self._write_header_locked(next_generation, row_count)
+        self._apply_entries_and_header_locked(entries, next_generation, row_count)
         try:
             # The durable header is already published.  A leftover frame has
             # sequence <= header generation and is therefore harmless after a
@@ -1249,6 +1288,18 @@ class _FixedRecordStore:
             raise KeyError(slot)
         return row
 
+    def _detach_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Detach a decoded row without deep-copying fixed scalar fields."""
+
+        detached = dict(row)
+        # Pickled columns may contain arbitrary mutable objects.  Primitive
+        # fixed-width values are immutable and can be copied by reference,
+        # which avoids a full recursive deepcopy on every indexed read.
+        for field in self.fields:
+            if field.kind not in {"int", "float", "bool", "str"} and field.name in detached:
+                detached[field.name] = copy.deepcopy(detached[field.name])
+        return detached
+
     def get(self, key_columns: Sequence[str], key: tuple[Any, ...]) -> dict[str, Any]:
         for _attempt in range(3):
             self._recover_if_needed()
@@ -1257,7 +1308,7 @@ class _FixedRecordStore:
             with self._cache_guard:
                 cached_row = self._row_cache.get(cache_key)
             if cached_row is not None and cached_row[0] == header["generation"]:
-                return copy.deepcopy(cached_row[1])
+                return self._detach_row(cached_row[1])
             index = self._key_index(key_columns, header=header)
             slot = self._find_slot(key_columns, key, index)
             try:
@@ -1266,7 +1317,7 @@ class _FixedRecordStore:
                 if tuple(row.get(column) for column in key_columns) == key:
                     with self._cache_guard:
                         self._row_cache[(tuple(key_columns), key)] = (header["generation"], row)
-                    return copy.deepcopy(row)
+                    return self._detach_row(row)
                 # A concurrent delete/reinsert reused the old slot. Rebuild
                 # the index on the next attempt.
             except StorageError:
@@ -1286,7 +1337,7 @@ class _FixedRecordStore:
                     continue
                 if len(positions) != 1:
                     raise ValueError(f"key {key!r} is not unique in fixed table {self.path}")
-                result[key[0] if len(key) == 1 else key] = copy.deepcopy(self._row_for_slot(mapping, positions[0]))
+                result[key[0] if len(key) == 1 else key] = self._detach_row(self._row_for_slot(mapping, positions[0]))
             return result
 
     def keys(self, key_columns: Sequence[str]) -> list[Any]:
@@ -2520,7 +2571,8 @@ class Table(MutableSequence[dict[str, Any]]):
             and self._fixed_store.active
             and self.definition is not None
             and isinstance(where, Mapping)
-            and tuple(str(field) for field in where) == self.definition.primary_keys
+            and len(where) == len(self.definition.primary_keys)
+            and {str(field) for field in where} == set(self.definition.primary_keys)
         ):
             if limit == 0 or offset > 0:
                 return []
@@ -2535,7 +2587,11 @@ class Table(MutableSequence[dict[str, Any]]):
                 column_items = [columns] if isinstance(columns, str) else columns
                 selected = [_unquote_identifier(str(column)) for column in column_items]
                 row = {column: row.get(column) for column in selected}
-            return [copy.deepcopy(row)]
+                return [row]
+            # ``_FixedRecordStore.get`` already returns a detached copy.  A
+            # second deepcopy here used to dominate hot primary-key SELECTs
+            # for primitive fixed-width columns.
+            return [row]
         snapshot = self._read_snapshot()
         positions = self._candidate_positions(snapshot, where)
         if positions is None:
@@ -2648,7 +2704,7 @@ class Table(MutableSequence[dict[str, Any]]):
 
             if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
                 key_columns = self.definition.primary_keys
-                if tuple(str(field) for field in where_values) == key_columns:
+                if len(where_values) == len(key_columns) and {str(field) for field in where_values} == set(key_columns):
                     if limit == 0:
                         return 0
                     key_values = tuple(where_values[column] for column in key_columns)
@@ -2712,7 +2768,7 @@ class Table(MutableSequence[dict[str, Any]]):
 
             if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
                 key_columns = self.definition.primary_keys
-                if tuple(str(field) for field in where_values) == key_columns:
+                if len(where_values) == len(key_columns) and {str(field) for field in where_values} == set(key_columns):
                     if limit == 0:
                         return 0
                     key_values = tuple(where_values[column] for column in key_columns)

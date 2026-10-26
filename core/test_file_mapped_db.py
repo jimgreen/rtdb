@@ -201,6 +201,33 @@ class FileMappedDatabaseTests(unittest.TestCase):
             self.assertEqual(reopened[2]["name"], "Robert")
             self.assertNotIn(1, reopened)
 
+    def test_fixed_wal_recovers_after_interrupted_slot_publish(self):
+        with tempfile.TemporaryDirectory() as root:
+            definition = self._users_definition(root)
+            table = Table(Path(root) / "users.table", name="users", definition=definition)
+            table.insert_one({"id": 1, "name": "Alice", "group": "a"})
+            store = table._fixed_store
+            assert store is not None
+            with file_mapped_db._locked(store.lock_path):
+                header = store._read_header()
+                with store._mapped() as (_handle, mapping):
+                    slot = store._free_slot(mapping, header["row_count"])
+                row = {"id": 2, "name": "Bob", "group": "b"}
+                record = store._encode_record(
+                    row,
+                    store._order_for_generation(header["generation"] + 1),
+                )
+                # Simulate a process stopping after the durable WAL write but
+                # before the slot and generation header are published.
+                store._append_wal_locked(
+                    header["generation"] + 1,
+                    header["row_count"] + 1,
+                    [(slot, record)],
+                )
+            reopened = Table(Path(root) / "users.table", name="users", definition=definition)
+            self.assertEqual([row["id"] for row in reopened.all()], [1, 2])
+            self.assertFalse(store.wal_path.exists() and store.wal_path.stat().st_size)
+
     def test_key_value_explicit_column_and_atomic_upsert(self):
         with tempfile.TemporaryDirectory() as root:
             table = FileMappedDatabase(root)["events"]

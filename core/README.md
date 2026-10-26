@@ -98,14 +98,16 @@ prevents stale index entries.
 
 Fixed-table append, primary-key CRUD, and key-value batch operations use the
 binary side-car `<name>.table.fixedwal` frame log. Each frame contains a
-sequence number, target slots, fixed records, length, and CRC32; the frame is
-flushed and `fsync`-ed before the changed slots and redundant generation
-header are published. On reopen, complete frames are replayed together and a
-torn final frame is discarded safely. A complete frame with a bad checksum
-raises `StorageError` instead of being silently ignored. Full list-style
-rewrites also use this in-place binary WAL path, keeping the file identity
-stable for concurrent readers. Complex predicates still decode a snapshot,
-while primary-key and key-value paths remain slot-oriented.
+sequence number, target slots, fixed records, length, and CRC32. The frame is
+flushed and `fsync`-ed first; the changed slots and redundant generation
+header are then published together with one table `fsync`. This keeps the
+write-ahead recovery guarantee while avoiding a second table-header sync on
+every row update. On reopen, complete frames are replayed together and a torn
+final frame is discarded safely. A complete frame with a bad checksum raises
+`StorageError` instead of being silently ignored. Full list-style rewrites
+also use this in-place binary WAL path, keeping the file identity stable for
+concurrent readers. Complex predicates still decode a snapshot, while
+primary-key and key-value paths remain slot-oriented.
 
 Lock waits are bounded by default. Pass `lock_timeout=None` to retain an
 unbounded wait or set a positive number of seconds to receive
