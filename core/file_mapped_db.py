@@ -152,6 +152,7 @@ class _FileLock:
                 self._handle.write(b"0")
                 self._handle.flush()
             self._handle.seek(0)
+            delay = 0.0005
             # LK_LOCK retries only ten times and then raises.  A long write
             # (or a slow network filesystem) must not turn ordinary
             # contention into a failed transaction, so retry the non-blocking
@@ -165,8 +166,10 @@ class _FileLock:
                         self._handle.close()
                         self._handle = None
                         raise StorageBusyError(f"timed out waiting for table lock: {self.path}")
-                    time.sleep(0.002)
+                    time.sleep(delay)
+                    delay = min(delay * 1.5, 0.002)
         else:  # pragma: no cover - selected on POSIX only
+            delay = 0.0005
             while True:
                 try:
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -176,7 +179,8 @@ class _FileLock:
                         self._handle.close()
                         self._handle = None
                         raise StorageBusyError(f"timed out waiting for table lock: {self.path}")
-                    time.sleep(0.002)
+                    time.sleep(delay)
+                    delay = min(delay * 1.5, 0.002)
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
