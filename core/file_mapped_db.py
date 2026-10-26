@@ -1136,8 +1136,12 @@ class _FixedRecordStore:
             handle.write(slot_data)
             handle.flush()
             os.fsync(handle.fileno())
+        header = {"generation": int(generation), "row_count": int(row_count)}
         with self._cache_guard:
-            self._header_cache = None
+            # Capture the post-publish signature so the next transaction in
+            # this process can reuse the decoded header.  Another process
+            # still invalidates this cache through the file signature check.
+            self._header_cache = (_file_signature(self.path), header)
 
     def _recover_locked(self) -> None:
         if not self.active or not self.wal_path.exists():
