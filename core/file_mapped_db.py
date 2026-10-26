@@ -1604,6 +1604,12 @@ class _FixedRecordStore:
         self._recover_if_needed()
         return self._snapshot_from_file()
 
+    def row_count(self) -> int:
+        """Return the published row count without decoding the row area."""
+
+        self._recover_if_needed()
+        return int(self._read_header()["row_count"])
+
 
 class QueryResult(list):
     """List-like result returned by SQL statements.
@@ -2637,6 +2643,8 @@ class Table(MutableSequence[dict[str, Any]]):
     to_list = all
 
     def count(self, where: Optional[Union[str, Mapping[str, Any], Callable[[Mapping[str, Any]], bool]]] = None) -> int:
+        if where is None and self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.row_count()
         predicate = _compile_where(where)
         snapshot = self._read_snapshot()
         positions = self._candidate_positions(snapshot, where)
@@ -2824,6 +2832,8 @@ class Table(MutableSequence[dict[str, Any]]):
 
     # ---- list-like API ---------------------------------------------------------
     def __len__(self) -> int:
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.row_count()
         return len(self._read_snapshot().rows)
 
     def _close(self) -> None:
@@ -3045,6 +3055,8 @@ class Table(MutableSequence[dict[str, Any]]):
         return QueryResult(rowcount=count, lastrowid=(first if count else None))
 
     def _read_snapshot_columns(self) -> list[str]:
+        if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
+            return list(self.definition.column_names)
         return list(self._read_snapshot().columns)
 
     def _execute_update(self, statement: str) -> QueryResult:
@@ -3456,6 +3468,8 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
         return iter(self.keys())
 
     def __len__(self) -> int:
+        if self._declared_primary and self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.row_count()
         return len(self.keys())
 
     def __repr__(self) -> str:

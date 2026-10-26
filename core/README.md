@@ -109,6 +109,11 @@ also use this in-place binary WAL path, keeping the file identity stable for
 concurrent readers. Complex predicates still decode a snapshot, while
 primary-key and key-value paths remain slot-oriented.
 
+For schema-defined fixed tables, `len(table)`, `table.count()` without a
+predicate, and the length of the declared-primary-key `table.kv` view read the
+published row count from the table header in O(1) time; they do not decode the
+whole row area.
+
 Lock waits are bounded by default. Pass `lock_timeout=None` to retain an
 unbounded wait or set a positive number of seconds to receive
 `StorageBusyError` when contention lasts too long.
