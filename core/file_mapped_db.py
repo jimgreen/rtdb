@@ -36,7 +36,7 @@ import tempfile
 import threading
 import time
 import zlib
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +58,7 @@ __all__ = [
     "MappedTable",
     "QueryResult",
     "RelationTable",
+    "TableKeyValue",
     "StorageBusyError",
     "StorageError",
     "Table",
@@ -543,6 +544,29 @@ def _build_column_index(rows: Sequence[Mapping[str, Any]], column: str) -> Optio
     return {value: tuple(positions) for value, positions in index.items()}
 
 
+def _build_key_positions(
+    rows: Sequence[Mapping[str, Any]],
+    key_columns: Sequence[str],
+) -> Optional[dict[tuple[Any, ...], tuple[int, ...]]]:
+    """Build a position index for one or more key columns.
+
+    The primary-key index has the same shape, but this helper is also used to
+    replay key-value WAL records for an explicitly selected single-column key.
+    ``None`` means that at least one row has a missing or unhashable key and
+    therefore cannot be addressed safely through the key-value interface.
+    """
+
+    index: dict[tuple[Any, ...], list[int]] = {}
+    for position, row in enumerate(rows):
+        try:
+            key = tuple(row[column] for column in key_columns)
+            hash(key)
+        except (KeyError, TypeError):
+            return None
+        index.setdefault(key, []).append(position)
+    return {key: tuple(positions) for key, positions in index.items()}
+
+
 def _build_snapshot_indexes(
     rows: Sequence[Mapping[str, Any]],
     definition: Optional[TableDefinition],
@@ -864,6 +888,93 @@ class Table(MutableSequence[dict[str, Any]]):
                     rows.append(dict(row))
                 columns = self._columns_after(rows, columns, (key for row in raw_rows for key in row))
                 replay_indexes.clear()
+            elif operation in {"update_key", "delete_key", "replace_key", "update_keys", "delete_keys"}:
+                raw_columns = record.get("key_columns")
+                if not isinstance(raw_columns, list) or not raw_columns:
+                    raise StorageError(f"invalid WAL key columns: {self.wal_path}")
+                try:
+                    key_columns = tuple(_validate_identifier(str(column), label="key column") for column in raw_columns)
+                except ValueError as exc:
+                    raise StorageError(f"invalid WAL key columns: {self.wal_path}") from exc
+                key_index = _build_key_positions(rows, key_columns)
+                if key_index is None:
+                    raise StorageError(f"WAL key column is missing or unhashable: {self.wal_path}")
+
+                def key_from_record(raw_key: Any) -> tuple[Any, ...]:
+                    if not isinstance(raw_key, list) or len(raw_key) != len(key_columns):
+                        raise StorageError(f"invalid WAL key: {self.wal_path}")
+                    try:
+                        key = tuple(raw_key)
+                        hash(key)
+                    except TypeError as exc:
+                        raise StorageError(f"invalid WAL key: {self.wal_path}") from exc
+                    return key
+
+                def unique_position(raw_key: Any) -> int:
+                    key = key_from_record(raw_key)
+                    positions = key_index.get(key, ())
+                    if len(positions) != 1:
+                        raise StorageError(f"WAL key target is not unique: {self.wal_path}")
+                    return positions[0]
+
+                if operation in {"update_key", "delete_key", "replace_key"}:
+                    position = unique_position(record.get("key"))
+                    if operation == "delete_key":
+                        del rows[position]
+                    else:
+                        values = record.get("values")
+                        if not isinstance(values, Mapping):
+                            raise StorageError(f"invalid WAL key values: {self.wal_path}")
+                        if any(column in values for column in key_columns):
+                            current_key = tuple(rows[position].get(column) for column in key_columns)
+                            proposed_key = tuple(dict(values).get(column, rows[position].get(column)) for column in key_columns)
+                            if proposed_key != current_key:
+                                raise StorageError(f"WAL key mutation is not supported: {self.wal_path}")
+                        if operation == "replace_key":
+                            rows[position] = dict(values)
+                        else:
+                            updated = dict(rows[position])
+                            updated.update(dict(values))
+                            rows[position] = updated
+                        columns = self._columns_after(rows, columns, values.keys())
+                    replay_indexes.clear()
+                    current = sequence
+                    continue
+
+                if operation == "update_keys":
+                    entries = record.get("entries")
+                    if not isinstance(entries, list):
+                        raise StorageError(f"invalid WAL key update entries: {self.wal_path}")
+                    for entry in entries:
+                        if not isinstance(entry, Mapping):
+                            raise StorageError(f"invalid WAL key update entry: {self.wal_path}")
+                        position = unique_position(entry.get("key"))
+                        values = entry.get("values")
+                        if not isinstance(values, Mapping):
+                            raise StorageError(f"invalid WAL key values: {self.wal_path}")
+                        if any(column in values for column in key_columns):
+                            current_key = tuple(rows[position].get(column) for column in key_columns)
+                            proposed_key = tuple(dict(values).get(column, rows[position].get(column)) for column in key_columns)
+                            if proposed_key != current_key:
+                                raise StorageError(f"WAL key mutation is not supported: {self.wal_path}")
+                        updated = dict(rows[position])
+                        updated.update(dict(values))
+                        rows[position] = updated
+                        columns = self._columns_after(rows, columns, values.keys())
+                    replay_indexes.clear()
+                    current = sequence
+                    continue
+
+                raw_keys = record.get("keys")
+                if not isinstance(raw_keys, list):
+                    raise StorageError(f"invalid WAL key deletion entries: {self.wal_path}")
+                positions = {unique_position(raw_key) for raw_key in raw_keys}
+                if len(positions) != len(raw_keys):
+                    raise StorageError(f"duplicate WAL key deletion: {self.wal_path}")
+                rows[:] = [row for position, row in enumerate(rows) if position not in positions]
+                replay_indexes.clear()
+                current = sequence
+                continue
             elif operation in {"update_pk", "delete_pk", "update_where", "delete_where"}:
                 if operation in {"update_where", "delete_where"}:
                     raw_where = record.get("where")
@@ -1312,6 +1423,45 @@ class Table(MutableSequence[dict[str, Any]]):
 
         snapshot = self._read_snapshot()
         return copy.deepcopy(snapshot.rows[self._primary_key_position_in_snapshot(snapshot, key)])
+
+    def key_value(self, key_column: Optional[str] = None) -> "TableKeyValue":
+        """Return a dictionary-like, indexed view of this table.
+
+        With no argument the declared primary key is used.  Tables without a
+        JSON definition default to the conventional ``id`` column.  Passing
+        a column name selects a single-column key and is useful for an
+        application-defined unique identifier.  The view never exposes the
+        cached row dictionaries directly: reads are detached copies and all
+        writes use the table lock and durable WAL path.
+        """
+
+        return TableKeyValue(self, key_column=key_column)
+
+    @property
+    def kv(self) -> "TableKeyValue":
+        """Return the default key-value view for this table."""
+
+        return self.key_value()
+
+    def get_by_key(self, key: Any, key_column: Optional[str] = None) -> dict[str, Any]:
+        """Read one row through the key-value index."""
+
+        return self.key_value(key_column).require(key)
+
+    def update_by_key(
+        self,
+        key: Any,
+        values: Mapping[str, Any],
+        key_column: Optional[str] = None,
+    ) -> int:
+        """Patch one indexed row and return one, or raise ``KeyError``."""
+
+        return self.key_value(key_column).update(key, values)
+
+    def delete_by_key(self, key: Any, key_column: Optional[str] = None) -> int:
+        """Delete one indexed row and return one, or raise ``KeyError``."""
+
+        return self.key_value(key_column).delete(key)
 
     def update_by_pk(self, key: Any, values: Mapping[str, Any]) -> int:
         """Update one row by primary key and return the affected row count."""
@@ -1819,6 +1969,365 @@ class Table(MutableSequence[dict[str, Any]]):
         clauses = self._clauses(match.group("tail"), ("WHERE", "LIMIT"))
         limit = int(clauses["LIMIT"]) if "LIMIT" in clauses else None
         return QueryResult(rowcount=self.delete(clauses.get("WHERE"), limit=limit))
+
+
+class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
+    """Indexed dictionary-like access to rows in a :class:`Table`.
+
+    A view is cheap to create and does not keep a mutable in-memory copy.  Each
+    read obtains the table's immutable snapshot and each write is committed by
+    the table's existing cross-process lock and WAL transaction.  The default
+    key is the JSON definition's primary key; an explicitly supplied column
+    must identify exactly one row for every lookup.
+
+    ``update`` applies a patch, while ``set`` replaces the complete row (the
+    requested key columns are filled in when omitted).  Key columns are
+    immutable through this view so that a caller cannot silently invalidate
+    the index or change the meaning of an in-flight update.
+    """
+
+    def __init__(self, table: Table, *, key_column: Optional[str] = None) -> None:
+        self.table = table
+        self._declared_primary = key_column is None and table.definition is not None and bool(table.definition.primary_keys)
+        if key_column is None:
+            if table.definition is not None and table.definition.primary_keys:
+                self.key_columns = tuple(table.definition.primary_keys)
+            else:
+                self.key_columns = ("id",)
+        else:
+            column = _validate_identifier(str(key_column), label="key column")
+            if table.definition is not None and column not in table.definition.column_names:
+                raise KeyError(column)
+            self.key_columns = (column,)
+        if not self.key_columns:
+            raise ValueError("at least one key column is required")
+
+    @property
+    def key_column(self) -> Optional[str]:
+        """Return the selected column for a single-column view."""
+
+        return self.key_columns[0] if len(self.key_columns) == 1 else None
+
+    def _normalise_key(self, key: Any, *, for_write: bool = True) -> tuple[Any, ...]:
+        if len(self.key_columns) == 1:
+            values = (key,)
+        elif isinstance(key, tuple) and len(key) == len(self.key_columns):
+            values = key
+        else:
+            raise KeyError(key)
+        try:
+            if for_write:
+                json.dumps(list(values), ensure_ascii=False, allow_nan=False)
+            hash(values)
+        except (TypeError, ValueError) as exc:
+            raise KeyError(key) from exc
+        return values
+
+    def _index(self, snapshot: _Snapshot) -> dict[tuple[Any, ...], tuple[int, ...]]:
+        if self._declared_primary:
+            # The definition validator guarantees uniqueness.  The snapshot
+            # is immutable from the caller's perspective, so avoid copying
+            # this potentially large dictionary on every point lookup.
+            return snapshot.primary_index
+        if len(self.key_columns) == 1:
+            column = self.key_columns[0]
+            raw = snapshot.indexes.get(column)
+            if raw is None:
+                raw_column = _build_column_index(snapshot.rows, column)
+                if raw_column is None:
+                    raise ValueError(f"key column {column!r} is missing or contains an unhashable value")
+                with self.table._cache_guard:
+                    snapshot.indexes[column] = raw_column
+                raw = raw_column
+            return { (value,): positions for value, positions in raw.items() }
+        raw_composite = _build_key_positions(snapshot.rows, self.key_columns)
+        if raw_composite is None:
+            raise ValueError(f"key columns {self.key_columns!r} are missing or contain an unhashable value")
+        return raw_composite
+
+    def _positions(self, snapshot: _Snapshot, values: tuple[Any, ...]) -> tuple[int, ...]:
+        """Look up positions without rebuilding a tuple-key adapter."""
+
+        if self._declared_primary:
+            return snapshot.primary_index.get(values, ())
+        if len(self.key_columns) == 1:
+            column = self.key_columns[0]
+            raw = snapshot.indexes.get(column)
+            if raw is None:
+                raw = _build_column_index(snapshot.rows, column)
+                if raw is None:
+                    raise ValueError(f"key column {column!r} is missing or contains an unhashable value")
+                with self.table._cache_guard:
+                    snapshot.indexes[column] = raw
+            return raw.get(values[0], ())
+        return self._index(snapshot).get(values, ())
+
+    def _position(self, snapshot: _Snapshot, key: Any) -> int:
+        values = self._normalise_key(key, for_write=False)
+        positions = self._positions(snapshot, values)
+        if not positions:
+            raise KeyError(key)
+        if len(positions) != 1:
+            raise ValueError(f"key {key!r} is not unique in table {self.table.name!r}")
+        return positions[0]
+
+    def _key_for_row(self, row: Mapping[str, Any]) -> Any:
+        try:
+            values = tuple(row[column] for column in self.key_columns)
+            hash(values)
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"key columns {self.key_columns!r} are missing or unhashable") from exc
+        return values[0] if len(values) == 1 else values
+
+    def _reject_key_patch(self, values: Mapping[str, Any], key: tuple[Any, ...]) -> None:
+        for column, expected in zip(self.key_columns, key):
+            if column in values and values[column] != expected:
+                raise ValueError(f"key column {column!r} cannot be changed through a key-value view")
+
+    def require(self, key: Any) -> dict[str, Any]:
+        """Return one detached row, raising ``KeyError`` when it is absent."""
+
+        snapshot = self.table._read_snapshot()
+        return copy.deepcopy(snapshot.rows[self._position(snapshot, key)])
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """Return one detached row or ``default`` when the key is absent."""
+
+        try:
+            return self.require(key)
+        except KeyError:
+            return default
+
+    def contains(self, key: Any) -> bool:
+        try:
+            self.require(key)
+        except KeyError:
+            return False
+        return True
+
+    __contains__ = contains
+
+    def update(self, key: Any, values: Optional[Mapping[str, Any]] = None, *, upsert: bool = False) -> int:
+        """Patch one row, or pass a mapping/iterable to :meth:`update_many`."""
+
+        if values is None:
+            if isinstance(key, Mapping):
+                return self.update_many(key.items())
+            raise TypeError("values must be a mapping")
+        if not isinstance(values, Mapping):
+            raise TypeError("values must be a mapping")
+        key_values = self._normalise_key(key)
+        patch = self.table._normalise_row(values)
+        self._reject_key_patch(patch, key_values)
+
+        if upsert:
+            row = self._row_with_key(key, patch)
+
+            def apply_upsert(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+                try:
+                    position = self._position(snapshot, key)
+                except KeyError:
+                    rows.append(row)
+                    return 1, {"op": "append", "rows": [row], "columns": row.keys()}
+                updated = dict(rows[position])
+                updated.update(copy.deepcopy(patch))
+                rows[position] = updated
+                return 1, {
+                    "op": "update_key",
+                    "key_columns": list(self.key_columns),
+                    "key": list(key_values),
+                    "values": patch,
+                    "columns": patch.keys(),
+                }
+
+            return int(self.table._mutate_incremental(apply_upsert))
+
+        def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            position = self._position(snapshot, key)
+            updated = dict(rows[position])
+            updated.update(copy.deepcopy(patch))
+            rows[position] = updated
+            return 1, {
+                "op": "update_key",
+                "key_columns": list(self.key_columns),
+                "key": list(key_values),
+                "values": patch,
+                "columns": patch.keys(),
+            }
+
+        return int(self.table._mutate_incremental(apply))
+
+    def _row_with_key(self, key: Any, values: Mapping[str, Any]) -> dict[str, Any]:
+        key_values = self._normalise_key(key)
+        row = self.table._normalise_row(values)
+        self._reject_key_patch(row, key_values)
+        for column, value in zip(self.key_columns, key_values):
+            row.setdefault(column, value)
+        return row
+
+    def set(self, key: Any, row: Mapping[str, Any], *, upsert: bool = False) -> int:
+        """Replace a row, optionally inserting it when the key is absent."""
+
+        key_values = self._normalise_key(key)
+        replacement = self._row_with_key(key, row)
+
+        def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            try:
+                position = self._position(snapshot, key)
+            except KeyError:
+                if not upsert:
+                    raise
+                rows.append(replacement)
+                return 1, {"op": "append", "rows": [replacement], "columns": replacement.keys()}
+            rows[position] = replacement
+            return 1, {
+                "op": "replace_key",
+                "key_columns": list(self.key_columns),
+                "key": list(key_values),
+                "values": replacement,
+                "columns": replacement.keys(),
+            }
+
+        return int(self.table._mutate_incremental(apply))
+
+    def delete(self, key: Any) -> int:
+        """Delete one row by key and return one, or raise ``KeyError``."""
+
+        key_values = self._normalise_key(key)
+
+        def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            position = self._position(snapshot, key)
+            del rows[position]
+            return 1, {
+                "op": "delete_key",
+                "key_columns": list(self.key_columns),
+                "key": list(key_values),
+            }
+
+        return int(self.table._mutate_incremental(remove))
+
+    def get_many(self, keys: Iterable[Any]) -> dict[Any, dict[str, Any]]:
+        """Read many keys from one snapshot while preserving requested order."""
+
+        snapshot = self.table._read_snapshot()
+        result: dict[Any, dict[str, Any]] = {}
+        for key in keys:
+            values = self._normalise_key(key, for_write=False)
+            positions = self._positions(snapshot, values)
+            if not positions:
+                continue
+            if len(positions) != 1:
+                raise ValueError(f"key {key!r} is not unique in table {self.table.name!r}")
+            public_key = values[0] if len(values) == 1 else values
+            result[public_key] = copy.deepcopy(snapshot.rows[positions[0]])
+        return result
+
+    @staticmethod
+    def _normalise_updates(updates: Any) -> list[tuple[Any, Mapping[str, Any]]]:
+        if isinstance(updates, Mapping):
+            source = list(updates.items())
+        else:
+            source = list(updates)
+        result: list[tuple[Any, Mapping[str, Any]]] = []
+        for item in source:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise TypeError("updates must contain (key, values) pairs")
+            key, values = item
+            if not isinstance(values, Mapping):
+                raise TypeError("update values must be mappings")
+            result.append((key, values))
+        return result
+
+    def update_many(self, updates: Any) -> int:
+        """Patch many distinct keys in one lock acquisition and WAL frame."""
+
+        source = self._normalise_updates(updates)
+        if not source:
+            return 0
+        prepared: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        seen: set[tuple[Any, ...]] = set()
+        for key, values in source:
+            key_values = self._normalise_key(key)
+            if key_values in seen:
+                raise ValueError(f"duplicate key in update_many: {key!r}")
+            seen.add(key_values)
+            patch = self.table._normalise_row(values)
+            self._reject_key_patch(patch, key_values)
+            prepared.append((key_values, patch))
+
+        def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            entries: list[dict[str, Any]] = []
+            new_columns: list[str] = []
+            for key_values, patch in prepared:
+                position = self._position(snapshot, key_values if len(key_values) > 1 else key_values[0])
+                updated = dict(rows[position])
+                updated.update(copy.deepcopy(patch))
+                rows[position] = updated
+                entries.append({"key": list(key_values), "values": patch})
+                new_columns.extend(patch.keys())
+            return len(entries), {
+                "op": "update_keys",
+                "key_columns": list(self.key_columns),
+                "entries": entries,
+                "columns": new_columns,
+            }
+
+        return int(self.table._mutate_incremental(apply))
+
+    def delete_many(self, keys: Iterable[Any]) -> int:
+        """Delete many distinct keys in one lock acquisition and WAL frame."""
+
+        prepared = [self._normalise_key(key) for key in keys]
+        if not prepared:
+            return 0
+        if len(set(prepared)) != len(prepared):
+            raise ValueError("duplicate key in delete_many")
+
+        def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
+            positions = [self._position(snapshot, values if len(values) > 1 else values[0]) for values in prepared]
+            for position in sorted(positions, reverse=True):
+                del rows[position]
+            return len(positions), {
+                "op": "delete_keys",
+                "key_columns": list(self.key_columns),
+                "keys": [list(values) for values in prepared],
+            }
+
+        return int(self.table._mutate_incremental(remove))
+
+    def keys(self) -> list[Any]:
+        snapshot = self.table._read_snapshot()
+        self._index(snapshot)  # validate uniqueness/indexability before exposing keys
+        return [self._key_for_row(row) for row in snapshot.rows]
+
+    def values(self) -> list[dict[str, Any]]:
+        return [copy.deepcopy(row) for row in self.table._read_snapshot().rows]
+
+    def items(self) -> list[tuple[Any, dict[str, Any]]]:
+        snapshot = self.table._read_snapshot()
+        self._index(snapshot)
+        return [(self._key_for_row(row), copy.deepcopy(row)) for row in snapshot.rows]
+
+    def __getitem__(self, key: Any) -> dict[str, Any]:
+        return self.require(key)
+
+    def __setitem__(self, key: Any, row: Mapping[str, Any]) -> None:
+        self.set(key, row, upsert=True)
+
+    def __delitem__(self, key: Any) -> None:
+        self.delete(key)
+
+    def __contains__(self, key: object) -> bool:  # type: ignore[override]
+        return self.contains(key)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+    def __repr__(self) -> str:
+        return f"TableKeyValue(table={self.table.name!r}, key_columns={self.key_columns!r})"
 
 
 MappedTable = Table

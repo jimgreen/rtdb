@@ -50,6 +50,31 @@ available. The explicit `get_by_pk`, `update_by_pk`, and `delete_by_pk`
 methods avoid a scan for declared primary keys. For many writes, prefer
 `insert_many`/`extend` so one atomic snapshot is written for the whole batch.
 
+For dictionary-style hot paths, use the indexed key-value view. It uses the
+declared primary-key index by default (a table without a definition defaults to
+`id`) and supports an explicitly selected single-column key:
+
+```python
+users = db["users"]
+users.kv[1001]                         # detached row copy, O(1) lookup
+users.kv.update(1001, {"name": "Alicia"})
+users.kv.set(1001, {"name": "Alice"})  # replace; key fields are filled in
+users.kv.delete(1001)
+users.kv.update_many({
+    1002: {"name": "Bob"},
+    1003: {"name": "Cara"},
+})                                       # one lock and one WAL frame
+rows = users.kv.get_many([1001, 1002])
+events_by_token = db["events"].key_value("token")
+```
+
+`get`, `require`, `contains`, `keys`, `values`, `items`, `get_many`,
+`update_many` and `delete_many` are also available. `set(..., upsert=True)`
+and `update(..., upsert=True)` insert a missing key atomically. Returned rows
+are deep copies, so mutating them cannot bypass the table lock or WAL. Key
+columns are immutable through this view; changing one raises `ValueError` and
+prevents stale index entries.
+
 Small append batches and equality-based or primary-key CRUD operations use a
 durable side-car `<name>.table.wal` frame log; larger `insert_many` batches use
 one atomic full snapshot so a large reader does not have to replay a large

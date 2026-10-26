@@ -33,6 +33,7 @@ PROCESS_WRITES = 25
 THREAD_WORKERS = 8
 THREAD_READS = 60
 THREAD_WRITES = 5
+KEY_BATCH_ROWS = 500
 
 
 def _seed(root: str, count: int = SEED_ROWS) -> None:
@@ -71,6 +72,51 @@ def _point_update(root: str) -> float:
             changed = table.update({"value": 900_000 + index}, {"id": SEED_ROWS // 2})
             if changed != 1:
                 raise AssertionError(changed)
+
+    return _timed(work)[0]
+
+
+def _key_value_read(root: str) -> float:
+    table = FileMappedDatabase(root)["records"]
+    view = table.kv
+
+    def work():
+        for _ in range(POINT_READS):
+            row = view.get(SEED_ROWS // 2)
+            if row is None or row["id"] != SEED_ROWS // 2:
+                raise AssertionError(row)
+
+    return _timed(work)[0]
+
+
+def _key_value_update(root: str) -> float:
+    view = FileMappedDatabase(root)["records"].kv
+
+    def work():
+        for index in range(POINT_UPDATES):
+            if view.update(SEED_ROWS // 2, {"value": 910_000 + index}) != 1:
+                raise AssertionError("key-value update did not affect one row")
+
+    return _timed(work)[0]
+
+
+def _key_value_batch_update(root: str) -> float:
+    view = FileMappedDatabase(root)["records"].kv
+    updates = {index: {"value": 920_000 + index} for index in range(KEY_BATCH_ROWS)}
+    elapsed, changed = _timed(lambda: view.update_many(updates))
+    if changed != KEY_BATCH_ROWS:
+        raise AssertionError(changed)
+    return elapsed
+
+
+def _condition_batch_update(root: str) -> float:
+    table = FileMappedDatabase(root)["records"]
+    updates = {index: {"value": 930_000 + index} for index in range(KEY_BATCH_ROWS)}
+
+    def work():
+        for key, values in updates.items():
+            if table.update(values, {"id": key}) != 1:
+                raise AssertionError(key)
 
     return _timed(work)[0]
 
@@ -150,7 +196,11 @@ def run() -> dict[str, Any]:
         root = str(Path(directory) / "dat")
         _seed(root)
         point_read = _point_read(root)
+        key_value_read = _key_value_read(root)
         point_update = _point_update(root)
+        key_value_update = _key_value_update(root)
+        condition_batch_update = _condition_batch_update(root)
+        key_value_batch_update = _key_value_batch_update(root)
         batch_insert = _batch_insert(root)
         process_append = _multi_process_append(root)
         thread_read_write = _multi_thread_read_write(root)
@@ -165,10 +215,15 @@ def run() -> dict[str, Any]:
                 "thread_workers": THREAD_WORKERS,
                 "thread_reads": THREAD_READS,
                 "thread_writes": THREAD_WRITES,
+                "key_batch_rows": KEY_BATCH_ROWS,
             },
             "seconds": {
                 "point_read": point_read,
+                "key_value_read": key_value_read,
                 "point_update": point_update,
+                "key_value_update": key_value_update,
+                "condition_batch_update": condition_batch_update,
+                "key_value_batch_update": key_value_batch_update,
                 "batch_insert": batch_insert,
                 "multi_process_append": process_append,
                 "multi_thread_read_write": thread_read_write,
