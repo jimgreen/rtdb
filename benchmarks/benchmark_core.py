@@ -21,7 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core import FileMappedDatabase
+from core import FileMappedDatabase, TableDefinition
 
 
 SEED_ROWS = 5_000
@@ -36,8 +36,29 @@ THREAD_WRITES = 5
 KEY_BATCH_ROWS = 500
 
 
+def _db(root: str) -> FileMappedDatabase:
+    return FileMappedDatabase(root, schema_directory=Path(root).parent / "def" / "table")
+
+
+def _write_benchmark_schema(root: str) -> None:
+    definition = TableDefinition.from_mapping(
+        {
+            "head": {"chn_name": "基准记录", "eng_name": "records", "max_elements": 20_000},
+            "columns": [
+                {"chn_name": "编号", "eng_name": "id", "primary_key": True, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "分组", "eng_name": "group", "primary_key": False, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "值", "eng_name": "value", "primary_key": False, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "名称", "eng_name": "name", "primary_key": False, "data_type": "str", "data_length": 32, "disp_type": "文本", "disp_menu": ""},
+            ],
+        },
+        Path(root).parent / "def" / "table",
+        "records",
+    )
+    definition.to_json(Path(root).parent / "def" / "table", overwrite=True)
+
+
 def _seed(root: str, count: int = SEED_ROWS) -> None:
-    table = FileMappedDatabase(root)["records"]
+    table = _db(root)["records"]
     table.insert_many(
         {"id": index, "group": index % 16, "value": index * 2, "name": f"row-{index}"}
         for index in range(count)
@@ -51,7 +72,7 @@ def _timed(function):
 
 
 def _point_read(root: str) -> float:
-    db = FileMappedDatabase(root)
+    db = _db(root)
     table = db["records"]
 
     def work():
@@ -64,7 +85,7 @@ def _point_read(root: str) -> float:
 
 
 def _point_update(root: str) -> float:
-    db = FileMappedDatabase(root)
+    db = _db(root)
     table = db["records"]
 
     def work():
@@ -77,7 +98,7 @@ def _point_update(root: str) -> float:
 
 
 def _key_value_read(root: str) -> float:
-    table = FileMappedDatabase(root)["records"]
+    table = _db(root)["records"]
     view = table.kv
 
     def work():
@@ -90,7 +111,7 @@ def _key_value_read(root: str) -> float:
 
 
 def _key_value_update(root: str) -> float:
-    view = FileMappedDatabase(root)["records"].kv
+    view = _db(root)["records"].kv
 
     def work():
         for index in range(POINT_UPDATES):
@@ -101,7 +122,7 @@ def _key_value_update(root: str) -> float:
 
 
 def _key_value_batch_update(root: str) -> float:
-    view = FileMappedDatabase(root)["records"].kv
+    view = _db(root)["records"].kv
     updates = {index: {"value": 920_000 + index} for index in range(KEY_BATCH_ROWS)}
     elapsed, changed = _timed(lambda: view.update_many(updates))
     if changed != KEY_BATCH_ROWS:
@@ -110,7 +131,7 @@ def _key_value_batch_update(root: str) -> float:
 
 
 def _condition_batch_update(root: str) -> float:
-    table = FileMappedDatabase(root)["records"]
+    table = _db(root)["records"]
     updates = {index: {"value": 930_000 + index} for index in range(KEY_BATCH_ROWS)}
 
     def work():
@@ -122,7 +143,7 @@ def _condition_batch_update(root: str) -> float:
 
 
 def _batch_insert(root: str) -> float:
-    db = FileMappedDatabase(root)
+    db = _db(root)
     table = db["records"]
     rows = [
         {"id": SEED_ROWS + index, "group": index % 16, "value": index, "name": f"batch-{index}"}
@@ -136,7 +157,7 @@ def _batch_insert(root: str) -> float:
 
 def _process_worker(arguments: tuple[str, int, int]) -> None:
     root, start, count = arguments
-    table = FileMappedDatabase(root)["records"]
+    table = _db(root)["records"]
     for index in range(start, start + count):
         table.append({"id": 100_000 + index, "group": index % 16, "value": index, "name": f"proc-{index}"})
 
@@ -154,7 +175,7 @@ def _multi_process_append(root: str) -> float:
 
     elapsed, _ = _timed(work)
     expected = SEED_ROWS + BATCH_ROWS + PROCESS_WORKERS * PROCESS_WRITES
-    actual = len(FileMappedDatabase(root)["records"])
+    actual = len(_db(root)["records"])
     if actual != expected:
         raise AssertionError((actual, expected))
     return elapsed
@@ -176,7 +197,7 @@ def _thread_worker(table, worker: int) -> tuple[int, int]:
 
 
 def _multi_thread_read_write(root: str) -> float:
-    db = FileMappedDatabase(root)
+    db = _db(root)
     table = db["records"]
 
     def work():
@@ -194,6 +215,7 @@ def _multi_thread_read_write(root: str) -> float:
 def run() -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="rtdb-benchmark-") as directory:
         root = str(Path(directory) / "dat")
+        _write_benchmark_schema(root)
         _seed(root)
         point_read = _point_read(root)
         key_value_read = _key_value_read(root)

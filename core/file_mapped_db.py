@@ -1,11 +1,13 @@
 """File-mapped, relation-style storage for small and medium sized tables.
 
-The module deliberately uses only Python's standard library.  A table is stored
-in one ``*.table`` file.  The file contains a small binary header followed by a
-UTF-8 JSON snapshot; snapshots are read through :mod:`mmap` and replaced
-atomically after a write.  A side-car ``*.lock`` file protects the complete
+The module deliberately uses only Python's standard library.  A
+schema-defined table is stored in one fixed-width binary ``*.table`` file;
+records have stable offsets and are read or updated directly through
+:mod:`mmap`.  A binary redo WAL and redundant generation headers make slot
+updates crash-safe.  A side-car ``*.lock`` file protects the complete
 read/modify/write operation across processes, while a process-local ``RLock``
-also makes nested and multi-threaded access safe.
+also makes nested and multi-threaded access safe.  Definition-less legacy
+tables retain the old UTF-8 JSON snapshot reader for compatibility.
 
 The API has two layers:
 
@@ -30,6 +32,7 @@ import copy
 import json
 import mmap
 import os
+import pickle
 import re
 import struct
 import tempfile
@@ -42,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from .table_schema import SchemaError, SchemaRegistry, TableDefinition
+from .table_schema import ColumnDefinition, SchemaError, SchemaRegistry, TableDefinition, TableHead
 
 if os.name == "nt":  # pragma: no cover - exercised on Windows in CI/users' machines
     import msvcrt
@@ -85,6 +88,29 @@ _WAL_COMPACT_BYTES = 4 * 1024 * 1024
 _WAL_BATCH_MAX_ROWS = 256
 _IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_]*|`[^`]+`|\"[^\"]+\"|\[[^\]]+\])"
 _IDENTIFIER_RE = re.compile(rf"^\s*(?P<name>{_IDENTIFIER})\s*$")
+
+# Schema-defined tables use a fixed-width binary layout.  Two redundant
+# headers make generation/count publication crash-safe while the row area can
+# stay memory mapped and be updated in place.  The old RTDBMAP1/JSON format is
+# still read for legacy, definition-less files; newly created defined tables
+# never pass through JSON.
+_FIXED_MAGIC = b"RTDBFIX2"
+_FIXED_VERSION = 1
+_FIXED_HEADER_BODY = struct.Struct(">8sHHQQQQII")
+_FIXED_HEADER_CRC = struct.Struct(">I")
+_FIXED_HEADER_SLOT = 128
+_FIXED_DATA_OFFSET = 4096
+_FIXED_SCHEMA_MAGIC = b"RTDBSCM1"
+_FIXED_SCHEMA_HEADER = struct.Struct(">8sH")
+_FIXED_SCHEMA_FIELD = struct.Struct(">HHBQ")
+_FIXED_SLOT_HEADER = struct.Struct(">BQI")
+_FIXED_WAL_MAGIC = b"RTDBFWL2"
+_FIXED_WAL_HEADER = struct.Struct(">8sQI")
+_FIXED_WAL_END_MAGIC = b"RTDBFEND"
+_FIXED_WAL_TRAILER = struct.Struct(">8sQ")
+_FIXED_WAL_THRESHOLD = 4 * 1024 * 1024
+_FIXED_WAL_PAYLOAD_HEADER = struct.Struct(">QQI")
+_FIXED_WAL_ENTRY_HEADER = struct.Struct(">QI")
 
 
 # One RLock per lock-file path.  The OS lock is still required: a Python lock
@@ -600,6 +626,930 @@ def _build_snapshot_indexes(
     return indexes, {key: tuple(positions) for key, positions in primary_index.items()}
 
 
+@dataclass(frozen=True)
+class _FixedField:
+    name: str
+    kind: str
+    width: int
+    offset: int
+
+
+def _fixed_kind(column: Any) -> str:
+    kind = str(column.data_type).strip().lower()
+    if kind in {"int", "integer", "long"}:
+        return "int"
+    if kind in {"float", "double", "number", "decimal"}:
+        return "float"
+    if kind in {"bool", "boolean"}:
+        return "bool"
+    if kind in {"str", "string", "text", "varchar", "char", "date", "datetime", "time"}:
+        return "str"
+    if kind in {"list", "array"}:
+        return "list"
+    if kind in {"dict", "object", "json"}:
+        return "object"
+    return "object"
+
+
+def _fixed_fields(definition: TableDefinition) -> tuple[tuple[_FixedField, ...], int, int]:
+    fields: list[_FixedField] = []
+    offset = 0
+    descriptor = bytearray()
+    for column in definition.columns:
+        kind = _fixed_kind(column)
+        if kind == "int":
+            payload_width = 8
+        elif kind == "float":
+            payload_width = 8
+        elif kind == "bool":
+            payload_width = 1
+        elif kind == "str":
+            payload_width = max(1, int(column.data_length or 64)) * 4
+        else:
+            payload_width = max(1024, int(column.data_length or 256) * 4)
+        width = 1 + payload_width  # null marker plus fixed payload
+        fields.append(_FixedField(column.eng_name, kind, width, offset))
+        descriptor.extend(column.eng_name.encode("utf-8"))
+        descriptor.extend(b"\0")
+        descriptor.extend(kind.encode("ascii"))
+        descriptor.extend(struct.pack(">Q", width))
+        offset += width
+    layout_crc = zlib.crc32(descriptor) & 0xFFFFFFFF
+    return tuple(fields), offset, layout_crc
+
+
+def _fixed_schema_blob(definition: TableDefinition) -> bytes:
+    payload = bytearray(_FIXED_SCHEMA_HEADER.pack(_FIXED_SCHEMA_MAGIC, len(definition.columns)))
+    for column in definition.columns:
+        name = column.eng_name.encode("utf-8")
+        data_type = column.data_type.encode("utf-8")
+        if len(name) > 0xFFFF or len(data_type) > 0xFFFF:
+            raise SchemaError(f"fixed schema name is too long: {column.eng_name!r}")
+        payload.extend(_FIXED_SCHEMA_FIELD.pack(len(name), len(data_type), 1 if column.primary_key else 0, int(column.data_length)))
+        payload.extend(name)
+        payload.extend(data_type)
+    if len(payload) > _FIXED_DATA_OFFSET - _FIXED_HEADER_SLOT * 2:
+        raise SchemaError(f"fixed schema metadata is too large: {definition.eng_name!r}")
+    return bytes(payload)
+
+
+def _load_fixed_definition(path: Path, table_name: str) -> TableDefinition:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(_FIXED_HEADER_SLOT * 2)
+            raw = handle.read(_FIXED_DATA_OFFSET - _FIXED_HEADER_SLOT * 2)
+    except OSError as exc:
+        raise StorageError(f"cannot read fixed schema metadata {path}: {exc}") from exc
+    if len(raw) < _FIXED_SCHEMA_HEADER.size:
+        raise StorageError(f"fixed schema metadata is truncated: {path}")
+    magic, count = _FIXED_SCHEMA_HEADER.unpack(raw[:_FIXED_SCHEMA_HEADER.size])
+    if magic != _FIXED_SCHEMA_MAGIC:
+        raise StorageError(f"invalid fixed schema metadata: {path}")
+    cursor = _FIXED_SCHEMA_HEADER.size
+    columns: list[ColumnDefinition] = []
+    for _ in range(count):
+        if cursor + _FIXED_SCHEMA_FIELD.size > len(raw):
+            raise StorageError(f"fixed schema metadata is truncated: {path}")
+        name_length, type_length, primary, data_length = _FIXED_SCHEMA_FIELD.unpack(raw[cursor : cursor + _FIXED_SCHEMA_FIELD.size])
+        cursor += _FIXED_SCHEMA_FIELD.size
+        end = cursor + name_length + type_length
+        if end > len(raw):
+            raise StorageError(f"fixed schema metadata is truncated: {path}")
+        try:
+            name = raw[cursor : cursor + name_length].decode("utf-8")
+            data_type = raw[cursor + name_length : end].decode("utf-8")
+        except UnicodeError as exc:
+            raise StorageError(f"invalid fixed schema metadata: {path}") from exc
+        cursor = end
+        columns.append(
+            ColumnDefinition(
+                chn_name=name,
+                eng_name=name,
+                primary_key=bool(primary),
+                data_type=data_type,
+                data_length=int(data_length),
+                disp_type=data_type,
+                disp_menu="",
+            )
+        )
+    try:
+        with path.open("rb") as handle:
+            header_area = handle.read(_FIXED_HEADER_SLOT * 2)
+    except OSError as exc:
+        raise StorageError(f"cannot read fixed table header {path}: {exc}") from exc
+    candidates: list[tuple[int, int]] = []
+    for offset in (0, _FIXED_HEADER_SLOT):
+        header = header_area[offset : offset + _FIXED_HEADER_SLOT]
+        if len(header) < _FIXED_HEADER_BODY.size + _FIXED_HEADER_CRC.size:
+            continue
+        body = header[:_FIXED_HEADER_BODY.size]
+        checksum = _FIXED_HEADER_CRC.unpack(
+            header[_FIXED_HEADER_BODY.size : _FIXED_HEADER_BODY.size + _FIXED_HEADER_CRC.size]
+        )[0]
+        if zlib.crc32(body) & 0xFFFFFFFF != checksum:
+            continue
+        magic_value, version, header_size, generation, row_count, max_records, _record_size, _field_count, _layout_crc = _FIXED_HEADER_BODY.unpack(body)
+        if magic_value != _FIXED_MAGIC or version != _FIXED_VERSION or header_size != _FIXED_DATA_OFFSET or row_count > max_records:
+            continue
+        candidates.append((int(generation), int(max_records)))
+    if not candidates:
+        raise StorageError(f"fixed table headers are corrupt: {path}")
+    _generation, max_records = max(candidates, key=lambda item: item[0])
+    head = TableHead(chn_name=table_name, eng_name=table_name, max_elements=int(max_records))
+    return TableDefinition(head=head, columns=tuple(columns), path=path)
+
+
+class _FixedRecordStore:
+    """Direct mmap store for schema-defined fixed-width records.
+
+    The row area is preallocated from ``head.max_elements`` and each slot has
+    a stable offset.  A key lookup maps directly to a slot and decodes only the
+    requested row.  Writes use a compact binary redo WAL, then publish a
+    redundant generation header.  No JSON is involved in the base file or in
+    this store's WAL.
+    """
+
+    def __init__(self, path: Path, definition: TableDefinition, lock_path: Path, lock_timeout: Optional[float]) -> None:
+        self.path = path
+        self.definition = definition
+        self.lock_path = lock_path
+        self.lock_timeout = lock_timeout
+        self.fields, self.payload_size, self.layout_crc = _fixed_fields(definition)
+        self.record_size = _FIXED_SLOT_HEADER.size + self.payload_size
+        self.max_records = int(definition.max_elements)
+        self.wal_path = path.with_suffix(path.suffix + ".fixedwal")
+        self.active = False
+        self._cache_guard = threading.RLock()
+        self._snapshot_cache: Optional[_Snapshot] = None
+        self._key_cache: dict[tuple[str, ...], tuple[int, dict[tuple[Any, ...], tuple[int, ...]]]] = {}
+        self._row_cache: dict[tuple[tuple[str, ...], tuple[Any, ...]], tuple[int, dict[str, Any]]] = {}
+        self._header_cache: Optional[tuple[tuple[int, ...], dict[str, int]]] = None
+
+    @property
+    def total_size(self) -> int:
+        return _FIXED_DATA_OFFSET + self.max_records * self.record_size
+
+    def ensure_exists_locked(self) -> None:
+        if self.path.exists():
+            try:
+                with self.path.open("rb") as handle:
+                    magic = handle.read(len(_FIXED_MAGIC))
+            except OSError as exc:
+                raise StorageError(f"cannot inspect table {self.path}: {exc}") from exc
+            if magic != _FIXED_MAGIC:
+                self.active = False
+                return
+            self.active = True
+            self._read_header()
+            self._recover_locked()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_file_locked(generation=0, row_count=0)
+        self.active = True
+
+    def _header_body(self, generation: int, row_count: int) -> bytes:
+        return _FIXED_HEADER_BODY.pack(
+            _FIXED_MAGIC,
+            _FIXED_VERSION,
+            _FIXED_DATA_OFFSET,
+            int(generation),
+            int(row_count),
+            self.max_records,
+            self.record_size,
+            len(self.fields),
+            self.layout_crc,
+        )
+
+    @staticmethod
+    def _header_slot(body: bytes) -> bytes:
+        checksum = zlib.crc32(body) & 0xFFFFFFFF
+        return body + _FIXED_HEADER_CRC.pack(checksum) + bytes(_FIXED_HEADER_SLOT - len(body) - _FIXED_HEADER_CRC.size)
+
+    def _decode_header_slot(self, data: bytes) -> Optional[dict[str, int]]:
+        if len(data) < _FIXED_HEADER_BODY.size + _FIXED_HEADER_CRC.size:
+            return None
+        body = data[:_FIXED_HEADER_BODY.size]
+        checksum = _FIXED_HEADER_CRC.unpack(data[_FIXED_HEADER_BODY.size : _FIXED_HEADER_BODY.size + _FIXED_HEADER_CRC.size])[0]
+        if zlib.crc32(body) & 0xFFFFFFFF != checksum:
+            return None
+        magic, version, header_size, generation, row_count, max_records, record_size, field_count, layout_crc = _FIXED_HEADER_BODY.unpack(body)
+        if magic != _FIXED_MAGIC or version != _FIXED_VERSION or header_size != _FIXED_DATA_OFFSET:
+            return None
+        if max_records != self.max_records or record_size != self.record_size or field_count != len(self.fields) or layout_crc != self.layout_crc:
+            raise StorageError(f"fixed table layout does not match definition: {self.path}")
+        if row_count > max_records:
+            raise StorageError(f"invalid fixed table row count: {self.path}")
+        return {"generation": generation, "row_count": row_count}
+
+    def _read_header(self) -> dict[str, int]:
+        signature = _file_signature(self.path)
+        with self._cache_guard:
+            if self._header_cache is not None and self._header_cache[0] == signature:
+                return self._header_cache[1]
+        try:
+            with self.path.open("rb") as handle:
+                raw = handle.read(_FIXED_DATA_OFFSET)
+        except OSError as exc:
+            raise StorageError(f"cannot read fixed table {self.path}: {exc}") from exc
+        candidates = [
+            self._decode_header_slot(raw[:_FIXED_HEADER_SLOT]),
+            self._decode_header_slot(raw[_FIXED_HEADER_SLOT:_FIXED_DATA_OFFSET]),
+        ]
+        valid = [candidate for candidate in candidates if candidate is not None]
+        if not valid:
+            raise StorageError(f"fixed table headers are corrupt: {self.path}")
+        header = max(valid, key=lambda item: item["generation"])
+        with self._cache_guard:
+            self._header_cache = (signature, header)
+        return header
+
+    def close(self) -> None:
+        with self._cache_guard:
+            self._snapshot_cache = None
+            self._key_cache.clear()
+            self._row_cache.clear()
+
+    def _create_file_locked(self, *, generation: int, row_count: int) -> None:
+        temporary: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile("w+b", prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent, delete=False) as handle:
+                temporary = handle.name
+                slot = self._header_slot(self._header_body(generation, row_count))
+                handle.write(slot)
+                handle.write(slot)
+                handle.write(_fixed_schema_blob(self.definition))
+                if self.total_size:
+                    handle.seek(self.total_size - 1)
+                    handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+            temporary = None
+        except OSError as exc:
+            raise StorageError(f"cannot create fixed table {self.path}: {exc}") from exc
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+    @contextmanager
+    def _mapped(self, *, write: bool = False) -> Iterator[tuple[Any, mmap.mmap]]:
+        try:
+            handle = self.path.open("r+b" if write else "rb")
+            mapping = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_WRITE if write else mmap.ACCESS_READ)
+        except (OSError, ValueError) as exc:
+            raise StorageError(f"cannot map fixed table {self.path}: {exc}") from exc
+        try:
+            yield handle, mapping
+        finally:
+            mapping.close()
+            handle.close()
+
+    def _slot_offset(self, slot: int) -> int:
+        if slot < 0 or slot >= self.max_records:
+            raise StorageError(f"fixed table slot out of range: {slot}")
+        return _FIXED_DATA_OFFSET + slot * self.record_size
+
+    def _order_for_generation(self, generation: int, position: int = 0) -> int:
+        """Return a monotonic insertion order without scanning all slots."""
+
+        stride = self.max_records + 1
+        order = int(generation) * stride + int(position)
+        if order > 0xFFFFFFFFFFFFFFFF:
+            raise StorageError(f"fixed table insertion order exhausted: {self.path}")
+        return order
+
+    def _encode_field(self, value: Any, field: _FixedField) -> bytes:
+        payload_width = field.width - 1
+        if value is None:
+            return bytes(field.width)
+        if field.kind == "int":
+            payload = struct.pack(">q", int(value))
+        elif field.kind == "float":
+            payload = struct.pack(">d", float(value))
+        elif field.kind == "bool":
+            payload = bytes((1 if value else 0,))
+        elif field.kind == "str":
+            payload = str(value).encode("utf-8")
+        else:
+            try:
+                payload = pickle.dumps(value, protocol=5)
+            except (TypeError, ValueError, pickle.PicklingError) as exc:
+                raise StorageError(f"cannot encode column {field.name!r}: {exc}") from exc
+            payload = struct.pack(">I", len(payload)) + payload
+        if len(payload) > payload_width:
+            raise SchemaError(f"column {field.name!r} exceeds fixed storage width {payload_width}")
+        return b"\1" + payload + bytes(payload_width - len(payload))
+
+    def _decode_field(self, raw: bytes, field: _FixedField) -> Any:
+        if not raw or raw[0] == 0:
+            return None
+        payload = raw[1:]
+        if field.kind == "int":
+            return struct.unpack(">q", payload[:8])[0]
+        if field.kind == "float":
+            return struct.unpack(">d", payload[:8])[0]
+        if field.kind == "bool":
+            return bool(payload[0])
+        if field.kind == "str":
+            return payload.rstrip(b"\0").decode("utf-8")
+        if len(payload) < 4:
+            raise StorageError(f"invalid fixed object field {field.name!r}: {self.path}")
+        length = struct.unpack(">I", payload[:4])[0]
+        if length > len(payload) - 4:
+            raise StorageError(f"invalid fixed object length {field.name!r}: {self.path}")
+        try:
+            return pickle.loads(payload[4 : 4 + length])
+        except (EOFError, pickle.UnpicklingError, ValueError) as exc:
+            raise StorageError(f"cannot decode fixed object field {field.name!r}: {self.path}") from exc
+
+    def _encode_payload(self, row: Mapping[str, Any]) -> bytes:
+        payload = bytearray(self.payload_size)
+        for field in self.fields:
+            encoded = self._encode_field(row.get(field.name), field)
+            payload[field.offset : field.offset + field.width] = encoded
+        return bytes(payload)
+
+    def _decode_payload(self, payload: bytes, *, fields: Optional[Sequence[_FixedField]] = None) -> dict[str, Any]:
+        selected = self.fields if fields is None else fields
+        result: dict[str, Any] = {}
+        for field in selected:
+            result[field.name] = self._decode_field(payload[field.offset : field.offset + field.width], field)
+        return result
+
+    def _encode_record(self, row: Mapping[str, Any], order: int) -> bytes:
+        payload = self._encode_payload(row)
+        return _FIXED_SLOT_HEADER.pack(1, int(order), zlib.crc32(payload) & 0xFFFFFFFF) + payload
+
+    def _decode_record(self, raw: bytes, *, fields: Optional[Sequence[_FixedField]] = None) -> tuple[int, Optional[dict[str, Any]]]:
+        if len(raw) != self.record_size:
+            raise StorageError(f"invalid fixed record size: {self.path}")
+        state, order, checksum = _FIXED_SLOT_HEADER.unpack(raw[:_FIXED_SLOT_HEADER.size])
+        if state == 0:
+            return order, None
+        if state != 1:
+            raise StorageError(f"invalid fixed record state: {self.path}")
+        payload = raw[_FIXED_SLOT_HEADER.size:]
+        if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+            raise StorageError(f"fixed record checksum mismatch: {self.path}")
+        return order, self._decode_payload(payload, fields=fields)
+
+    def _read_record(self, mapping: mmap.mmap, slot: int, *, fields: Optional[Sequence[_FixedField]] = None) -> tuple[int, Optional[dict[str, Any]]]:
+        offset = self._slot_offset(slot)
+        return self._decode_record(mapping[offset : offset + self.record_size], fields=fields)
+
+    def _wal_frame(self, generation: int, row_count: int, entries: Sequence[tuple[int, bytes]]) -> bytes:
+        payload = bytearray(_FIXED_WAL_PAYLOAD_HEADER.pack(generation, row_count, len(entries)))
+        for slot, record in entries:
+            if len(record) != self.record_size:
+                raise StorageError(f"invalid fixed WAL record size: {self.path}")
+            payload.extend(_FIXED_WAL_ENTRY_HEADER.pack(slot, len(record)))
+            payload.extend(record)
+        checksum = zlib.crc32(payload) & 0xFFFFFFFF
+        return _FIXED_WAL_HEADER.pack(_FIXED_WAL_MAGIC, len(payload), checksum) + payload + _FIXED_WAL_TRAILER.pack(_FIXED_WAL_END_MAGIC, len(payload))
+
+    def _append_wal_locked(self, generation: int, row_count: int, entries: Sequence[tuple[int, bytes]]) -> None:
+        frame = self._wal_frame(generation, row_count, entries)
+        try:
+            with self.wal_path.open("ab") as handle:
+                handle.write(frame)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StorageError(f"cannot append fixed WAL {self.wal_path}: {exc}") from exc
+
+    def _read_wal(self) -> tuple[list[tuple[int, int, list[tuple[int, bytes]]]], int, bool]:
+        if not self.wal_path.exists():
+            return [], 0, False
+        records: list[tuple[int, int, list[tuple[int, bytes]]]] = []
+        valid_end = 0
+        incomplete = False
+        try:
+            with self.wal_path.open("rb") as handle:
+                while True:
+                    header = handle.read(_FIXED_WAL_HEADER.size)
+                    if not header:
+                        break
+                    if len(header) < _FIXED_WAL_HEADER.size:
+                        incomplete = True
+                        break
+                    magic, size, checksum = _FIXED_WAL_HEADER.unpack(header)
+                    if magic != _FIXED_WAL_MAGIC or size > _MAX_WAL_RECORD:
+                        raise StorageError(f"invalid fixed WAL header: {self.wal_path}")
+                    payload = handle.read(size)
+                    if len(payload) < size:
+                        incomplete = True
+                        break
+                    trailer = handle.read(_FIXED_WAL_TRAILER.size)
+                    if len(trailer) < _FIXED_WAL_TRAILER.size:
+                        incomplete = True
+                        break
+                    end_magic, end_size = _FIXED_WAL_TRAILER.unpack(trailer)
+                    if end_magic != _FIXED_WAL_END_MAGIC or end_size != size:
+                        raise StorageError(f"invalid fixed WAL trailer: {self.wal_path}")
+                    if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+                        raise StorageError(f"fixed WAL checksum mismatch: {self.wal_path}")
+                    if len(payload) < _FIXED_WAL_PAYLOAD_HEADER.size:
+                        raise StorageError(f"invalid fixed WAL payload: {self.wal_path}")
+                    generation, row_count, count = _FIXED_WAL_PAYLOAD_HEADER.unpack(payload[:_FIXED_WAL_PAYLOAD_HEADER.size])
+                    cursor = _FIXED_WAL_PAYLOAD_HEADER.size
+                    entries: list[tuple[int, bytes]] = []
+                    for _ in range(count):
+                        if cursor + _FIXED_WAL_ENTRY_HEADER.size > len(payload):
+                            raise StorageError(f"invalid fixed WAL entry: {self.wal_path}")
+                        slot, record_size = _FIXED_WAL_ENTRY_HEADER.unpack(payload[cursor : cursor + _FIXED_WAL_ENTRY_HEADER.size])
+                        cursor += _FIXED_WAL_ENTRY_HEADER.size
+                        if record_size != self.record_size or cursor + record_size > len(payload):
+                            raise StorageError(f"invalid fixed WAL record: {self.wal_path}")
+                        entries.append((slot, bytes(payload[cursor : cursor + record_size])))
+                        cursor += record_size
+                    if cursor != len(payload):
+                        raise StorageError(f"invalid fixed WAL payload length: {self.wal_path}")
+                    records.append((generation, row_count, entries))
+                    valid_end += _FIXED_WAL_HEADER.size + size + _FIXED_WAL_TRAILER.size
+        except OSError as exc:
+            raise StorageError(f"cannot read fixed WAL {self.wal_path}: {exc}") from exc
+        return records, valid_end, incomplete
+
+    def _truncate_wal_locked(self, length: int = 0, *, sync: bool = True) -> None:
+        if not self.wal_path.exists():
+            return
+        try:
+            with self.wal_path.open("r+b") as handle:
+                handle.truncate(length)
+                handle.flush()
+                if sync:
+                    os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StorageError(f"cannot truncate fixed WAL {self.wal_path}: {exc}") from exc
+
+    def _write_header_locked(self, generation: int, row_count: int) -> None:
+        slot = self._header_slot(self._header_body(generation, row_count))
+        offset = (generation & 1) * _FIXED_HEADER_SLOT
+        try:
+            with self.path.open("r+b") as handle:
+                handle.seek(offset)
+                handle.write(slot)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StorageError(f"cannot publish fixed table header {self.path}: {exc}") from exc
+        with self._cache_guard:
+            self._header_cache = None
+
+    def _apply_entries_locked(self, entries: Sequence[tuple[int, bytes]]) -> None:
+        with self._mapped(write=True) as (handle, mapping):
+            for slot, record in entries:
+                offset = self._slot_offset(slot)
+                mapping[offset : offset + self.record_size] = record
+            mapping.flush()
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _recover_locked(self) -> None:
+        if not self.active or not self.wal_path.exists():
+            return
+        records, valid_end, incomplete = self._read_wal()
+        if not records and not incomplete:
+            return
+        header = self._read_header()
+        changed = False
+        for generation, row_count, entries in records:
+            if generation <= header["generation"]:
+                continue
+            if generation != header["generation"] + 1:
+                raise StorageError(f"fixed WAL sequence gap: {self.wal_path}")
+            self._apply_entries_locked(entries)
+            self._write_header_locked(generation, row_count)
+            header = {"generation": generation, "row_count": row_count}
+            changed = True
+        self._truncate_wal_locked(0 if incomplete or records else valid_end)
+        if changed:
+            with self._cache_guard:
+                self._snapshot_cache = None
+                self._key_cache.clear()
+                self._row_cache.clear()
+
+    def _recover_if_needed(self) -> None:
+        if self.wal_path.exists() and self.wal_path.stat().st_size:
+            with _locked(self.lock_path, timeout=self.lock_timeout):
+                self._recover_locked()
+
+    def _build_key_index_from_map(self, mapping: mmap.mmap, key_columns: Sequence[str]) -> dict[tuple[Any, ...], tuple[int, ...]]:
+        fields = tuple(field for field in self.fields if field.name in key_columns)
+        if len(fields) != len(key_columns):
+            raise KeyError(next(column for column in key_columns if column not in {field.name for field in self.fields}))
+        index: dict[tuple[Any, ...], list[int]] = {}
+        for slot in range(self.max_records):
+            order, row = self._read_record(mapping, slot, fields=fields)
+            if row is None:
+                continue
+            key = tuple(row[column] for column in key_columns)
+            try:
+                hash(key)
+            except TypeError as exc:
+                raise StorageError(f"unhashable fixed key in {self.path}") from exc
+            index.setdefault(key, []).append(slot)
+        return {key: tuple(slots) for key, slots in index.items()}
+
+    def _key_index(self, key_columns: Sequence[str], *, header: Optional[dict[str, int]] = None) -> dict[tuple[Any, ...], tuple[int, ...]]:
+        self._recover_if_needed()
+        key = tuple(key_columns)
+        if header is None:
+            header = self._read_header()
+        with self._cache_guard:
+            cached = self._key_cache.get(key)
+            if cached is not None and cached[0] == header["generation"]:
+                return cached[1]
+        with self._mapped() as (_handle, mapping):
+            built = self._build_key_index_from_map(mapping, key)
+        with self._cache_guard:
+            self._key_cache[key] = (header["generation"], built)
+        return built
+
+    def _key_index_locked(self, mapping: mmap.mmap, generation: int, key_columns: Sequence[str]) -> dict[tuple[Any, ...], tuple[int, ...]]:
+        key = tuple(key_columns)
+        with self._cache_guard:
+            cached = self._key_cache.get(key)
+            if cached is not None and cached[0] == generation:
+                return cached[1]
+        built = self._build_key_index_from_map(mapping, key)
+        with self._cache_guard:
+            self._key_cache[key] = (generation, built)
+        return built
+
+    def _find_slot(self, key_columns: Sequence[str], key: tuple[Any, ...], index: Optional[dict[tuple[Any, ...], tuple[int, ...]]] = None) -> int:
+        positions = (self._key_index(key_columns) if index is None else index).get(key, ())
+        if not positions:
+            raise KeyError(key[0] if len(key) == 1 else key)
+        if len(positions) != 1:
+            raise ValueError(f"key {key[0] if len(key) == 1 else key!r} is not unique in fixed table {self.path}")
+        return positions[0]
+
+    def _free_slot(self, mapping: mmap.mmap, preferred: int = 0) -> int:
+        """Find a free slot, starting at the expected append position."""
+
+        preferred = max(0, min(int(preferred), self.max_records - 1)) if self.max_records else 0
+        for slot in range(preferred, self.max_records):
+            if mapping[self._slot_offset(slot)] == 0:
+                return slot
+        for slot in range(0, preferred):
+            if mapping[self._slot_offset(slot)] == 0:
+                return slot
+        raise SchemaError(f"table {self.definition.eng_name!r} reached max_elements {self.max_records}")
+
+    def _commit_locked(
+        self,
+        entries: Sequence[tuple[int, bytes]],
+        row_count: int,
+        generation: Optional[int] = None,
+        *,
+        preserve_key_cache: bool = False,
+        key_cache_additions: Optional[tuple[tuple[str, ...], Sequence[tuple[tuple[Any, ...], int]]]] = None,
+    ) -> None:
+        self._recover_locked()
+        header = self._read_header()
+        next_generation = header["generation"] + 1 if generation is None else generation
+        self._append_wal_locked(next_generation, row_count, entries)
+        self._apply_entries_locked(entries)
+        self._write_header_locked(next_generation, row_count)
+        try:
+            # The durable header is already published.  A leftover frame has
+            # sequence <= header generation and is therefore harmless after a
+            # crash, so truncate it without a fourth fsync on every write.
+            if self.wal_path.stat().st_size >= _FIXED_WAL_THRESHOLD:
+                self._truncate_wal_locked()
+            else:
+                self._truncate_wal_locked(sync=False)
+        except OSError as exc:
+            raise StorageError(f"cannot inspect fixed WAL {self.wal_path}: {exc}") from exc
+        with self._cache_guard:
+            self._snapshot_cache = None
+            self._row_cache.clear()
+            if preserve_key_cache:
+                updated_cache: dict[tuple[str, ...], tuple[int, dict[tuple[Any, ...], tuple[int, ...]]]] = {}
+                additions_columns = key_cache_additions[0] if key_cache_additions is not None else None
+                additions = dict(key_cache_additions[1]) if key_cache_additions is not None else {}
+                for cache_key, (_old_generation, index) in self._key_cache.items():
+                    updated_index = index
+                    if additions_columns is not None and cache_key == additions_columns and additions:
+                        updated_index = dict(index)
+                        for key, slot in additions.items():
+                            updated_index[key] = tuple(updated_index.get(key, ())) + (slot,)
+                    updated_cache[cache_key] = (next_generation, updated_index)
+                self._key_cache = updated_cache
+            else:
+                self._key_cache.clear()
+
+    def _row_for_slot(self, mapping: mmap.mmap, slot: int) -> dict[str, Any]:
+        _order, row = self._read_record(mapping, slot)
+        if row is None:
+            raise KeyError(slot)
+        return row
+
+    def get(self, key_columns: Sequence[str], key: tuple[Any, ...]) -> dict[str, Any]:
+        for _attempt in range(3):
+            self._recover_if_needed()
+            header = self._read_header()
+            cache_key = (tuple(key_columns), key)
+            with self._cache_guard:
+                cached_row = self._row_cache.get(cache_key)
+            if cached_row is not None and cached_row[0] == header["generation"]:
+                return copy.deepcopy(cached_row[1])
+            index = self._key_index(key_columns, header=header)
+            slot = self._find_slot(key_columns, key, index)
+            try:
+                with self._mapped() as (_handle, mapping):
+                    row = self._row_for_slot(mapping, slot)
+                if tuple(row.get(column) for column in key_columns) == key:
+                    with self._cache_guard:
+                        self._row_cache[(tuple(key_columns), key)] = (header["generation"], row)
+                    return copy.deepcopy(row)
+                # A concurrent delete/reinsert reused the old slot. Rebuild
+                # the index on the next attempt.
+            except StorageError:
+                if _attempt == 2:
+                    raise
+                time.sleep(0.001 * (_attempt + 1))
+        raise StorageError(f"fixed table changed while reading: {self.path}")
+
+    def get_many(self, key_columns: Sequence[str], keys: Sequence[tuple[Any, ...]]) -> dict[Any, dict[str, Any]]:
+        self._recover_if_needed()
+        index = self._key_index(key_columns)
+        with self._mapped() as (_handle, mapping):
+            result: dict[Any, dict[str, Any]] = {}
+            for key in keys:
+                positions = index.get(key, ())
+                if not positions:
+                    continue
+                if len(positions) != 1:
+                    raise ValueError(f"key {key!r} is not unique in fixed table {self.path}")
+                result[key[0] if len(key) == 1 else key] = copy.deepcopy(self._row_for_slot(mapping, positions[0]))
+            return result
+
+    def keys(self, key_columns: Sequence[str]) -> list[Any]:
+        self._recover_if_needed()
+        with self._mapped() as (_handle, mapping):
+            pairs: list[tuple[int, Any]] = []
+            fields = tuple(field for field in self.fields if field.name in key_columns)
+            for slot in range(self.max_records):
+                order, row = self._read_record(mapping, slot, fields=fields)
+                if row is not None:
+                    values = tuple(row[column] for column in key_columns)
+                    pairs.append((order, values[0] if len(values) == 1 else values))
+        pairs.sort(key=lambda item: item[0])
+        return [key for _order, key in pairs]
+
+    def values(self) -> list[dict[str, Any]]:
+        return [row for _key, row in self.items()]
+
+    def items(self, key_columns: Sequence[str]) -> list[tuple[Any, dict[str, Any]]]:
+        self._recover_if_needed()
+        with self._mapped() as (_handle, mapping):
+            pairs: list[tuple[int, Any, dict[str, Any]]] = []
+            fields = tuple(field for field in self.fields if field.name in key_columns)
+            for slot in range(self.max_records):
+                order, key_row = self._read_record(mapping, slot, fields=fields)
+                if key_row is None:
+                    continue
+                key_values = tuple(key_row[column] for column in key_columns)
+                pairs.append((order, key_values[0] if len(key_values) == 1 else key_values, self._row_for_slot(mapping, slot)))
+        pairs.sort(key=lambda item: item[0])
+        return [(key, copy.deepcopy(row)) for _order, key, row in pairs]
+
+    def _validate_row(self, row: Mapping[str, Any]) -> None:
+        self.definition.validate_rows([row])
+
+    def update(self, key_columns: Sequence[str], key: tuple[Any, ...], patch: Mapping[str, Any], *, upsert: bool = False) -> int:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                positions = index.get(key, ())
+                if not positions:
+                    if not upsert:
+                        raise KeyError(key[0] if len(key) == 1 else key)
+                    row = dict(patch)
+                    for column, value in zip(key_columns, key):
+                        row.setdefault(column, value)
+                    self._validate_row(row)
+                    slot = self._free_slot(mapping, header["row_count"])
+                    order = self._order_for_generation(header["generation"] + 1)
+                    record = self._encode_record(row, order)
+                    row_count = header["row_count"] + 1
+                elif len(positions) != 1:
+                    raise ValueError(f"key {key!r} is not unique in fixed table {self.path}")
+                else:
+                    slot = positions[0]
+                    order, current = self._read_record(mapping, slot)
+                    assert current is not None
+                    updated = dict(current)
+                    updated.update(copy.deepcopy(dict(patch)))
+                    self._validate_row(updated)
+                    updated_key = tuple(updated.get(column) for column in key_columns)
+                    if updated_key != key:
+                        conflicting = index.get(updated_key, ())
+                        if any(candidate != slot for candidate in conflicting):
+                            raise SchemaError(f"duplicate primary key {updated_key!r}")
+                    record = self._encode_record(updated, order)
+                    row_count = header["row_count"]
+                    key_unchanged = all(updated.get(column) == expected for column, expected in zip(key_columns, key))
+            self._commit_locked(
+                [(slot, record)],
+                row_count,
+                preserve_key_cache=bool(positions) and key_unchanged,
+            )
+            return 1
+
+    def insert_many(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        if not rows:
+            return 0
+        key_columns = self.definition.primary_keys
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            if header["row_count"] + len(rows) > self.max_records:
+                raise SchemaError(f"table {self.definition.eng_name!r} reached max_elements {self.max_records}")
+            prepared = [dict(row) for row in rows]
+            for row in prepared:
+                self._validate_row(row)
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                used = set(index)
+                free_slots: list[int] = []
+                preferred = max(0, min(header["row_count"], self.max_records - 1)) if self.max_records else 0
+                for start, stop in ((preferred, self.max_records), (0, preferred)):
+                    for slot in range(start, stop):
+                        if mapping[self._slot_offset(slot)] == 0:
+                            free_slots.append(slot)
+                            if len(free_slots) == len(prepared):
+                                break
+                    if len(free_slots) == len(prepared):
+                        break
+                if len(free_slots) != len(prepared):
+                    raise SchemaError(f"table {self.definition.eng_name!r} has no free fixed slots")
+                entries: list[tuple[int, bytes]] = []
+                order = self._order_for_generation(header["generation"] + 1)
+                additions: list[tuple[tuple[Any, ...], int]] = []
+                for position, (slot, row) in enumerate(zip(free_slots, prepared)):
+                    key = tuple(row[column] for column in key_columns)
+                    if key in used:
+                        raise SchemaError(f"duplicate primary key {key!r}")
+                    used.add(key)
+                    entries.append((slot, self._encode_record(row, order + position)))
+                    additions.append((key, slot))
+            self._commit_locked(
+                entries,
+                header["row_count"] + len(entries),
+                preserve_key_cache=True,
+                key_cache_additions=(key_columns, additions),
+            )
+            return len(entries)
+
+    def set(self, key_columns: Sequence[str], key: tuple[Any, ...], row: Mapping[str, Any], *, upsert: bool = False) -> int:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                positions = index.get(key, ())
+                if not positions:
+                    if not upsert:
+                        raise KeyError(key[0] if len(key) == 1 else key)
+                    slot = self._free_slot(mapping, header["row_count"])
+                    order = self._order_for_generation(header["generation"] + 1)
+                    row_count = header["row_count"] + 1
+                elif len(positions) != 1:
+                    raise ValueError(f"key {key!r} is not unique in fixed table {self.path}")
+                else:
+                    slot = positions[0]
+                    order, _current = self._read_record(mapping, slot)
+                    row_count = header["row_count"]
+            self._validate_row(row)
+            replacement_key = tuple(row.get(column) for column in key_columns)
+            if positions and replacement_key != key:
+                conflicting = index.get(replacement_key, ())
+                if any(candidate != slot for candidate in conflicting):
+                    raise SchemaError(f"duplicate primary key {replacement_key!r}")
+            record = self._encode_record(row, order)
+            key_unchanged = replacement_key == key
+            self._commit_locked(
+                [(slot, record)],
+                row_count,
+                preserve_key_cache=bool(positions) and key_unchanged,
+            )
+            return 1
+
+    def delete(self, key_columns: Sequence[str], key: tuple[Any, ...]) -> int:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                slot = self._find_slot(key_columns, key, index)
+            self._commit_locked([(slot, bytes(self.record_size))], header["row_count"] - 1)
+            return 1
+
+    def update_many(self, key_columns: Sequence[str], updates: Sequence[tuple[tuple[Any, ...], Mapping[str, Any]]]) -> int:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            entries: list[tuple[int, bytes]] = []
+            seen: set[tuple[Any, ...]] = set()
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                for key, patch in updates:
+                    if key in seen:
+                        raise ValueError(f"duplicate key in update_many: {key!r}")
+                    seen.add(key)
+                    slot = self._find_slot(key_columns, key, index)
+                    order, current = self._read_record(mapping, slot)
+                    assert current is not None
+                    updated = dict(current)
+                    updated.update(copy.deepcopy(dict(patch)))
+                    self._validate_row(updated)
+                    entries.append((slot, self._encode_record(updated, order)))
+            self._commit_locked(entries, header["row_count"], preserve_key_cache=True)
+            return len(entries)
+
+    def delete_many(self, key_columns: Sequence[str], keys: Sequence[tuple[Any, ...]]) -> int:
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            with self._mapped() as (_handle, mapping):
+                index = self._key_index_locked(mapping, header["generation"], key_columns)
+                slots: list[int] = []
+                seen: set[tuple[Any, ...]] = set()
+                for key in keys:
+                    if key in seen:
+                        raise ValueError(f"duplicate key in delete_many: {key!r}")
+                    seen.add(key)
+                    slots.append(self._find_slot(key_columns, key, index))
+            self._commit_locked([(slot, bytes(self.record_size)) for slot in slots], header["row_count"] - len(slots))
+            return len(slots)
+
+    def replace_snapshot_locked(self, rows: Sequence[Mapping[str, Any]], generation: int) -> None:
+        """Rewrite a fixed table through the binary WAL, in place.
+
+        Fixed tables do not need an atomic file replacement: the WAL is made
+        durable before any slot is changed, and the generation header is
+        published last.  Keeping the file identity stable also lets readers
+        reuse a memory mapping and avoids Windows ``os.replace`` contention.
+        """
+
+        if len(rows) > self.max_records:
+            raise SchemaError(f"table {self.definition.eng_name!r} reached max_elements {self.max_records}")
+        self.definition.validate_rows(rows)
+        entries = [
+            (slot, self._encode_record(rows[slot], self._order_for_generation(generation, slot)))
+            if slot < len(rows)
+            else (slot, bytes(self.record_size))
+            for slot in range(self.max_records)
+        ]
+        frame_size = len(_FIXED_WAL_HEADER.pack(_FIXED_WAL_MAGIC, 0, 0)) + len(_FIXED_WAL_TRAILER.pack(_FIXED_WAL_END_MAGIC, 0))
+        frame_size += _FIXED_WAL_PAYLOAD_HEADER.size + sum(_FIXED_WAL_ENTRY_HEADER.size + len(record) for _slot, record in entries)
+        if frame_size > _MAX_WAL_RECORD:
+            raise StorageError(
+                f"fixed snapshot rewrite is too large for one WAL frame ({frame_size} bytes > {_MAX_WAL_RECORD})"
+            )
+        try:
+            self._commit_locked(entries, len(rows), generation=generation)
+            self.active = True
+        except (OSError, ValueError, TypeError) as exc:
+            raise StorageError(f"cannot replace fixed table {self.path}: {exc}") from exc
+
+    def snapshot_locked(self) -> _Snapshot:
+        self._recover_locked()
+        return self._snapshot_from_file()
+
+    def _snapshot_from_file(self) -> _Snapshot:
+        header = self._read_header()
+        with self._cache_guard:
+            if self._snapshot_cache is not None and self._snapshot_cache.generation == header["generation"]:
+                return self._snapshot_cache
+        rows_with_order: list[tuple[int, dict[str, Any]]] = []
+        with self._mapped() as (_handle, mapping):
+            for slot in range(self.max_records):
+                order, row = self._read_record(mapping, slot)
+                if row is not None:
+                    rows_with_order.append((order, row))
+        rows_with_order.sort(key=lambda item: item[0])
+        rows = [row for _order, row in rows_with_order]
+        indexes, primary_index = _build_snapshot_indexes(rows, self.definition)
+        signature = _file_signature(self.path) + _file_signature(self.wal_path) + (header["generation"], header["generation"])
+        snapshot = _Snapshot(rows, list(self.definition.column_names), header["generation"], signature, indexes, primary_index)
+        with self._cache_guard:
+            self._snapshot_cache = snapshot
+        return snapshot
+
+    def snapshot(self) -> _Snapshot:
+        self._recover_if_needed()
+        return self._snapshot_from_file()
+
+
 class QueryResult(list):
     """List-like result returned by SQL statements.
 
@@ -638,6 +1588,20 @@ class Table(MutableSequence[dict[str, Any]]):
         if self.path.suffix == "":
             self.path = self.path.with_suffix(".table")
         self.name = _validate_identifier(name or self.path.stem, label="table name")
+        if definition is None and self.path.exists():
+            try:
+                with self.path.open("rb") as handle:
+                    fixed_magic = handle.read(len(_FIXED_MAGIC))
+            except PermissionError:
+                # A legacy table may be atomically replaced by another
+                # process while this object is being constructed.  The normal
+                # table lock/read path will retry; do not turn contention into
+                # a format error before the lock is acquired.
+                fixed_magic = b""
+            except OSError as exc:
+                raise StorageError(f"cannot inspect table {self.path}: {exc}") from exc
+            if fixed_magic == _FIXED_MAGIC:
+                definition = _load_fixed_definition(self.path, self.name)
         if definition is not None and definition.eng_name != self.name:
             raise ValueError(
                 f"table definition {definition.eng_name!r} does not match table {self.name!r}"
@@ -648,6 +1612,11 @@ class Table(MutableSequence[dict[str, Any]]):
         self.lock_timeout = lock_timeout
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self.wal_path = self.path.with_suffix(self.path.suffix + ".wal")
+        self._fixed_store = (
+            _FixedRecordStore(self.path, definition, self.lock_path, self.lock_timeout)
+            if definition is not None
+            else None
+        )
         self._cache: Optional[_Snapshot] = None
         self._cache_guard = threading.RLock()
         self._ensure_exists()
@@ -655,6 +1624,10 @@ class Table(MutableSequence[dict[str, Any]]):
     def _ensure_exists(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with _locked(self.lock_path, timeout=self.lock_timeout):
+            if self._fixed_store is not None:
+                self._fixed_store.ensure_exists_locked()
+                if self._fixed_store.active:
+                    return
             if not self.path.exists():
                 self._write_snapshot_locked([], [], 0)
 
@@ -667,12 +1640,16 @@ class Table(MutableSequence[dict[str, Any]]):
         observed while the file is being mapped.
         """
 
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.snapshot_locked()
         if not self.path.exists():
             self._write_snapshot_locked([], [], 0)
         self._recover_wal_tail_locked()
         return self._read_snapshot()
 
     def _read_snapshot(self) -> _Snapshot:
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.snapshot()
         if not self.path.exists():
             # Creation is always protected by the inter-process lock.  The
             # constructor normally creates the file, but this also handles a
@@ -1206,6 +2183,9 @@ class Table(MutableSequence[dict[str, Any]]):
         }
 
     def _write_snapshot_locked(self, rows: list[dict[str, Any]], columns: list[str], generation: int) -> None:
+        if self._fixed_store is not None and self._fixed_store.active:
+            self._fixed_store.replace_snapshot_locked(rows, generation)
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         encoded = _snapshot_payload(rows, columns, generation)
         temporary: Optional[str] = None
@@ -1334,6 +2314,9 @@ class Table(MutableSequence[dict[str, Any]]):
             if self.definition is not None:
                 self.definition.validate_rows(rows)
             generation = snapshot.generation + 1
+            if self._fixed_store is not None and self._fixed_store.active:
+                self._fixed_store.replace_snapshot_locked(rows, generation)
+                return result
             record.update({"version": 1, "seq": generation})
             try:
                 self._append_wal_record_locked(record)
@@ -1421,6 +2404,8 @@ class Table(MutableSequence[dict[str, Any]]):
     def get_by_pk(self, key: Any) -> dict[str, Any]:
         """Read one row by the declared primary key without a table scan."""
 
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self.kv.require(key)
         snapshot = self._read_snapshot()
         return copy.deepcopy(snapshot.rows[self._primary_key_position_in_snapshot(snapshot, key)])
 
@@ -1471,6 +2456,9 @@ class Table(MutableSequence[dict[str, Any]]):
         patch = self._normalise_row(values)
         key_values = self._normalise_primary_key(key)
 
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.update(self.definition.primary_keys, key_values, patch)
+
         def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             position = self._primary_key_position_in_snapshot(snapshot, key)
             updated = dict(rows[position])
@@ -1486,6 +2474,9 @@ class Table(MutableSequence[dict[str, Any]]):
         if self.definition is None:
             raise KeyError(key)
         key_values = self._normalise_primary_key(key)
+
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.delete(self.definition.primary_keys, key_values)
 
         def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             position = self._primary_key_position_in_snapshot(snapshot, key)
@@ -1524,6 +2515,27 @@ class Table(MutableSequence[dict[str, Any]]):
         if offset < 0:
             raise ValueError("offset must be non-negative")
         predicate = _compile_where(where)
+        if (
+            self._fixed_store is not None
+            and self._fixed_store.active
+            and self.definition is not None
+            and isinstance(where, Mapping)
+            and tuple(str(field) for field in where) == self.definition.primary_keys
+        ):
+            if limit == 0 or offset > 0:
+                return []
+            key = tuple(where[column] for column in self.definition.primary_keys)
+            try:
+                row = self._fixed_store.get(self.definition.primary_keys, key)
+            except KeyError:
+                return []
+            if not predicate(row):
+                return []
+            if columns is not None:
+                column_items = [columns] if isinstance(columns, str) else columns
+                selected = [_unquote_identifier(str(column)) for column in column_items]
+                row = {column: row.get(column) for column in selected}
+            return [copy.deepcopy(row)]
         snapshot = self._read_snapshot()
         positions = self._candidate_positions(snapshot, where)
         if positions is None:
@@ -1576,6 +2588,9 @@ class Table(MutableSequence[dict[str, Any]]):
     def insert_one(self, row: Mapping[str, Any]) -> int:
         row = self._normalise_row(row)
 
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.insert_many([row])
+
         def add(rows: list[dict[str, Any]], columns: list[str], _snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             index = len(rows)
             rows.append(row)
@@ -1588,6 +2603,9 @@ class Table(MutableSequence[dict[str, Any]]):
 
         if not values:
             return 0
+
+        if self._fixed_store is not None and self._fixed_store.active:
+            return self._fixed_store.insert_many(values)
 
         if len(values) > _WAL_BATCH_MAX_ROWS:
             def add_snapshot(current: list[dict[str, Any]], columns: list[str]) -> int:
@@ -1627,6 +2645,17 @@ class Table(MutableSequence[dict[str, Any]]):
                 json.dumps(where_values, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"where contains a non-JSON value: {exc}") from exc
+
+            if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
+                key_columns = self.definition.primary_keys
+                if tuple(str(field) for field in where_values) == key_columns:
+                    if limit == 0:
+                        return 0
+                    key_values = tuple(where_values[column] for column in key_columns)
+                    try:
+                        return self._fixed_store.update(key_columns, key_values, patch)
+                    except KeyError:
+                        return 0
 
             def apply_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
                 changed = 0
@@ -1681,6 +2710,17 @@ class Table(MutableSequence[dict[str, Any]]):
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"where contains a non-JSON value: {exc}") from exc
 
+            if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
+                key_columns = self.definition.primary_keys
+                if tuple(str(field) for field in where_values) == key_columns:
+                    if limit == 0:
+                        return 0
+                    key_values = tuple(where_values[column] for column in key_columns)
+                    try:
+                        return self._fixed_store.delete(key_columns, key_values)
+                    except KeyError:
+                        return 0
+
             def remove_mapping(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
                 removed = 0
                 kept: list[dict[str, Any]] = []
@@ -1725,6 +2765,12 @@ class Table(MutableSequence[dict[str, Any]]):
     # ---- list-like API ---------------------------------------------------------
     def __len__(self) -> int:
         return len(self._read_snapshot().rows)
+
+    def _close(self) -> None:
+        if self._fixed_store is not None:
+            self._fixed_store.close()
+        with self._cache_guard:
+            self._cache = None
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return iter(self._read_rows())
@@ -2087,6 +3133,8 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
     def require(self, key: Any) -> dict[str, Any]:
         """Return one detached row, raising ``KeyError`` when it is absent."""
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.get(self.key_columns, self._normalise_key(key, for_write=False))
         snapshot = self.table._read_snapshot()
         return copy.deepcopy(snapshot.rows[self._position(snapshot, key)])
 
@@ -2119,6 +3167,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
         key_values = self._normalise_key(key)
         patch = self.table._normalise_row(values)
         self._reject_key_patch(patch, key_values)
+
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.update(self.key_columns, key_values, patch, upsert=upsert)
 
         if upsert:
             row = self._row_with_key(key, patch)
@@ -2171,6 +3222,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
         key_values = self._normalise_key(key)
         replacement = self._row_with_key(key, row)
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.set(self.key_columns, key_values, replacement, upsert=upsert)
+
         def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             try:
                 position = self._position(snapshot, key)
@@ -2195,6 +3249,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
 
         key_values = self._normalise_key(key)
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.delete(self.key_columns, key_values)
+
         def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             position = self._position(snapshot, key)
             del rows[position]
@@ -2209,6 +3266,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
     def get_many(self, keys: Iterable[Any]) -> dict[Any, dict[str, Any]]:
         """Read many keys from one snapshot while preserving requested order."""
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            prepared = [self._normalise_key(key, for_write=False) for key in keys]
+            return self.table._fixed_store.get_many(self.key_columns, prepared)
         snapshot = self.table._read_snapshot()
         result: dict[Any, dict[str, Any]] = {}
         for key in keys:
@@ -2255,6 +3315,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
             self._reject_key_patch(patch, key_values)
             prepared.append((key_values, patch))
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.update_many(self.key_columns, prepared)
+
         def apply(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             entries: list[dict[str, Any]] = []
             new_columns: list[str] = []
@@ -2283,6 +3346,9 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
         if len(set(prepared)) != len(prepared):
             raise ValueError("duplicate key in delete_many")
 
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.delete_many(self.key_columns, prepared)
+
         def remove(rows: list[dict[str, Any]], columns: list[str], snapshot: _Snapshot) -> tuple[int, dict[str, Any]]:
             positions = [self._position(snapshot, values if len(values) > 1 else values[0]) for values in prepared]
             for position in sorted(positions, reverse=True):
@@ -2296,14 +3362,20 @@ class TableKeyValue(MutableMapping[Any, dict[str, Any]]):
         return int(self.table._mutate_incremental(remove))
 
     def keys(self) -> list[Any]:
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.keys(self.key_columns)
         snapshot = self.table._read_snapshot()
         self._index(snapshot)  # validate uniqueness/indexability before exposing keys
         return [self._key_for_row(row) for row in snapshot.rows]
 
     def values(self) -> list[dict[str, Any]]:
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.values()
         return [copy.deepcopy(row) for row in self.table._read_snapshot().rows]
 
     def items(self) -> list[tuple[Any, dict[str, Any]]]:
+        if self.table._fixed_store is not None and self.table._fixed_store.active:
+            return self.table._fixed_store.items(self.key_columns)
         snapshot = self.table._read_snapshot()
         self._index(snapshot)
         return [(self._key_for_row(row), copy.deepcopy(row)) for row in snapshot.rows]
@@ -2406,7 +3478,7 @@ class FileMappedDatabase:
         """Release in-process caches; table files remain available to other processes."""
         with self._lock:
             for table in self._tables.values():
-                table._cache = None
+                table._close()
             self._tables.clear()
 
     def refresh_schema(self) -> None:

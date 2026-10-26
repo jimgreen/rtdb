@@ -177,6 +177,8 @@ class FileMappedDatabaseTests(unittest.TestCase):
                 name="users",
                 definition=self._users_definition(root),
             )
+            self.assertEqual(table.path.read_bytes()[: len(file_mapped_db._FIXED_MAGIC)], file_mapped_db._FIXED_MAGIC)
+            self.assertNotIn(b'"rows"', table.path.read_bytes())
             table.insert_many([
                 {"id": 1, "name": "Alice", "group": "a"},
                 {"id": 2, "name": "Bob", "group": "b"},
@@ -188,6 +190,7 @@ class FileMappedDatabaseTests(unittest.TestCase):
             self.assertEqual(view.get(99, {"missing": True}), {"missing": True})
             self.assertTrue(view.contains(2))
             self.assertEqual(view.update(1, {"name": "Alicia"}), 1)
+            self.assertFalse(table.wal_path.exists())
             self.assertEqual(view.update_many({1: {"group": "c"}, 2: {"group": "d"}}), 2)
             self.assertEqual(view.set(2, {"name": "Robert", "group": "e"}), 1)
             self.assertEqual(view.set(3, {"name": "Cara", "group": "f"}, upsert=True), 1)
@@ -237,6 +240,22 @@ class FileMappedDatabaseTests(unittest.TestCase):
             self.assertEqual(view[(1, 2)]["state"], "down")
             with self.assertRaises(KeyError):
                 _ = view[(2, 1)]
+
+    def test_fixed_primary_key_update_refreshes_index_and_rejects_duplicates(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = Table(
+                Path(root) / "users.table",
+                name="users",
+                definition=self._users_definition(root),
+            )
+            table.insert_many([
+                {"id": 1, "name": "Alice", "group": "a"},
+                {"id": 2, "name": "Bob", "group": "b"},
+            ])
+            self.assertEqual(table.update({"id": 3}, {"id": 1}), 1)
+            self.assertEqual(table.kv[3]["name"], "Alice")
+            with self.assertRaises(file_mapped_db.SchemaError):
+                table.update({"id": 2}, {"id": 3})
 
 
 if __name__ == "__main__":

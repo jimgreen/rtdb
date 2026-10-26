@@ -1,13 +1,19 @@
 # File-mapped table interface
 
 `file_mapped_db.py` provides a dependency-free relation-style data store. Each
-table is one `<name>.table` file under the database directory and is read using
-`mmap`. A side-car `<name>.table.lock` file serializes write transactions
-across processes; a process-local re-entrant lock additionally protects
-writers in one process. Readers use an optimistic immutable-snapshot path, so
-multiple threads can read concurrently while Windows writers retry an atomic
-replace if a reader still has the old file open. Writes use a temporary file,
-`fsync`, and `os.replace`, so readers never see a partially written snapshot.
+schema-defined table is one fixed-width binary `<name>.table` file under the
+database directory. Its row slots are addressed directly through `mmap`, so a
+primary-key lookup or update decodes only the target record; the file does not
+contain JSON row data. A side-car `<name>.table.lock` file serializes write
+transactions across processes and a process-local re-entrant lock protects
+writers in one process. A binary redo WAL is flushed before the changed slots
+and generation header are published, allowing recovery after a process or
+machine failure without exposing a partially committed row.
+
+Tables without a schema continue to use the legacy JSON snapshot format for
+backward-compatible reads. New tables created with a `TableDefinition` always
+use the fixed binary backend. The JSON file in `def/table` is metadata only;
+it is not the table's row storage format.
 
 ```python
 from core import FileMappedDatabase
@@ -42,13 +48,13 @@ Supported SQL is intentionally small and explicit:
 * `DELETE FROM ... [WHERE ...] [LIMIT ...]`
 
 `WHERE` supports `AND`, `OR`, comparisons, `LIKE`, `IN`, `IS NULL`, and
-`IS NOT NULL`. Values must be JSON-compatible mappings; column and table names
-use Python/SQL identifier syntax. `QueryResult` is a list with `rowcount` and
-`lastrowid` attributes. Reads of an unchanged file use the in-process parsed
-snapshot cache. Equality queries use a primary-key or `id` index when
-available. The explicit `get_by_pk`, `update_by_pk`, and `delete_by_pk`
-methods avoid a scan for declared primary keys. For many writes, prefer
-`insert_many`/`extend` so one atomic snapshot is written for the whole batch.
+`IS NOT NULL`. Column and table names use Python/SQL identifier syntax.
+`QueryResult` is a list with `rowcount` and `lastrowid` attributes. Equality
+queries use a primary-key or `id` index when available. The explicit
+`get_by_pk`, `update_by_pk`, and `delete_by_pk` methods avoid a scan for
+declared primary keys. For many writes, prefer `insert_many`/`extend` or the
+key-value `update_many` method so one lock and one WAL transaction covers the
+whole batch.
 
 For dictionary-style hot paths, use the indexed key-value view. It uses the
 declared primary-key index by default (a table without a definition defaults to
@@ -75,19 +81,16 @@ are deep copies, so mutating them cannot bypass the table lock or WAL. Key
 columns are immutable through this view; changing one raises `ValueError` and
 prevents stale index entries.
 
-Small append batches and equality-based or primary-key CRUD operations use a
-durable side-car `<name>.table.wal` frame log; larger `insert_many` batches use
-one atomic full snapshot so a large reader does not have to replay a large
-append frame. Each frame contains a sequence number, length, and CRC32; the
-frame is flushed and `fsync`-ed before the in-process snapshot
-is published. On reopen, the base snapshot and complete WAL frames are
-replayed together. A torn final frame is discarded safely, while a complete
-frame with a bad checksum raises `StorageError` instead of being silently
-ignored. The WAL is periodically checkpointed: a complete checkpoint frame is
-published before the base file and only then is the WAL atomically rotated.
-This ordering keeps old-base/new-WAL and new-base/old-WAL reader combinations
-recoverable during a crash. Complex predicates and physical list-position
-operations continue to use the atomic full-snapshot path.
+Fixed-table append, primary-key CRUD, and key-value batch operations use the
+binary side-car `<name>.table.fixedwal` frame log. Each frame contains a
+sequence number, target slots, fixed records, length, and CRC32; the frame is
+flushed and `fsync`-ed before the changed slots and redundant generation
+header are published. On reopen, complete frames are replayed together and a
+torn final frame is discarded safely. A complete frame with a bad checksum
+raises `StorageError` instead of being silently ignored. Full list-style
+rewrites also use this in-place binary WAL path, keeping the file identity
+stable for concurrent readers. Complex predicates still decode a snapshot,
+while primary-key and key-value paths remain slot-oriented.
 
 Lock waits are bounded by default. Pass `lock_timeout=None` to retain an
 unbounded wait or set a positive number of seconds to receive
