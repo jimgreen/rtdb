@@ -1056,6 +1056,10 @@ class _FixedRecordStore:
                 raise StorageError(f"invalid fixed WAL record size: {self.path}")
             payload.extend(_FIXED_WAL_ENTRY_HEADER.pack(slot, len(record)))
             payload.extend(record)
+        if len(payload) > _MAX_WAL_RECORD:
+            raise StorageError(
+                f"fixed WAL frame is too large ({len(payload)} bytes > {_MAX_WAL_RECORD}): {self.path}"
+            )
         checksum = zlib.crc32(payload) & 0xFFFFFFFF
         return _FIXED_WAL_HEADER.pack(_FIXED_WAL_MAGIC, len(payload), checksum) + payload + _FIXED_WAL_TRAILER.pack(_FIXED_WAL_END_MAGIC, len(payload))
 
@@ -1284,6 +1288,8 @@ class _FixedRecordStore:
         generation: int,
         key_columns: Sequence[str],
         key: tuple[Any, ...],
+        *,
+        verify_records: bool = True,
     ) -> Optional[list[tuple[int, int]]]:
         """Return matching slots in insertion order for an equality map.
 
@@ -1308,12 +1314,27 @@ class _FixedRecordStore:
                 return None
             raise
         positions = index.get(key, ())
-        fields = tuple(field for field in self.fields if field.name in key_columns)
         matches: list[tuple[int, int]] = []
         for slot in positions:
-            order, row = self._read_record(mapping, slot, fields=fields)
-            if row is not None and tuple(row.get(column) for column in key_columns) == key:
-                matches.append((order, slot))
+            if verify_records:
+                # Readers may race a writer from another process after the
+                # generation/index check, so retain the CRC-checked record
+                # validation on the lock-free path.
+                order, row = self._read_record(mapping, slot, fields=())
+                if row is not None:
+                    matches.append((order, slot))
+            else:
+                # Writers already hold the inter-process table lock.  The
+                # index was built from this unchanged mapping, so only the
+                # fixed slot header is needed to recover insertion order;
+                # selected rows are CRC-checked when they are encoded below.
+                state, order, _checksum = _FIXED_SLOT_HEADER.unpack(
+                    mapping[self._slot_offset(slot) : self._slot_offset(slot) + _FIXED_SLOT_HEADER.size]
+                )
+                if state not in (0, 1):
+                    raise StorageError(f"invalid fixed record state: {self.path}")
+                if state == 1:
+                    matches.append((order, slot))
         matches.sort(key=lambda item: item[0])
         return matches
 
@@ -1359,7 +1380,7 @@ class _FixedRecordStore:
             rows: list[dict[str, Any]] = []
             for order, slot in decode_matches:
                 _current_order, row = self._read_record(mapping, slot, fields=decode_fields)
-                if row is not None:
+                if row is not None and tuple(row.get(column) for column in normalised_key_columns) == normalised_key:
                     rows.append(row)
         # ``matches`` is already in insertion order.  Sorting by ORDER BY is
         # stable, so ties retain the same persisted order as snapshot reads.
@@ -1397,29 +1418,42 @@ class _FixedRecordStore:
             self._recover_locked()
             header = self._read_header()
             with self._mapped() as (_handle, mapping):
-                matches = self._equal_slots_locked(mapping, header["generation"], key_columns, key)
+                matches = self._equal_slots_locked(
+                    mapping,
+                    header["generation"],
+                    key_columns,
+                    key,
+                    verify_records=False,
+                )
                 if matches is None:
                     return None
                 selected = matches if limit is None else matches[:limit]
                 entries: list[tuple[int, bytes]] = []
                 primary_keys = self.definition.primary_keys
-                primary_index = self._key_index_locked(mapping, header["generation"], primary_keys)
-                used_primary = set(primary_index)
+                patch_values = copy.deepcopy(dict(patch))
+                primary_changed = bool(set(patch_values).intersection(primary_keys))
+                primary_index: Optional[dict[tuple[Any, ...], tuple[int, ...]]] = None
+                used_primary: set[tuple[Any, ...]] = set()
+                if primary_changed:
+                    primary_index = self._key_index_locked(mapping, header["generation"], primary_keys)
+                    used_primary = set(primary_index)
                 for _order, slot in selected:
                     current_order, current = self._read_record(mapping, slot)
                     if current is None:
                         continue
                     updated = dict(current)
-                    updated.update(copy.deepcopy(dict(patch)))
+                    updated.update(patch_values)
                     self._validate_row(updated)
-                    updated_primary = tuple(updated.get(column) for column in primary_keys)
-                    current_primary = tuple(current.get(column) for column in primary_keys)
-                    if updated_primary != current_primary:
-                        conflicting = primary_index.get(updated_primary, ())
-                        if any(candidate != slot for candidate in conflicting) or (updated_primary in used_primary and updated_primary != current_primary):
-                            raise SchemaError(f"duplicate primary key {updated_primary!r}")
-                        used_primary.discard(current_primary)
-                        used_primary.add(updated_primary)
+                    if primary_changed:
+                        assert primary_index is not None
+                        updated_primary = tuple(updated.get(column) for column in primary_keys)
+                        current_primary = tuple(current.get(column) for column in primary_keys)
+                        if updated_primary != current_primary:
+                            conflicting = primary_index.get(updated_primary, ())
+                            if any(candidate != slot for candidate in conflicting) or (updated_primary in used_primary and updated_primary != current_primary):
+                                raise SchemaError(f"duplicate primary key {updated_primary!r}")
+                            used_primary.discard(current_primary)
+                            used_primary.add(updated_primary)
                     entries.append((slot, self._encode_record(updated, current_order)))
             if not entries:
                 return 0
@@ -1442,6 +1476,88 @@ class _FixedRecordStore:
             )
             return len(entries)
 
+    def update_equal_many(
+        self,
+        operations: Sequence[tuple[Sequence[str], tuple[Any, ...], Mapping[str, Any]]],
+    ) -> Optional[int]:
+        """Apply several equality updates through one durable WAL frame.
+
+        The caller supplies already-normalised equality keys and patches.  All
+        matching slots are resolved while one table lock is held; the complete
+        set is then published atomically with the same WAL and CRC protocol as
+        a single update.  ``None`` requests the relation-layer fallback when a
+        condition cannot be represented by a fixed hash index.
+        """
+
+        if not operations:
+            return 0
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            entries_by_slot: dict[int, tuple[int, bytes]] = {}
+            rows_by_slot: dict[int, tuple[int, dict[str, Any]]] = {}
+            changed_columns: set[str] = set()
+            primary_keys = self.definition.primary_keys
+            primary_changed = any(
+                set(str(column) for column in patch).intersection(primary_keys)
+                for _columns, _key, patch in operations
+            )
+            primary_index: Optional[dict[tuple[Any, ...], tuple[int, ...]]] = None
+            used_primary: set[tuple[Any, ...]] = set()
+            with self._mapped() as (_handle, mapping):
+                if primary_changed:
+                    primary_index = self._key_index_locked(mapping, header["generation"], primary_keys)
+                    used_primary = set(primary_index)
+                for key_columns, key, patch in operations:
+                    matches = self._equal_slots_locked(
+                        mapping,
+                        header["generation"],
+                        key_columns,
+                        key,
+                        verify_records=False,
+                    )
+                    if matches is None:
+                        return None
+                    patch_values = copy.deepcopy(dict(patch))
+                    changed_columns.update(str(column) for column in patch_values)
+                    for _order, slot in matches:
+                        if slot in rows_by_slot:
+                            raise ValueError(f"batch equality updates target the same slot more than once: {slot}")
+                        current_order, current = self._read_record(mapping, slot)
+                        if current is None:
+                            continue
+                        updated = dict(current)
+                        updated.update(patch_values)
+                        self._validate_row(updated)
+                        if primary_changed:
+                            assert primary_index is not None
+                            updated_primary = tuple(updated.get(column) for column in primary_keys)
+                            current_primary = tuple(current.get(column) for column in primary_keys)
+                            if updated_primary != current_primary:
+                                conflicting = primary_index.get(updated_primary, ())
+                                if any(candidate != slot for candidate in conflicting) or (
+                                    updated_primary in used_primary and updated_primary != current_primary
+                                ):
+                                    raise SchemaError(f"duplicate primary key {updated_primary!r}")
+                                used_primary.discard(current_primary)
+                                used_primary.add(updated_primary)
+                        rows_by_slot[slot] = (current_order, updated)
+                for slot, (order, row) in rows_by_slot.items():
+                    entries_by_slot[slot] = (slot, self._encode_record(row, order))
+            if not entries_by_slot:
+                return 0
+            with self._cache_guard:
+                preserve_key_cache = all(
+                    not changed_columns.intersection(cache_key)
+                    for cache_key in self._key_cache
+                )
+            self._commit_locked(
+                list(entries_by_slot.values()),
+                header["row_count"],
+                preserve_key_cache=preserve_key_cache,
+            )
+            return len(entries_by_slot)
+
     def delete_equal(
         self,
         key_columns: Sequence[str],
@@ -1457,11 +1573,56 @@ class _FixedRecordStore:
             self._recover_locked()
             header = self._read_header()
             with self._mapped() as (_handle, mapping):
-                matches = self._equal_slots_locked(mapping, header["generation"], key_columns, key)
+                matches = self._equal_slots_locked(
+                    mapping,
+                    header["generation"],
+                    key_columns,
+                    key,
+                    verify_records=False,
+                )
                 if matches is None:
                     return None
                 selected = matches if limit is None else matches[:limit]
                 slots = [slot for _order, slot in selected]
+            if not slots:
+                return 0
+            self._commit_locked(
+                [(slot, bytes(self.record_size)) for slot in slots],
+                header["row_count"] - len(slots),
+                preserve_key_cache=True,
+                key_cache_removals=slots,
+            )
+            return len(slots)
+
+    def delete_equal_many(
+        self,
+        operations: Sequence[tuple[Sequence[str], tuple[Any, ...]]],
+    ) -> Optional[int]:
+        """Delete several equality matches through one durable WAL frame."""
+
+        if not operations:
+            return 0
+        with _locked(self.lock_path, timeout=self.lock_timeout):
+            self._recover_locked()
+            header = self._read_header()
+            slots: list[int] = []
+            seen: set[int] = set()
+            with self._mapped() as (_handle, mapping):
+                for key_columns, key in operations:
+                    matches = self._equal_slots_locked(
+                        mapping,
+                        header["generation"],
+                        key_columns,
+                        key,
+                        verify_records=False,
+                    )
+                    if matches is None:
+                        return None
+                    for _order, slot in matches:
+                        if slot in seen:
+                            raise ValueError(f"batch equality deletes target the same slot more than once: {slot}")
+                        seen.add(slot)
+                        slots.append(slot)
             if not slots:
                 return 0
             self._commit_locked(
@@ -1491,7 +1652,7 @@ class _FixedRecordStore:
         generation: Optional[int] = None,
         *,
         preserve_key_cache: bool = False,
-        key_cache_additions: Optional[tuple[tuple[str, ...], Sequence[tuple[tuple[Any, ...], int]]]] = None,
+        key_cache_additions: Optional[Any] = None,
         key_cache_removals: Optional[Sequence[int]] = None,
     ) -> None:
         self._recover_locked()
@@ -1514,8 +1675,17 @@ class _FixedRecordStore:
             self._row_cache.clear()
             if preserve_key_cache:
                 updated_cache: dict[tuple[str, ...], tuple[int, dict[tuple[Any, ...], tuple[int, ...]]]] = {}
-                additions_columns = key_cache_additions[0] if key_cache_additions is not None else None
-                additions = dict(key_cache_additions[1]) if key_cache_additions is not None else {}
+                if isinstance(key_cache_additions, Mapping):
+                    additions_by_columns = {
+                        tuple(columns): dict(additions)
+                        for columns, additions in key_cache_additions.items()
+                    }
+                elif key_cache_additions is not None:
+                    additions_by_columns = {
+                        tuple(key_cache_additions[0]): dict(key_cache_additions[1])
+                    }
+                else:
+                    additions_by_columns = {}
                 removals = set(key_cache_removals or ())
                 for cache_key, (_old_generation, index) in self._key_cache.items():
                     updated_index = index
@@ -1525,7 +1695,8 @@ class _FixedRecordStore:
                             for key, positions in index.items()
                             if any(slot not in removals for slot in positions)
                         }
-                    if additions_columns is not None and cache_key == additions_columns and additions:
+                    additions = additions_by_columns.get(cache_key, {})
+                    if additions:
                         if updated_index is index:
                             updated_index = dict(index)
                         for key, slot in additions.items():
@@ -1716,19 +1887,33 @@ class _FixedRecordStore:
                     raise SchemaError(f"table {self.definition.eng_name!r} has no free fixed slots")
                 entries: list[tuple[int, bytes]] = []
                 order = self._order_for_generation(header["generation"] + 1)
-                additions: list[tuple[tuple[Any, ...], int]] = []
+                with self._cache_guard:
+                    cached_key_columns = tuple(self._key_cache)
+                additions_by_columns: dict[tuple[str, ...], list[tuple[tuple[Any, ...], int]]] = {}
+                cache_additions_safe = True
+                for cached_columns in cached_key_columns:
+                    additions_by_columns[cached_columns] = []
                 for position, (slot, row) in enumerate(zip(free_slots, prepared)):
                     key = tuple(row[column] for column in key_columns)
                     if key in used:
                         raise SchemaError(f"duplicate primary key {key!r}")
                     used.add(key)
                     entries.append((slot, self._encode_record(row, order + position)))
-                    additions.append((key, slot))
+                    for cached_columns in cached_key_columns:
+                        cached_key = tuple(row[column] for column in cached_columns)
+                        try:
+                            hash(cached_key)
+                        except TypeError:
+                            cache_additions_safe = False
+                        else:
+                            additions_by_columns[cached_columns].append((cached_key, slot))
+                if not cache_additions_safe:
+                    additions_by_columns = {}
             self._commit_locked(
                 entries,
                 header["row_count"] + len(entries),
-                preserve_key_cache=True,
-                key_cache_additions=(key_columns, additions),
+                preserve_key_cache=cache_additions_safe,
+                key_cache_additions=additions_by_columns if cache_additions_safe else None,
             )
             return len(entries)
 
@@ -1773,7 +1958,12 @@ class _FixedRecordStore:
             with self._mapped() as (_handle, mapping):
                 index = self._key_index_locked(mapping, header["generation"], key_columns)
                 slot = self._find_slot(key_columns, key, index)
-            self._commit_locked([(slot, bytes(self.record_size))], header["row_count"] - 1)
+            self._commit_locked(
+                [(slot, bytes(self.record_size))],
+                header["row_count"] - 1,
+                preserve_key_cache=True,
+                key_cache_removals=(slot,),
+            )
             return 1
 
     def update_many(self, key_columns: Sequence[str], updates: Sequence[tuple[tuple[Any, ...], Mapping[str, Any]]]) -> int:
@@ -1811,7 +2001,12 @@ class _FixedRecordStore:
                         raise ValueError(f"duplicate key in delete_many: {key!r}")
                     seen.add(key)
                     slots.append(self._find_slot(key_columns, key, index))
-            self._commit_locked([(slot, bytes(self.record_size)) for slot in slots], header["row_count"] - len(slots))
+            self._commit_locked(
+                [(slot, bytes(self.record_size)) for slot in slots],
+                header["row_count"] - len(slots),
+                preserve_key_cache=True,
+                key_cache_removals=slots,
+            )
             return len(slots)
 
     def replace_snapshot_locked(self, rows: Sequence[Mapping[str, Any]], generation: int) -> None:
@@ -3087,6 +3282,50 @@ class Table(MutableSequence[dict[str, Any]]):
 
         return int(self._mutate_with_snapshot(apply, copy_rows=False, new_columns=patch.keys()))
 
+    def update_many_where(
+        self,
+        updates: Iterable[tuple[Mapping[str, Any], Mapping[str, Any]]],
+    ) -> int:
+        """Apply multiple equality updates in one safe table transaction.
+
+        Each item is ``(where_mapping, values_mapping)``.  Schema-defined
+        fixed tables resolve all predicates and publish one WAL frame, so a
+        batch pays the two durability syncs once instead of once per row.
+        Unsupported predicates or definition-less legacy tables use the
+        existing per-update implementation.
+        """
+
+        prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for item in updates:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise TypeError("updates must contain (where, values) pairs")
+            where, values = item
+            if not isinstance(where, Mapping) or not where:
+                raise TypeError("batch where clauses must be non-empty mappings")
+            if not isinstance(values, Mapping):
+                raise TypeError("batch update values must be mappings")
+            where_values = copy.deepcopy(dict(where))
+            try:
+                json.dumps(where_values, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(f"where contains a non-JSON value: {exc}") from exc
+            prepared.append((where_values, self._normalise_row(values)))
+        if not prepared:
+            return 0
+        if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
+            operations = [
+                (
+                    tuple(str(column) for column in where),
+                    tuple(where[column] for column in where),
+                    values,
+                )
+                for where, values in prepared
+            ]
+            changed = self._fixed_store.update_equal_many(operations)
+            if changed is not None:
+                return changed
+        return sum(self.update(values, where) for where, values in prepared)
+
     def delete(
         self,
         where: Optional[Union[str, Mapping[str, Any], Callable[[Mapping[str, Any]], bool]]] = None,
@@ -3164,6 +3403,34 @@ class Table(MutableSequence[dict[str, Any]]):
             return removed
 
         return int(self._mutate_with_snapshot(remove, copy_rows=False))
+
+    def delete_many_where(self, wheres: Iterable[Mapping[str, Any]]) -> int:
+        """Delete multiple equality conditions in one safe table transaction."""
+
+        prepared: list[dict[str, Any]] = []
+        for where in wheres:
+            if not isinstance(where, Mapping) or not where:
+                raise TypeError("batch where clauses must be non-empty mappings")
+            where_values = copy.deepcopy(dict(where))
+            try:
+                json.dumps(where_values, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(f"where contains a non-JSON value: {exc}") from exc
+            prepared.append(where_values)
+        if not prepared:
+            return 0
+        if self._fixed_store is not None and self._fixed_store.active and self.definition is not None:
+            operations = [
+                (
+                    tuple(str(column) for column in where),
+                    tuple(where[column] for column in where),
+                )
+                for where in prepared
+            ]
+            removed = self._fixed_store.delete_equal_many(operations)
+            if removed is not None:
+                return removed
+        return sum(self.delete(where) for where in prepared)
 
     def sort(self, *, key: Optional[str] = None, reverse: bool = False) -> None:
         """Sort the physical row order, like ``list.sort``."""

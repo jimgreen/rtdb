@@ -143,6 +143,18 @@ def _condition_batch_update(root: str) -> float:
     return _timed(work)[0]
 
 
+def _condition_batch_update_many(root: str) -> float:
+    table = _db(root)["records"]
+    updates = [
+        ({"id": index}, {"value": 935_000 + index})
+        for index in range(KEY_BATCH_ROWS)
+    ]
+    elapsed, changed = _timed(lambda: table.update_many_where(updates))
+    if changed != KEY_BATCH_ROWS:
+        raise AssertionError(changed)
+    return elapsed
+
+
 def _non_primary_condition_update(root: str) -> float:
     """Update one row at a time through a secondary equality condition."""
 
@@ -241,6 +253,7 @@ def run() -> dict[str, Any]:
         point_update = _point_update(root)
         key_value_update = _key_value_update(root)
         condition_batch_update = _condition_batch_update(root)
+        condition_batch_update_many = _condition_batch_update_many(root)
         non_primary_condition_update = _non_primary_condition_update(root)
         key_value_batch_update = _key_value_batch_update(root)
         batch_insert = _batch_insert(root)
@@ -266,6 +279,7 @@ def run() -> dict[str, Any]:
                 "point_update": point_update,
                 "key_value_update": key_value_update,
                 "condition_batch_update": condition_batch_update,
+                "condition_batch_update_many": condition_batch_update_many,
                 "non_primary_condition_update": non_primary_condition_update,
                 "key_value_batch_update": key_value_batch_update,
                 "batch_insert": batch_insert,

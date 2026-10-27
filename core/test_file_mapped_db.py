@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import core.file_mapped_db as file_mapped_db
 from core import FileMappedDatabase, Table, TableDefinition
@@ -367,6 +368,57 @@ class FileMappedDatabaseTests(unittest.TestCase):
                 definition=self._users_definition(root),
             )
             self.assertEqual(reopened.all(), [{"id": 2, "name": "Bob", "group": "b"}])
+
+    def test_fixed_secondary_indexes_survive_insert_and_delete(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = Table(
+                Path(root) / "users.table",
+                name="users",
+                definition=self._users_definition(root),
+            )
+            table.insert_many([
+                {"id": 1, "name": "Alice", "group": "a"},
+                {"id": 2, "name": "Bob", "group": "b"},
+            ])
+            store = table._fixed_store
+            assert store is not None
+            self.assertEqual(table.select({"group": "a"})[0]["id"], 1)
+            with patch.object(store, "_build_key_index_from_map", wraps=store._build_key_index_from_map) as build:
+                table.insert_one({"id": 3, "name": "Cara", "group": "a"})
+                self.assertEqual([row["id"] for row in table.select({"group": "a"})], [1, 3])
+                table.delete({"group": "a"}, limit=1)
+                self.assertEqual([row["id"] for row in table.select({"group": "a"})], [3])
+                self.assertEqual(build.call_count, 0)
+
+    def test_fixed_batch_equality_updates_commit_once_and_are_atomic(self):
+        with tempfile.TemporaryDirectory() as root:
+            table = Table(
+                Path(root) / "users.table",
+                name="users",
+                definition=self._users_definition(root),
+            )
+            table.insert_many([
+                {"id": 1, "name": "Alice", "group": "a"},
+                {"id": 2, "name": "Bob", "group": "b"},
+                {"id": 3, "name": "Cara", "group": "a"},
+            ])
+            self.assertEqual(
+                table.update_many_where([
+                    ({"group": "a"}, {"name": "A"}),
+                    ({"group": "b"}, {"name": "B"}),
+                ]),
+                3,
+            )
+            self.assertEqual([row["name"] for row in table.all()], ["A", "B", "A"])
+            with self.assertRaises(file_mapped_db.SchemaError):
+                table.update_many_where([
+                    ({"group": "a"}, {"id": 2}),
+                    ({"group": "b"}, {"name": "should-not-publish"}),
+                ])
+            self.assertEqual(table.kv[1]["name"], "A")
+            self.assertEqual(table.kv[2]["name"], "B")
+            self.assertEqual(table.delete_many_where([{"group": "a"}, {"group": "b"}]), 3)
+            self.assertEqual(table.all(), [])
 
 
 if __name__ == "__main__":

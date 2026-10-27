@@ -59,7 +59,22 @@ the Python key is passed as a tuple, for example
 Lists with the same values are accepted at the API boundary and normalized to
 tuples. For many writes, prefer `insert_many`/`extend` or the key-value
 `update_many` method so one lock and one WAL transaction covers the whole
-batch.
+batch. Equality predicates on fixed tables use secondary slot indexes, so
+these operations avoid a full snapshot rewrite:
+
+```python
+users.select({"group": "a"}, columns=["id", "name"], limit=20)
+users.update({"age": 32}, {"group": "a"}, limit=1)
+users.delete({"group": "inactive"})
+
+# Several equality updates or deletes share one WAL frame and one durable
+# commit. The fixed backend publishes the batch atomically.
+users.update_many_where([
+    ({"id": 1001}, {"name": "Alice"}),
+    ({"id": 1002}, {"name": "Bob"}),
+])
+users.delete_many_where([{"group": "expired"}, {"group": "removed"}])
+```
 
 For dictionary-style hot paths, use the indexed key-value view. It uses the
 declared primary-key index by default (a table without a definition defaults to
@@ -96,7 +111,7 @@ are deep copies, so mutating them cannot bypass the table lock or WAL. Key
 columns are immutable through this view; changing one raises `ValueError` and
 prevents stale index entries.
 
-Fixed-table append, primary-key CRUD, and key-value batch operations use the
+Fixed-table append, primary-key CRUD, equality CRUD, and batch operations use the
 binary side-car `<name>.table.fixedwal` frame log. Each frame contains a
 sequence number, target slots, fixed records, length, and CRC32. The frame is
 flushed and `fsync`-ed first; the changed slots and redundant generation
