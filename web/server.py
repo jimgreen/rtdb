@@ -15,7 +15,6 @@ import os
 import re
 import sys
 import threading
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -85,12 +84,6 @@ class RTDBWebApp:
             raise APIError(400, "table name must be an English identifier")
         return name
 
-    def _table_names(self) -> list[str]:
-        names = set(self.db.schema_registry.names() if self.db.schema_registry is not None else ())
-        if self.data_dir.exists():
-            names.update(path.stem for path in self.data_dir.glob("*.table") if path.is_file())
-        return sorted(names)
-
     def _definition(self, name: str) -> Optional[TableDefinition]:
         name = self._name(name)
         path = self.schema_dir / f"{name}.json"
@@ -106,34 +99,12 @@ class RTDBWebApp:
         for name in sorted(self.db.schema_registry.names() if self.db.schema_registry is not None else ()):
             definition = self._definition(name)
             if definition is not None:
-                result.append({"name": name, "definition": _definition_json(definition)})
-        return result
-
-    def list_tables(self) -> list[dict[str, Any]]:
-        result = []
-        for name in self._table_names():
-            definition = self._definition(name)
-            table = self.db.table(name)
-            result.append(
-                {
+                result.append({
                     "name": name,
-                    "defined": definition is not None,
-                    "row_count": len(table),
-                    "definition": _definition_json(definition) if definition is not None else None,
-                }
-            )
+                    "row_count": len(self.db.table(name)),
+                    "definition": _definition_json(definition),
+                })
         return result
-
-    def get_table(self, name: str) -> dict[str, Any]:
-        name = self._name(name)
-        definition = self._definition(name)
-        table = self.db.table(name)
-        return {
-            "name": name,
-            "defined": definition is not None,
-            "row_count": len(table),
-            "definition": _definition_json(definition) if definition is not None else None,
-        }
 
     def get_definition(self, name: str) -> dict[str, Any]:
         name = self._name(name)
@@ -338,18 +309,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if len(parts) == 4 and parts[1] == "data":
                     self._send_json(200, self.app.get_row(parts[2], _path_index(parts[3])))
                     return
-                if parts == ["api", "tables"]:
-                    self._send_json(200, {"tables": self.app.list_tables()})
-                    return
-                if len(parts) == 3 and parts[1] == "tables" and parts[2] == "data":
-                    self._send_json(200, self.app.select_rows(parts[2], query))
-                    return
-                if len(parts) == 3 and parts[1] == "tables":
-                    self._send_json(200, self.app.get_table(parts[2]))
-                    return
-                if len(parts) == 4 and parts[1] == "tables" and parts[3] == "data":
-                    self._send_json(200, self.app.select_rows(parts[2], query))
-                    return
             self._send_static(path)
         except Exception as exc:
             self._send_error(exc)
@@ -358,12 +317,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             _, parts, _ = self._route()
             payload = self._json_body()
-            if parts == ["api", "tables"]:
-                name = payload.get("head", {}).get("eng_name") if isinstance(payload, Mapping) else None
-                if not isinstance(name, str):
-                    raise APIError(400, "head.eng_name is required")
-                self._send_json(201, self.app.save_definition(name, payload, replace=False))
-                return
             if parts == ["api", "schemas"]:
                 name = payload.get("head", {}).get("eng_name") if isinstance(payload, Mapping) else None
                 if not isinstance(name, str):
@@ -371,9 +324,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_json(201, self.app.save_definition(name, payload, replace=False))
                 return
             if len(parts) == 3 and parts[1] == "data":
-                self._send_json(201, self.app.insert_rows(parts[2], payload))
-                return
-            if len(parts) == 4 and parts[0:2] == ["api", "tables"] and parts[3] == "data":
                 self._send_json(201, self.app.insert_rows(parts[2], payload))
                 return
             raise APIError(404, "route not found")
@@ -384,9 +334,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             _, parts, _ = self._route()
             payload = self._json_body()
-            if len(parts) == 3 and parts[0:2] == ["api", "tables"]:
-                self._send_json(200, self.app.save_definition(parts[2], payload, replace=True))
-                return
             if len(parts) == 3 and parts[0:2] == ["api", "schemas"]:
                 self._send_json(200, self.app.save_definition(parts[2], payload, replace=True))
                 return
@@ -396,9 +343,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[1] == "data":
                 self._send_json(200, self.app.replace_row(parts[2], _path_index(parts[3]), payload))
                 return
-            if len(parts) == 4 and parts[0:2] == ["api", "tables"] and parts[3] == "data":
-                self._send_json(200, self.app.update_rows(parts[2], payload))
-                return
             raise APIError(404, "route not found")
         except Exception as exc:
             self._send_error(exc)
@@ -407,10 +351,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             _, parts, query = self._route()
             payload = self._json_body() if self.headers.get("Content-Length") else {}
-            if len(parts) == 3 and parts[0:2] == ["api", "tables"]:
-                delete_data = query.get("delete_data", ["false"])[0].lower() in {"1", "true", "yes"}
-                self._send_json(200, self.app.delete_definition(parts[2], delete_data=delete_data))
-                return
             if len(parts) == 3 and parts[0:2] == ["api", "schemas"]:
                 self._send_json(200, self.app.delete_definition(parts[2], delete_data=False))
                 return
@@ -419,9 +359,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 4 and parts[1] == "data":
                 self._send_json(200, self.app.delete_row(parts[2], _path_index(parts[3])))
-                return
-            if len(parts) == 4 and parts[0:2] == ["api", "tables"] and parts[3] == "data":
-                self._send_json(200, self.app.delete_rows(parts[2], payload))
                 return
             raise APIError(404, "route not found")
         except Exception as exc:
@@ -453,7 +390,13 @@ def create_server(
     root: Optional[os.PathLike[str] | str] = None,
     data_dir: Optional[os.PathLike[str] | str] = None,
     schema_dir: Optional[os.PathLike[str] | str] = None,
+    engine: str = "file_mapped",
 ) -> ThreadingHTTPServer:
+    if engine == "sqlite":
+        from .sqlite_server import create_sqlite_server
+        return create_sqlite_server(host, port, root=root, data_dir=data_dir, schema_dir=schema_dir)
+    if engine != "file_mapped":
+        raise ValueError("engine must be file_mapped or sqlite")
     app = RTDBWebApp(root, data_dir=data_dir, schema_dir=schema_dir)
     server = ThreadingHTTPServer((host, port), RequestHandler)
     server.rtdb_app = app  # type: ignore[attr-defined]
@@ -467,8 +410,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--schema-dir", type=Path)
+    parser.add_argument("--engine", choices=("file_mapped", "sqlite"), default="file_mapped")
     args = parser.parse_args(argv)
-    server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir)
+    server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, engine=args.engine)
     print(f"RTDB web service listening on http://{args.host}:{args.port}")
     try:
         server.serve_forever()

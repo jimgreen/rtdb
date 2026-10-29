@@ -24,7 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import FileMappedDatabase, TableDefinition
 
 
-SEED_ROWS = 5_000
+# Keep the benchmark large enough to expose index-scan and cache behaviour.
+# The table definition below reserves additional capacity for the later batch,
+# process and thread workloads.
+SEED_ROWS = 50_000
 POINT_READS = 300
 POINT_UPDATES = 20
 BATCH_ROWS = 2_000
@@ -35,6 +38,13 @@ THREAD_READS = 60
 THREAD_WRITES = 5
 KEY_BATCH_ROWS = 500
 NON_PRIMARY_UPDATES = 100
+TRANSACTION_UPDATES = 500
+HOT_KEY_READS = 2_000
+BATCH_READ_KEYS = 500
+BATCH_READ_ROUNDS = 20
+PIPELINE_READ_KEYS = 500
+PIPELINE_READ_ROUNDS = 20
+PROJECTION_READ_ROUNDS = 2_000
 
 
 def _db(root: str) -> FileMappedDatabase:
@@ -44,12 +54,12 @@ def _db(root: str) -> FileMappedDatabase:
 def _write_benchmark_schema(root: str) -> None:
     definition = TableDefinition.from_mapping(
         {
-            "head": {"chn_name": "基准记录", "eng_name": "records", "max_elements": 20_000},
+            "head": {"chn_name": "基准记录", "eng_name": "records"},
             "columns": [
-                {"chn_name": "编号", "eng_name": "id", "primary_key": True, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
-                {"chn_name": "分组", "eng_name": "group", "primary_key": False, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
-                {"chn_name": "值", "eng_name": "value", "primary_key": False, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
-                {"chn_name": "名称", "eng_name": "name", "primary_key": False, "data_type": "str", "data_length": 32, "disp_type": "文本", "disp_menu": ""},
+                {"chn_name": "编号", "eng_name": "id", "primary_key": True, "data_type": "int", "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "分组", "eng_name": "group", "primary_key": False, "data_type": "int", "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "值", "eng_name": "value", "primary_key": False, "data_type": "int", "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "名称", "eng_name": "name", "primary_key": False, "data_type": "str", "disp_type": "文本", "disp_menu": ""},
             ],
         },
         Path(root).parent / "def" / "table",
@@ -70,6 +80,33 @@ def _timed(function):
     start = time.perf_counter()
     result = function()
     return time.perf_counter() - start, result
+
+
+def _first_primary_read(root: str) -> float:
+    """Time the first primary-key equality read in a fresh process/object."""
+
+    db = _db(root)
+    table = db["records"]
+    try:
+        elapsed, rows = _timed(lambda: table.select({"id": SEED_ROWS // 2}))
+        if len(rows) != 1:
+            raise AssertionError(rows)
+        return elapsed
+    finally:
+        db.close()
+
+
+def _cold_index_read(root: str) -> float:
+    """Force the safe table scan so the persistent-index gain is measurable."""
+
+    table_path = Path(root) / "records.table"
+    for index_path in table_path.parent.glob(table_path.name + ".fixedidx.*.bin"):
+        index_path.unlink()
+    # The fixed primary probe is a separate disposable sidecar.  Remove it
+    # too so this metric continues to represent a genuinely cold rebuild.
+    for primary_path in table_path.parent.glob(table_path.name + ".fixedpk.*.bin"):
+        primary_path.unlink()
+    return _first_primary_read(root)
 
 
 def _point_read(root: str) -> float:
@@ -107,6 +144,101 @@ def _key_value_read(root: str) -> float:
             row = view.get(SEED_ROWS // 2)
             if row is None or row["id"] != SEED_ROWS // 2:
                 raise AssertionError(row)
+
+    return _timed(work)[0]
+
+
+def _batch_read(root: str, *, warm: bool) -> float:
+    """Read a stable key set through the key-value multi-get pipeline."""
+
+    table = _db(root)["records"]
+    view = table.kv
+    keys = list(range(BATCH_READ_KEYS))
+    if warm:
+        view.get_many(keys)
+    store = table._fixed_store
+    assert store is not None
+
+    def work():
+        for _ in range(BATCH_READ_ROUNDS):
+            if not warm:
+                # Keep this comparison deterministic: discard only the
+                # optional decoded-row cache while retaining the authoritative
+                # binary index.
+                with store._row_cache_guard:
+                    store._row_cache.clear()
+            rows = view.get_many(keys)
+            if len(rows) != len(keys):
+                raise AssertionError(len(rows))
+
+    return _timed(work)[0]
+
+
+def _hot_key_read(root: str) -> float:
+    table = _db(root)["records"]
+    view = table.kv
+
+    def work():
+        for _ in range(HOT_KEY_READS):
+            row = view.get(SEED_ROWS // 2)
+            if row is None or row["id"] != SEED_ROWS // 2:
+                raise AssertionError(row)
+
+    return _timed(work)[0]
+
+
+def _read_pipeline(root: str) -> float:
+    """Read many independent key commands through the Redis-style pipeline."""
+
+    view = _db(root)["records"].kv
+    keys = list(range(PIPELINE_READ_KEYS))
+
+    def work():
+        for _ in range(PIPELINE_READ_ROUNDS):
+            pipeline = view.read_pipeline()
+            for key in keys:
+                pipeline.get(key)
+            rows = pipeline.execute()
+            if len(rows) != len(keys) or any(row is None for row in rows):
+                raise AssertionError(len(rows))
+
+    return _timed(work)[0]
+
+
+def _projection_read(root: str, *, warm: bool) -> float:
+    """Measure repeated primary-key reads that return only two fields."""
+
+    table = _db(root)["records"]
+    store = table._fixed_store
+    assert store is not None
+    if warm:
+        table.select({"id": SEED_ROWS // 2}, columns=["id", "name"])
+
+    def work():
+        for _ in range(PROJECTION_READ_ROUNDS):
+            if not warm:
+                with store._projection_cache_guard:
+                    store._projection_cache.clear()
+                with store._row_cache_guard:
+                    store._row_cache.clear()
+            rows = table.select({"id": SEED_ROWS // 2}, columns=["id", "name"])
+            if rows != [{"id": SEED_ROWS // 2, "name": f"row-{SEED_ROWS // 2}"}]:
+                raise AssertionError(rows)
+
+    return _timed(work)[0]
+
+
+def _individual_key_read(root: str) -> float:
+    """Control path: the same 500 point reads issued one at a time."""
+
+    view = _db(root)["records"].kv
+    keys = list(range(PIPELINE_READ_KEYS))
+
+    def work():
+        for _ in range(PIPELINE_READ_ROUNDS):
+            rows = [view.get(key) for key in keys]
+            if len(rows) != len(keys) or any(row is None for row in rows):
+                raise AssertionError(len(rows))
 
     return _timed(work)[0]
 
@@ -173,6 +305,20 @@ def _non_primary_condition_update(root: str) -> float:
     return _timed(work)[0]
 
 
+def _transaction_update(root: str) -> float:
+    """Update many primary keys through the explicit group-commit API."""
+
+    table = _db(root)["records"]
+
+    def work():
+        with table.transaction() as batch:
+            for index in range(TRANSACTION_UPDATES):
+                batch.update_by_pk(index, {"value": 936_000 + index})
+
+    elapsed, _ = _timed(work)
+    return elapsed
+
+
 def _batch_insert(root: str) -> float:
     db = _db(root)
     table = db["records"]
@@ -193,6 +339,15 @@ def _process_worker(arguments: tuple[str, int, int]) -> None:
         table.append({"id": 100_000 + index, "group": index % 16, "value": index, "name": f"proc-{index}"})
 
 
+def _process_batch_worker(arguments: tuple[str, int, int]) -> None:
+    root, start, count = arguments
+    table = _db(root)["records"]
+    table.insert_many(
+        {"id": 110_000 + index, "group": index % 16, "value": index, "name": f"proc-batch-{index}"}
+        for index in range(start, start + count)
+    )
+
+
 def _multi_process_append(root: str) -> float:
     context = mp.get_context("spawn")
     arguments = [
@@ -206,6 +361,25 @@ def _multi_process_append(root: str) -> float:
 
     elapsed, _ = _timed(work)
     expected = SEED_ROWS + BATCH_ROWS + PROCESS_WORKERS * PROCESS_WRITES
+    actual = len(_db(root)["records"])
+    if actual != expected:
+        raise AssertionError((actual, expected))
+    return elapsed
+
+
+def _multi_process_append_batched(root: str) -> float:
+    context = mp.get_context("spawn")
+    arguments = [
+        (root, worker * PROCESS_WRITES, PROCESS_WRITES)
+        for worker in range(PROCESS_WORKERS)
+    ]
+
+    def work():
+        with context.Pool(PROCESS_WORKERS) as pool:
+            pool.map(_process_batch_worker, arguments)
+
+    elapsed, _ = _timed(work)
+    expected = SEED_ROWS + BATCH_ROWS + PROCESS_WORKERS * PROCESS_WRITES * 2
     actual = len(_db(root)["records"])
     if actual != expected:
         raise AssertionError((actual, expected))
@@ -248,16 +422,27 @@ def run() -> dict[str, Any]:
         root = str(Path(directory) / "dat")
         _write_benchmark_schema(root)
         _seed(root)
+        cold_index_read = _cold_index_read(root)
+        persisted_index_read = _first_primary_read(root)
         point_read = _point_read(root)
         key_value_read = _key_value_read(root)
+        batch_read_cold = _batch_read(root, warm=False)
+        batch_read_hot = _batch_read(root, warm=True)
+        hot_key_read = _hot_key_read(root)
+        read_pipeline = _read_pipeline(root)
+        projection_read_cold = _projection_read(root, warm=False)
+        projection_read_hot = _projection_read(root, warm=True)
+        individual_key_read = _individual_key_read(root)
         point_update = _point_update(root)
         key_value_update = _key_value_update(root)
         condition_batch_update = _condition_batch_update(root)
         condition_batch_update_many = _condition_batch_update_many(root)
+        transaction_update = _transaction_update(root)
         non_primary_condition_update = _non_primary_condition_update(root)
         key_value_batch_update = _key_value_batch_update(root)
         batch_insert = _batch_insert(root)
         process_append = _multi_process_append(root)
+        process_append_batched = _multi_process_append_batched(root)
         thread_read_write = _multi_thread_read_write(root)
         return {
             "parameters": {
@@ -272,18 +457,31 @@ def run() -> dict[str, Any]:
                 "thread_writes": THREAD_WRITES,
                 "key_batch_rows": KEY_BATCH_ROWS,
                 "non_primary_updates": NON_PRIMARY_UPDATES,
+                "transaction_updates": TRANSACTION_UPDATES,
+                "projection_read_rounds": PROJECTION_READ_ROUNDS,
             },
             "seconds": {
+                "cold_index_read": cold_index_read,
+                "persisted_index_read": persisted_index_read,
                 "point_read": point_read,
                 "key_value_read": key_value_read,
+                "batch_read_cold": batch_read_cold,
+                "batch_read_hot": batch_read_hot,
+                "hot_key_read": hot_key_read,
+                "read_pipeline": read_pipeline,
+                "projection_read_cold": projection_read_cold,
+                "projection_read_hot": projection_read_hot,
+                "individual_key_read": individual_key_read,
                 "point_update": point_update,
                 "key_value_update": key_value_update,
                 "condition_batch_update": condition_batch_update,
                 "condition_batch_update_many": condition_batch_update_many,
+                "transaction_update": transaction_update,
                 "non_primary_condition_update": non_primary_condition_update,
                 "key_value_batch_update": key_value_batch_update,
                 "batch_insert": batch_insert,
                 "multi_process_append": process_append,
+                "multi_process_append_batched": process_append_batched,
                 "multi_thread_read_write": thread_read_write,
             },
         }

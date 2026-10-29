@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RTDB SQLite 管理终端</title><link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="eyebrow">RTDB / SQLITE</span><h1>关系数据库管理终端</h1><span id="engine-badge" class="badge">WAL · FULL</span></div>
+    <div class="top-actions"><button id="health" class="quiet">连接检查</button><button id="reload" class="primary">刷新</button></div>
+  </header>
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="side-head"><div><span class="eyebrow">DATABASE</span><h2>表索引区</h2></div><button id="new-table" class="icon-button" title="新建表">＋</button></div>
+      <label class="search"><span>⌕</span><input id="table-filter" placeholder="过滤表名或中文名"></label>
+      <label class="check-line"><input id="nonempty" type="checkbox"> 只显示非空表</label>
+      <div id="table-list" class="table-list"><p class="muted">正在载入…</p></div>
+      <details class="field-tree" open><summary>当前表字段</summary><div id="field-list"></div></details>
+      <div class="side-foot"><span id="table-count">0 张表</span><button id="refresh-tables" class="link-button">刷新数量</button></div>
+    </aside>
+    <section class="workspace">
+      <div id="notice" class="notice" hidden></div>
+      <section class="context-bar"><div><span class="eyebrow">CURRENT TABLE</span><h2 id="current-table">请选择一张表</h2></div><div id="table-meta" class="meta"></div></section>
+      <nav class="tabs" role="tablist"><button class="tab active" data-tab="data">结果展示</button><button class="tab" data-tab="schema">表结构</button><button class="tab" data-tab="sql">SQL 执行</button><button class="tab" data-tab="logs">日志</button></nav>
+      <section id="tab-data" class="tab-panel active">
+        <div class="query-card panel"><div class="query-grid"><label>查询过滤<input id="where" placeholder="例如 id > 10 或 name LIKE '%泵%'"></label><label>结果排序<input id="order" placeholder="例如 id DESC, name ASC"></label><label>每页<select id="page-size"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label><button id="query" class="primary query-button">查询</button></div><div class="query-foot"><span id="query-summary">—</span><button id="clear-query" class="link-button">清除条件</button></div></div>
+        <div class="panel grid-panel"><div class="panel-head"><div><h3>记录</h3><span id="selection-summary" class="muted">未选择记录</span></div><div class="button-row"><button id="import" class="quiet">导入</button><select id="export-format" aria-label="导出格式"><option value="csv">CSV</option><option value="json">JSON</option></select><button id="export" class="quiet">导出</button><button id="delete-rows" class="danger-outline">删除选中</button><button id="clear-table" class="danger-outline">清空表</button><button id="add-row" class="primary">新增记录</button></div></div><div id="grid" class="grid-wrap"><p class="empty">请选择一张表。</p></div><div class="pager"><button id="prev" class="quiet">‹ 上一页</button><span id="page">第 1 页</span><button id="next" class="quiet">下一页 ›</button></div></div>
+      </section>
+      <section id="tab-schema" class="tab-panel"><div class="panel schema-panel"><div class="panel-head"><div><h3>表结构定义</h3><span class="muted">SQLite 字段、主键和显示信息</span></div><div class="button-row"><button id="check-table" class="quiet">完整性检查</button><button id="drop-table" class="danger-outline">删除空表</button><button id="save-schema" class="primary">保存结构</button></div></div><div class="schema-layout"><textarea id="schema-editor" class="editor" spellcheck="false" aria-label="SQLite 表结构 JSON"></textarea><div class="schema-help"><h4>结构规则</h4><p>使用字段名：<code>chn_name</code>、<code>eng_name</code>、<code>primary_key</code>、<code>data_type</code>、<code>disp_type</code>、<code>disp_menu</code>。</p><p>多个主键字段组成联合主键。新建表已提供可编辑模板。</p><p>有数据时允许修改中文名和显示信息。增删字段、类型或主键变化需要先导出并清空表。</p><p>调整结构前，请停止其他进程对该表的访问；完成后重新打开表。日常数据更新不需要重新打开。</p><p>删除仅适用于空表，文件将移入数据目录的 <code>.web-archive</code>。</p></div></div></div></section>
+      <section id="tab-sql" class="tab-panel"><div class="panel sql-panel"><div class="panel-head"><div><h3>SQL 执行</h3><span class="muted">当前表 SQL · 查询最多显示 500 行 · 写 SQL 需要确认表名</span></div><div class="button-row"><select id="sql-template" aria-label="SQL 模板"><option value="">SQL 模板</option><option value="select">SELECT 当前表</option><option value="count">统计记录数</option><option value="insert">INSERT 模板</option><option value="update">UPDATE 模板</option><option value="delete">DELETE 模板</option></select><button id="run-sql" class="primary">执行</button></div></div><textarea id="sql-editor" class="sql-editor" spellcheck="false" aria-label="SQL 语句" placeholder="SELECT * FROM records ORDER BY id DESC LIMIT 100"></textarea><div id="sql-result" class="sql-result"><p class="empty">执行结果显示在这里。</p></div></div></section>
+      <section id="tab-logs" class="tab-panel"><div class="panel log-panel"><div class="panel-head"><h3>操作日志</h3><button id="clear-logs" class="quiet">清除日志</button></div><pre id="logs" class="logs">管理终端已启动。</pre></div></section>
+    </section>
+  </main>
+  <dialog id="row-dialog"><form method="dialog"><div class="dialog-head"><h3 id="dialog-title">新增记录</h3><button value="cancel" class="icon-button" aria-label="关闭">×</button></div><p id="dialog-key" class="muted"></p><label class="check-line"><input id="json-mode" type="checkbox"> JSON 编辑模式</label><div id="row-fields"></div><textarea id="row-editor" spellcheck="false" aria-label="记录 JSON" hidden></textarea><p id="row-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button id="save-row" type="button" class="primary">保存</button></div></form></dialog>
+  <dialog id="confirm-dialog"><form method="dialog"><div class="dialog-head"><h3 id="confirm-title">请确认操作</h3><button value="cancel" class="icon-button" aria-label="关闭">×</button></div><p id="confirm-text"></p><input id="confirm-input" placeholder="请输入表名" aria-label="输入表名确认"><div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button id="confirm-action" value="confirmed" class="danger">确认</button></div></form></dialog>
+  <input id="file-input" type="file" accept=".json,.csv" hidden>
+  <script src="/static/app.js"></script>
+</body>
+</html>

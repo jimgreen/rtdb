@@ -6,8 +6,7 @@ The definition directory contains one UTF-8 JSON file per table:
     One JSON object containing a ``head`` object and a ``columns`` array.
 
 The JSON field names are fixed English names: ``chn_name``, ``eng_name``,
-``max_elements``, ``primary_key``, ``data_type``, ``data_length``,
-``disp_type`` and ``disp_menu``. Definitions are data only; no executable code
+``primary_key``, ``data_type``, ``disp_type`` and ``disp_menu``. Definitions are data only; no executable code
 is evaluated.
 """
 
@@ -16,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Union
 
@@ -42,18 +41,6 @@ def _clean(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def _parse_payload_int(value: Any, field: str) -> int:
-    if isinstance(value, bool):
-        raise SchemaError(f"{field} must be a non-negative integer")
-    try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise SchemaError(f"{field} must be a non-negative integer") from exc
-    if result < 0:
-        raise SchemaError(f"{field} must be a non-negative integer")
-    return result
-
-
 def _parse_payload_bool(value: Any, field: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -73,20 +60,11 @@ class TableHead:
 
     chn_name: str
     eng_name: str
-    max_elements: int
-
     def __post_init__(self) -> None:
         if not _IDENTIFIER.fullmatch(self.eng_name):
             raise SchemaError(f"eng_name must be an English identifier, got {self.eng_name!r}")
         if not self.chn_name.strip():
             raise SchemaError("chn_name is required")
-        if self.max_elements < 0:
-            raise SchemaError("max_elements must be non-negative")
-
-    @property
-    def max_count(self) -> int:
-        return self.max_elements
-
 
 @dataclass(frozen=True)
 class ColumnDefinition:
@@ -96,7 +74,6 @@ class ColumnDefinition:
     eng_name: str
     primary_key: bool
     data_type: str
-    data_length: int
     disp_type: str
     disp_menu: str
 
@@ -107,8 +84,6 @@ class ColumnDefinition:
             raise SchemaError("chn_name is required")
         if not self.data_type.strip():
             raise SchemaError(f"data_type is required for {self.eng_name!r}")
-        if self.data_length < 0:
-            raise SchemaError(f"data_length must be non-negative for {self.eng_name!r}")
         if not self.disp_type.strip():
             raise SchemaError(f"disp_type is required for {self.eng_name!r}")
 
@@ -132,6 +107,8 @@ class TableDefinition:
     head: TableHead
     columns: tuple[ColumnDefinition, ...]
     path: Path
+    _column_names: tuple[str, ...] = field(init=False, repr=False, compare=False)
+    _primary_keys: tuple[str, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.columns:
@@ -141,6 +118,14 @@ class TableDefinition:
             raise SchemaError(f"table {self.eng_name!r} contains duplicate column names")
         if not any(column.primary_key for column in self.columns):
             raise SchemaError(f"table {self.eng_name!r} must have at least one primary key")
+        # Definitions are immutable after validation.  Cache these hot-path
+        # projections once instead of allocating a tuple on every CRUD call.
+        object.__setattr__(self, "_column_names", tuple(names))
+        object.__setattr__(
+            self,
+            "_primary_keys",
+            tuple(column.eng_name for column in self.columns if column.primary_key),
+        )
 
     @property
     def chn_name(self) -> str:
@@ -151,16 +136,12 @@ class TableDefinition:
         return self.head.eng_name
 
     @property
-    def max_elements(self) -> int:
-        return self.head.max_elements
-
-    @property
     def column_names(self) -> tuple[str, ...]:
-        return tuple(column.eng_name for column in self.columns)
+        return self._column_names
 
     @property
     def primary_keys(self) -> tuple[str, ...]:
-        return tuple(column.eng_name for column in self.columns if column.primary_key)
+        return self._primary_keys
 
     def column(self, name: str) -> ColumnDefinition:
         for column in self.columns:
@@ -204,25 +185,27 @@ class TableDefinition:
             raise SchemaError("definition payload requires a head object")
         if not isinstance(columns_value, list):
             raise SchemaError("definition payload requires a columns array")
+        if "max_elements" in head_value:
+            raise SchemaError("head.max_elements has been removed from the table definition")
         eng_name = _clean(head_value.get("eng_name"))
         if table_name is not None and eng_name != _validate_table_name(table_name):
             raise SchemaError(f"head.eng_name {eng_name!r} does not match table name {table_name!r}")
         head = TableHead(
             chn_name=_clean(head_value.get("chn_name")),
             eng_name=eng_name,
-            max_elements=_parse_payload_int(head_value.get("max_elements"), "head.max_elements"),
         )
         columns: list[ColumnDefinition] = []
         for index, value in enumerate(columns_value, start=1):
             if not isinstance(value, Mapping):
                 raise SchemaError(f"columns[{index - 1}] must be an object")
+            if "data_length" in value:
+                raise SchemaError(f"columns[{index - 1}].data_length has been removed from the table definition")
             columns.append(
                 ColumnDefinition(
                     chn_name=_clean(value.get("chn_name")),
                     eng_name=_clean(value.get("eng_name")),
                     primary_key=_parse_payload_bool(value.get("primary_key"), f"columns[{index - 1}].primary_key"),
                     data_type=_clean(value.get("data_type")),
-                    data_length=_parse_payload_int(value.get("data_length"), f"columns[{index - 1}].data_length"),
                     disp_type=_clean(value.get("disp_type")),
                     disp_menu=_clean(value.get("disp_menu", "")),
                 )
@@ -235,13 +218,9 @@ class TableDefinition:
         )
 
     def validate_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
-        """Validate row shape, primary-key presence/uniqueness and max count."""
+        """Validate row shape and primary-key presence/uniqueness."""
 
         values = list(rows)
-        if len(values) > self.max_elements:
-            raise SchemaError(
-                f"table {self.eng_name!r} contains {len(values)} rows; maximum is {self.max_elements}"
-            )
         allowed = set(self.column_names)
         key_values: set[tuple[Any, ...]] = set()
         for row_number, row in enumerate(values, start=1):
@@ -276,10 +255,6 @@ class TableDefinition:
             valid = isinstance(value, bool)
         elif kind in {"str", "string", "text", "varchar", "char", "date", "datetime", "time"}:
             valid = isinstance(value, str)
-            if valid and column.data_length > 0 and len(value) > column.data_length:
-                raise SchemaError(
-                    f"row {row_number}: column {column.eng_name!r} exceeds data_length {column.data_length}"
-                )
         elif kind in {"list", "array"}:
             valid = isinstance(value, list)
         elif kind in {"dict", "object", "json"}:
@@ -294,7 +269,6 @@ class TableDefinition:
             "head": {
                 "chn_name": self.chn_name,
                 "eng_name": self.eng_name,
-                "max_elements": self.max_elements,
             },
             "columns": [
                 {
@@ -302,7 +276,6 @@ class TableDefinition:
                     "eng_name": column.eng_name,
                     "primary_key": column.primary_key,
                     "data_type": column.data_type,
-                    "data_length": column.data_length,
                     "disp_type": column.disp_type,
                     "disp_menu": column.disp_menu,
                 }

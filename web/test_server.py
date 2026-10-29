@@ -35,19 +35,17 @@ class WebServerTests(unittest.TestCase):
 
     def test_schema_and_data_crud(self):
         schema = {
-            "head": {"chn_name": "用户表", "eng_name": "users", "max_elements": 10},
+            "head": {"chn_name": "用户表", "eng_name": "users"},
             "columns": [
-                {"chn_name": "编号", "eng_name": "id", "primary_key": True, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
-                {"chn_name": "姓名", "eng_name": "name", "primary_key": False, "data_type": "str", "data_length": 32, "disp_type": "文本", "disp_menu": ""},
+                {"chn_name": "编号", "eng_name": "id", "primary_key": True, "data_type": "int", "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "姓名", "eng_name": "name", "primary_key": False, "data_type": "str", "disp_type": "文本", "disp_menu": ""},
             ],
         }
         self.assertEqual(self.call("POST", "/api/schemas", schema)[0], 201)
         self.assertEqual(self.call("GET", "/api/schemas")[1]["schemas"][0]["name"], "users")
-        schema["head"]["max_elements"] = 20
         self.assertEqual(self.call("PUT", "/api/schemas/users", schema)[0], 200)
-        self.assertEqual(self.call("GET", "/api/tables")[1]["tables"][0]["definition"]["head"]["max_elements"], 20)
         self.assertEqual(self.call("POST", "/api/data/users", {"id": 1, "name": "Alice"})[0], 201)
-        self.assertEqual(self.call("POST", "/api/tables/users/data", {"rows": [{"id": 2, "name": "Bob"}]})[1]["inserted"], 1)
+        self.assertEqual(self.call("POST", "/api/data/users", {"rows": [{"id": 2, "name": "Bob"}]})[1]["inserted"], 1)
         self.assertEqual(self.call("GET", "/api/data/users?order_by=id%20DESC")[1]["rows"][0]["id"], 2)
         self.assertEqual(self.call("PUT", "/api/data/users", {"where": {"id": 1}, "values": {"name": "Alicia"}})[1]["updated"], 1)
         self.assertEqual(self.call("GET", "/api/data/users/0")[1]["row"]["name"], "Alicia")
@@ -65,18 +63,18 @@ class WebServerTests(unittest.TestCase):
         with urlopen(self.base + "/static/app.css", timeout=3) as response:
             self.assertEqual(response.status, 200)
             self.assertIn(".topbar", response.read().decode("utf-8"))
-        invalid = {"head": {"chn_name": "旧", "en_name": "bad", "max_elements": 1}, "columns": []}
+        invalid = {"head": {"chn_name": "旧", "en_name": "bad"}, "columns": []}
         with self.assertRaises(HTTPError) as raised:
             self.call("POST", "/api/schemas", invalid)
         self.assertEqual(raised.exception.code, 400)
 
     def test_composite_primary_key_data_crud(self):
         schema = {
-            "head": {"chn_name": "关系表", "eng_name": "links", "max_elements": 20},
+            "head": {"chn_name": "关系表", "eng_name": "links"},
             "columns": [
-                {"chn_name": "站点", "eng_name": "site", "primary_key": True, "data_type": "str", "data_length": 16, "disp_type": "文本", "disp_menu": ""},
-                {"chn_name": "设备", "eng_name": "device", "primary_key": True, "data_type": "int", "data_length": 8, "disp_type": "数字", "disp_menu": ""},
-                {"chn_name": "状态", "eng_name": "state", "primary_key": False, "data_type": "str", "data_length": 16, "disp_type": "文本", "disp_menu": ""},
+                {"chn_name": "站点", "eng_name": "site", "primary_key": True, "data_type": "str", "disp_type": "文本", "disp_menu": ""},
+                {"chn_name": "设备", "eng_name": "device", "primary_key": True, "data_type": "int", "disp_type": "数字", "disp_menu": ""},
+                {"chn_name": "状态", "eng_name": "state", "primary_key": False, "data_type": "str", "disp_type": "文本", "disp_menu": ""},
             ],
         }
         self.assertEqual(self.call("POST", "/api/schemas", schema)[0], 201)

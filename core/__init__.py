@@ -1,16 +1,16 @@
 """Core data-access interfaces."""
 
 from .file_mapped_db import (
-    Database,
     FileMappedDatabase,
-    FileMappedDB,
-    MappedDatabase,
-    MappedTable,
     QueryResult,
-    RelationTable,
     TableKeyValue,
+    TableReadPipeline,
+    TableWriteBatch,
     StorageBusyError,
     StorageError,
+    FileMappedWriteProcess,
+    FileMappedWriteClient,
+    FileMappedWriteProcessError,
     Table,
 )
 from .table_schema import (
@@ -21,18 +21,32 @@ from .table_schema import (
     TableHead,
     load_table_definition,
 )
+from .redis_db import (
+    RedisDatabase,
+    RedisTable,
+    RedisTableKeyValue,
+    RedisTableReadPipeline,
+    RedisTableWriteBatch,
+    RedisStorageError,
+    RedisDurabilityError,
+)
+from .sqlite_db import (
+    SQLiteDatabase, SQLiteTable, SQLiteTableKeyValue,
+    SQLiteTableReadPipeline, SQLiteTableWriteBatch, SQLiteStorageError, SQLiteBusyError,
+    SQLiteWriteProcess, SQLiteWriteClient, SQLiteWriteProcessError,
+)
 
 __all__ = [
-    "Database",
     "FileMappedDatabase",
-    "FileMappedDB",
-    "MappedDatabase",
-    "MappedTable",
     "QueryResult",
-    "RelationTable",
     "TableKeyValue",
+    "TableReadPipeline",
+    "TableWriteBatch",
     "StorageBusyError",
     "StorageError",
+    "FileMappedWriteProcess",
+    "FileMappedWriteClient",
+    "FileMappedWriteProcessError",
     "Table",
     "ColumnDefinition",
     "SchemaError",
@@ -40,5 +54,22 @@ __all__ = [
     "TableDefinition",
     "TableHead",
     "load_table_definition",
+    "RedisDatabase",
+    "RedisTable",
+    "RedisTableKeyValue",
+    "RedisTableReadPipeline",
+    "RedisTableWriteBatch",
+    "RedisStorageError",
+    "RedisDurabilityError",
+    "SQLiteDatabase",
+    "SQLiteTable",
+    "SQLiteTableKeyValue",
+    "SQLiteTableReadPipeline",
+    "SQLiteTableWriteBatch",
+    "SQLiteStorageError",
+    "SQLiteBusyError",
+    "SQLiteWriteProcess",
+    "SQLiteWriteClient",
+    "SQLiteWriteProcessError",
 ]
 
