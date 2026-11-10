@@ -32,6 +32,61 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(runpy.run_path(str(path.with_suffix('.py')))['TABLE_DEFINITION'], document)
         return document
 
+    def test_column_defaults_persist_and_initialize_new_rows_only(self):
+        self.insert([fixtures.record(1)])
+        desired = copy.deepcopy(self.schema['definition'])
+        defaults = dict(site='B', id='9223372036854775807', name='', value=0, enabled=False)
+        for item in desired['columns']:
+            item['default_value'] = defaults[item['eng_name']]
+        desired['columns'].append(column('payload', 'json') | {'default_value': {'list': [False, 0]}})
+        self.schema = self.save(desired)
+        document = self.files()
+        self.assertEqual(document['columns'][1]['default_value'], 2**63 - 1)
+        self.assertEqual(self.rows()['rows'], [fixtures.record(1, payload=None)])
+        generated = runpy.run_path(str(self.root / 'def/table/devices.py'))['Row']
+        first, second = generated(), generated()
+        self.assertEqual((first.site, first.id, first.name, first.value, first.enabled),
+                         ('B', 2**63 - 1, '', 0, False))
+        first.payload['list'].append('changed')
+        self.assertEqual(second.payload, {'list': [False, 0]})
+        payload = {'inserts': [{}]}
+        self.assertTrue(self.call('POST', '/api/manage/tables/devices/validate-edits', payload)['ok'])
+        self.call('PUT', '/api/manage/tables/devices/cell-edits', payload)
+        self.insert([dict(site='B', id=2, name=None, value=None)])
+        with self.db() as db:
+            table = db['devices']
+            row = table.get_by_pk(('B', 2**63 - 1))
+            self.assertEqual(row, dict(site='B', id=2**63 - 1, name='', value=0, enabled=False, payload={'list': [False, 0]}))
+            table.insert_one(dict(site='C', id=3))
+            self.assertEqual(table.get_by_pk(('C', 3))['payload'], {'list': [False, 0]})
+            self.assertIsNone(table.get_by_pk(('B', 2))['name'])
+            self.assertIsNone(table.get_by_pk(('B', 2))['value'])
+            table.update_by_pk(('A', 1), {'name': 'edited'})
+            self.assertEqual(table.get_by_pk(('A', 1))['value'], 1)
+        # Defaults that would duplicate a primary key are still rejected atomically.
+        self.call('POST', '/api/manage/tables/devices/validate-edits', payload, status=422)
+        self.assertEqual(self.rows()['total'], 4)
+        for item in desired['columns']:
+            item['default_value'] = None
+        self.schema = self.save(desired)
+        self.assertTrue(all('default_value' not in item for item in self.files()['columns']))
+        self.insert([dict(site='D', id=4)])
+        with self.db() as db:
+            self.assertEqual(db['devices'].get_by_pk(('D', 4)), dict(site='D', id=4, name=None, value=None, enabled=None, payload=None))
+        self.assertTrue(self.call('GET', '/api/manage/tables/devices/check')['ok'])
+
+    def test_invalid_default_schema_save_preserves_files_and_data(self):
+        self.insert([fixtures.record(1)])
+        original = self.files()
+        for field, value in [('id', 'bad'), ('id', '9223372036854775808'), ('site', '  '),
+                             ('value', 'bad'), ('enabled', 1)]:
+            with self.subTest(field=field, value=value):
+                desired = copy.deepcopy(original)
+                next(item for item in desired['columns'] if item['eng_name'] == field)['default_value'] = value
+                self.save(desired, status=422)
+                self.assertEqual(self.files(), original)
+                self.assertEqual(self.rows()['rows'], [fixtures.record(1)])
+
     def test_empty_chinese_names_default_on_schema_save_and_preserve_records(self):
         rows = [{**fixtures.record(1), 'name': 'null'}, fixtures.record(2)]
         self.insert(rows)

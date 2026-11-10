@@ -61,6 +61,9 @@ users.json
 - `columns[].data_type`：存储类型，例如 `int`、`float`、`str`、`datetime`。
 - `columns[].disp_type`：显示类型，例如 `数字`、`文本`、`下拉框`。
 - `columns[].disp_menu`：原始菜单描述，多项使用 `|` 分隔。
+- `columns[].default_value`：可选的列默认值，使用与 `data_type` 相符的 JSON 值，例如 `0`、`1.5`、`false`、`"启用"`、`""` 或 `{"items": []}`。省略或 `null` 表示未设置，保存时省略此属性以兼容旧定义。INT 支持有符号 64 位整数；Web 可用十进制字符串传输大整数，保存后按整数记录。默认值不能是 SQL 表达式。
+
+SQLite Web 新增记录、SQLite 行接口及 Python `SQLiteDatabase` 的新增操作会用默认值填充缺省字段，显式提供的值（包括 NULL）不被覆盖。已有记录不回填；更新操作不补默认值。生成的 Python `Row` 数据类同样使用这些默认值，对象和数组为每个实例独立创建。默认主键仍需通过非空和唯一性校验。
 
 Python 读取接口：
 

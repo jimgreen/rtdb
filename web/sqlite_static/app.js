@@ -1062,7 +1062,7 @@ async function addBlankRows() {
   }
   const first = state.addRowIndex === null ? state.records.length : Math.min(state.addRowIndex, state.records.length);
   const rows = Array.from({ length: count }, () => {
-    const row = Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, null]));
+    const row = Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, fieldDefault(column)]));
     return { draftId: ++state.draftSequence, row, baseline: structuredClone(row) };
   });
   state.records.splice(first, 0, ...rows);
@@ -1071,15 +1071,11 @@ async function addBlankRows() {
   rebindAddedChartSeries(); renderGrid(); drawChart(); el("add-rows-dialog").close(); tab("data");
   const cell = el("data-grid").querySelector(`td[data-cell-row="${first}"]`);
   cell?.scrollIntoView({ block: "nearest", inline: "nearest" }); cell?.focus({ preventScroll: true });
-  notice(`已加入 ${count} 条空白行，请双击填写 KEY 和其他字段，再保存修改`);
-  log(`${state.table}：暂存新增 ${count} 条空白记录，尚未写入数据库`);
+  notice(`已加入 ${count} 条新记录，已填入字段默认值；请双击填写 KEY 和其他字段，再保存修改`);
+  log(`${state.table}：按字段默认值暂存新增 ${count} 条记录，尚未写入数据库`);
 }
 function fieldDefault(column) {
-  const kind = column.data_type.toLowerCase();
-  if (integerTypes.has(kind) || floatTypes.has(kind)) return 0;
-  if (boolTypes.has(kind)) return false;
-  if (objectTypes.has(kind)) return ["list", "array"].includes(kind) ? [] : {};
-  return column.disp_menu?.split("|")[0] || "";
+  return structuredClone(column.default_value ?? null);
 }
 function openRow(mode, record = null) {
   requireTable();
@@ -1213,6 +1209,17 @@ function schemaFormValue(withMeta = false) {
     columns: [...el("schema-fields").querySelectorAll("tbody tr")].map((row) => {
       const column = Object.fromEntries([...row.querySelectorAll("[data-property]")].map((input) => [input.dataset.property, input.type === "checkbox" ? input.checked : input.value]));
       column.chn_name = chineseName(column);
+      const rawDefault = column.default_value;
+      delete column.default_value;
+      if (rawDefault.trim()) {
+        try {
+          const kind = columnKind(column);
+          const value = !integerTypes.has(kind) && !floatTypes.has(kind) && !boolTypes.has(kind) && !objectTypes.has(kind) && rawDefault.trim().startsWith('"')
+            ? JSON.parse(rawDefault) : parseCellValue(column, rawDefault);
+          if (column.primary_key && (value == null || typeof value === "string" && !value.trim())) throw new Error("主键默认值不能为空");
+          column.default_value = value;
+        } catch (error) { throw new Error(`${column.eng_name} 默认值：${error.message}`); }
+      }
       if (withMeta && row.dataset.originalName) column.__original_name = row.dataset.originalName;
       return column;
     }) };
@@ -1224,8 +1231,8 @@ function schemaDefaultDisplayType(kind) {
 }
 function updateSchemaLocks() {
   el("schema-hint").textContent = state.table
-    ? "表名和字段属性均可修改；字段单元格双击后编辑，保存时会迁移现有数据并同步 JSON、Python 定义文件。"
-    : "字段单元格双击后编辑英文名、中文名、类型、KEY、显示类型和选项；保存后同步生成 JSON、Python 定义文件。";
+    ? "表名和字段属性均可修改；字段双击编辑，默认值仅用于新记录；保存时同步 JSON、Python 定义文件。"
+    : "字段单元格双击后编辑属性；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON；保存后同步生成 JSON、Python 定义文件。";
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
@@ -1237,7 +1244,7 @@ function updateSchemaLocks() {
 function renderSchema(definition) {
   el("schema-name").value = definition.head.eng_name; el("schema-label").value = chineseName(definition.head); el("schema-name").disabled = false;
   const grid = node("table"), head = node("tr"), thead = node("thead"), body = node("tbody");
-  for (const label of ["英文名", "中文名", "类型", "主键", "显示类型", "选项（| 分隔）"]) head.append(node("th", label));
+  for (const label of ["英文名", "中文名", "类型", "主键", "默认值", "显示类型", "选项（| 分隔）"]) head.append(node("th", label));
   thead.append(head); grid.append(thead);
   for (const column of definition.columns) {
     const row = node("tr"); row.addEventListener("contextmenu", (event) => openSchemaContextMenu(event, row));
@@ -1246,13 +1253,19 @@ function renderSchema(definition) {
     const displayType = !column.disp_type || (column.disp_type === "数字" && defaultDisplay !== "文本") ? defaultDisplay : column.disp_type;
     const originalName = column.__original_name || (state.table && state.definition?.columns.some((item) => item.eng_name === column.eng_name) ? column.eng_name : "");
     if (originalName) row.dataset.originalName = originalName;
-    for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "disp_type", "disp_menu"]) {
+    for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "default_value", "disp_type", "disp_menu"]) {
       const cell = node("td"), input = node(["data_type", "disp_type"].includes(property) ? "select" : "input"); input.dataset.property = property;
       cell.title = "双击此单元格编辑";
       input.setAttribute("aria-label", `${column.eng_name || "新字段"} ${property}`);
       if (property === "data_type") for (const kind of new Set(["int", "float", "str", "bool", "json", "list", "dict", "datetime", column.data_type])) input.append(new Option(kind, kind));
       if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
+      else if (property === "default_value") {
+        const value = column.default_value;
+        input.value = value == null ? "" : typeof value === "string" && !integerTypes.has(columnKind(column)) ? JSON.stringify(value) : cellText(value);
+        input.placeholder = "未设置";
+        cell.title = '双击编辑默认值；留空不设置，空字符串填 ""，对象/数组填 JSON';
+      }
       else input.value = property === "chn_name" ? chineseName(column) : property === "disp_type" ? displayType : column[property] ?? "";
       input.dataset.originalValue = input.type === "checkbox" ? String(input.checked) : input.value;
       const update = () => {

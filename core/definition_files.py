@@ -284,7 +284,9 @@ def python_definition(definition):
                 field += '_'
             used.add(field)
         kind = TYPE_NAMES.get(column['data_type'].upper(), '_Any')
-        lines.append(f'    {field}: _Optional[{kind}] = _field(default=None, metadata={column!r})')
+        value = column.get('default_value')
+        default = f'default_factory=lambda: {value!r}' if isinstance(value, (dict, list)) else f'default={value!r}'
+        lines.append(f'    {field}: _Optional[{kind}] = _field({default}, metadata={column!r})')
     lines.extend(['', f'Row = {class_name}', ''])
     source = '\n'.join(lines)
     compile(source, name + '.py', 'exec')

@@ -151,6 +151,7 @@ class SQLiteManagement:
         for index, row in enumerate(inserts, 1):
             if not isinstance(row, dict):
                 raise APIError(400, f'新增第 {index} 行必须是记录对象')
+            row = table.definition.apply_defaults(row)
             missing = [key for key in table.primary_keys if row.get(key) is None
                        or isinstance(row[key], str) and not row[key].strip()]
             if missing:

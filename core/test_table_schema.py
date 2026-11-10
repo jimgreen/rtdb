@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -17,6 +18,45 @@ class TableSchemaTests(unittest.TestCase):
             ],
         }
         (root / "users.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_optional_defaults_round_trip_without_changing_legacy_definitions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_definition(root)
+            legacy = json.loads((root / 'users.json').read_text(encoding='utf-8'))
+            self.assertEqual(TableDefinition.from_mapping(legacy, root).to_mapping(), legacy)
+            desired = copy.deepcopy(legacy)
+            desired['columns'][0]['default_value'] = '9223372036854775807'
+            desired['columns'][1]['default_value'] = ''
+            desired['columns'][2]['default_value'] = None
+            desired['columns'].append(dict(chn_name='选项', eng_name='options', data_type='json',
+                                           primary_key=False, disp_type='文本', disp_menu='',
+                                           default_value={'items': [False, 0]}))
+            definition = TableDefinition.from_mapping(desired, root)
+            self.assertEqual(definition.column('user_id').default_value, 2**63 - 1)
+            self.assertEqual(definition.column('name').default_value, '')
+            self.assertNotIn('default_value', definition.to_mapping()['columns'][2])
+            first = definition.apply_defaults({})
+            second = definition.apply_defaults({'name': None, 'user_id': 0})
+            first['options']['items'].append('changed')
+            self.assertEqual(second['options']['items'], [False, 0])
+            self.assertIsNone(second['name'])
+            self.assertEqual(second['user_id'], 0)
+            definition.to_json(root / 'out')
+            self.assertEqual(TableDefinition.load(root / 'out', 'users').to_mapping(), definition.to_mapping())
+
+    def test_invalid_defaults_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_definition(root)
+            original = TableDefinition.load(root, 'users').to_mapping()
+            for kind, value in [('int', True), ('int', 2**63), ('int', '1.5'), ('float', float('inf')),
+                                ('str', 1), ('bool', 'false'), ('json', 'not JSON'), ('json', {'v': float('nan')})]:
+                with self.subTest(kind=kind, value=value):
+                    desired = copy.deepcopy(original)
+                    desired['columns'][1].update(data_type=kind, default_value=value)
+                    with self.assertRaisesRegex(SchemaError, 'default_value'):
+                        TableDefinition.from_mapping(desired, root)
 
     def test_load_and_round_trip_definition(self):
         with tempfile.TemporaryDirectory() as directory:

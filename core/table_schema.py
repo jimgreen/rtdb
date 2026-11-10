@@ -6,12 +6,13 @@ The definition directory contains one UTF-8 JSON file per table:
     One JSON object containing a ``head`` object and a ``columns`` array.
 
 The JSON field names are fixed English names: ``chn_name``, ``eng_name``,
-``primary_key``, ``data_type``, ``disp_type`` and ``disp_menu``. Definitions are data only; no executable code
+``primary_key``, ``data_type``, ``disp_type``, ``disp_menu`` and optional ``default_value``. Definitions are data only; no executable code
 is evaluated.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -76,6 +77,7 @@ class ColumnDefinition:
     data_type: str
     disp_type: str
     disp_menu: str
+    default_value: Any = None
 
     def __post_init__(self) -> None:
         if not _IDENTIFIER.fullmatch(self.eng_name):
@@ -86,6 +88,25 @@ class ColumnDefinition:
             raise SchemaError(f"data_type is required for {self.eng_name!r}")
         if not self.disp_type.strip():
             raise SchemaError(f"disp_type is required for {self.eng_name!r}")
+        if self.default_value is not None:
+            value = copy.deepcopy(self.default_value)
+            kind = self.data_type.strip().lower()
+            try:
+                # The browser transports integers outside its exact range as strings.
+                if kind in {"int", "integer", "long"}:
+                    if isinstance(value, str) and re.fullmatch(r'-?\d+', value):
+                        value = int(value)
+                    if isinstance(value, int) and not -(2**63) <= value < 2**63:
+                        raise ValueError('integer outside signed 64-bit range')
+                TableDefinition._validate_value(value, self, 1)
+                json.dumps(value, allow_nan=False)
+                if self.primary_key:
+                    hash(value)
+                    if isinstance(value, str) and not value.strip():
+                        raise ValueError('primary key cannot be blank')
+            except (TypeError, ValueError) as error:
+                raise SchemaError(f"column {self.eng_name!r} default_value: {error}") from error
+            object.__setattr__(self, 'default_value', value)
 
     @property
     def is_primary_key(self) -> bool:
@@ -208,6 +229,7 @@ class TableDefinition:
                     data_type=_clean(value.get("data_type")),
                     disp_type=_clean(value.get("disp_type")),
                     disp_menu=_clean(value.get("disp_menu", "")),
+                    default_value=value.get("default_value"),
                 )
             )
         root = Path(directory).expanduser().resolve()
@@ -216,6 +238,14 @@ class TableDefinition:
             columns=tuple(columns),
             path=root / f"{head.eng_name}.json",
         )
+
+    def apply_defaults(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Fill omitted fields only; explicit NULL and supplied values are preserved."""
+        result = dict(row)
+        for column in self.columns:
+            if column.eng_name not in result and column.default_value is not None:
+                result[column.eng_name] = copy.deepcopy(column.default_value)
+        return result
 
     def validate_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
         """Validate row shape and primary-key presence/uniqueness."""
@@ -278,6 +308,7 @@ class TableDefinition:
                     "data_type": column.data_type,
                     "disp_type": column.disp_type,
                     "disp_menu": column.disp_menu,
+                    **({"default_value": copy.deepcopy(column.default_value)} if column.default_value is not None else {}),
                 }
                 for column in self.columns
             ],

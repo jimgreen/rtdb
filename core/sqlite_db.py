@@ -214,6 +214,7 @@ class SQLiteTable(MutableSequence):
         if unknown:
             raise SchemaError(f'unknown columns: {unknown}')
         if complete:
+            row = self.definition.apply_defaults(row)
             self.definition.validate_rows([row])
             row = {name: row.get(name) for name in self.columns}
         for name, value in row.items():
