@@ -11,7 +11,7 @@ const state = { table: null, tables: [], definition: null, version: null, record
     left: { title: "左轴", min: null, max: null, showGrid: true },
     right: { title: "右轴", min: null, max: null, showGrid: true },
     x: { title: "", labelStep: 1 }
-  }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null };
+  }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null, sidebarContextTrigger: null, sidebarContextScope: null };
 let sqlHistoryItems = [], sqlHistoryActive = -1;
 const integerTypes = new Set(["int", "integer", "long"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
@@ -220,9 +220,7 @@ async function loadLogConfig() {
   renderLogDates(); renderLogSummary();
 }
 function resetLogPage() { state.logQuery.page = 1; }
-function notice(message, error = false) {
-  el("notice").textContent = message; el("notice").hidden = !message; el("notice").className = `notice${error ? " error" : ""}`;
-}
+function notice() { /* Compact layout: operation feedback is kept in the persistent log tab. */ }
 async function run(work, errorTarget = null) {
   if (state.busy) return;
   state.busy = true; document.body.dataset.busy = "true";
@@ -860,13 +858,6 @@ function finishCellSelection(event) {
   const drag = state.cellDrag; if (!drag) return;
   state.cellDrag = null; document.documentElement.classList.remove("selecting-cells");
 }
-function selectionSummary() {
-  const parts = [];
-  if (state.selected.size) parts.push(`已选 ${state.selected.size} 行`);
-  if (state.selectedColumns.size) parts.push(`已选 ${state.selectedColumns.size} 列`);
-  if (state.selectedCells.size) parts.push(`已选 ${state.selectedCells.size} 个单元格`);
-  return parts.join(" · ") || (state.editable ? "未选择记录" : "SQL 查询结果");
-}
 function gridSelectionModel() {
   const columns = visibleGridColumns();
   if (!columns.length || !state.records.length) return null;
@@ -982,7 +973,6 @@ function paintGridSelection() {
     if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
     cell.style.boxShadow = shadows.join(", ");
   });
-  el("selection-summary").textContent = selectionSummary() + (draftRecords().length ? ` · ${draftRecords().length} 条新增记录待保存` : "") + (state.pendingEdits.size ? ` · ${state.pendingEdits.size} 个单元格待保存` : "");
 }
 function renderGrid() {
   finishCellSelection();
@@ -1298,12 +1288,14 @@ function schemaDefaultDisplayType(kind) {
 }
 function updateSchemaLocks() {
   el("schema-hint").textContent = state.table
-    ? "表名和字段属性均可修改；字段双击编辑，默认值仅用于新记录；保存时同步 JSON、Python 定义文件。"
-    : "字段单元格双击后编辑属性；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON；保存后同步生成 JSON、Python 定义文件。";
+    ? "表名和字段属性均可修改；下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。"
+    : "下拉框和主键单击修改，文本字段双击后编辑；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON。";
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
-      input.disabled = !editing; input.title = editing ? "编辑中" : "双击单元格进入编辑";
+      const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
+      input.disabled = !directEdit && !editing;
+      input.title = directEdit ? "单击修改" : editing ? "编辑中" : "双击单元格进入编辑";
     }
     row.classList.toggle("schema-editing", editing);
   }
@@ -1322,7 +1314,8 @@ function renderSchema(definition) {
     if (originalName) row.dataset.originalName = originalName;
     for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "default_value", "disp_type", "disp_menu"]) {
       const cell = node("td"), input = node(["data_type", "disp_type"].includes(property) ? "select" : "input"); input.dataset.property = property;
-      cell.title = "双击此单元格编辑";
+      const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
+      cell.title = directEdit ? "单击修改" : "双击此单元格编辑";
       input.setAttribute("aria-label", `${column.eng_name || "新字段"} ${property}`);
       if (property === "data_type") for (const kind of new Set(["int", "float", "str", "bool", "json", "list", "dict", "datetime", column.data_type])) input.append(new Option(kind, kind));
       if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
@@ -1380,6 +1373,47 @@ function handleSchemaContextAction(actionName) {
   const row = state.schemaContextRow; closeSchemaContextMenu();
   if (!row || actionName !== "remove-column") return;
   row.remove(); schemaChanged(); notice("字段已移除，保存结构后正式生效");
+}
+function closeSidebarContextMenu(restoreFocus = false) {
+  const menu = el("sidebar-context-menu"), trigger = state.sidebarContextTrigger;
+  menu.hidden = true; state.sidebarContextTrigger = null;
+  if (restoreFocus) (trigger?.isConnected ? trigger : el("table-list")).focus({ preventScroll: true });
+}
+function openSidebarContextMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  if (state.busy) return;
+  state.sidebarContextTrigger = event.target.closest("[tabindex]") || el("table-list");
+  const menu = el("sidebar-context-menu");
+  menu.querySelector('[data-sidebar-action="backup"]').disabled = !state.checkedTables.size;
+  menu.hidden = false; menu.scrollTop = 0;
+  const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
+  menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
+  menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
+  (menu.querySelector("button:not(:disabled)") || menu).focus({ preventScroll: true });
+}
+function handleSidebarContextAction(actionName) {
+  closeSidebarContextMenu();
+  if (actionName === "select-all-tables") {
+    filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.add(item.name));
+    renderTables();
+  } else if (actionName === "invert-tables") {
+    filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.has(item.name) ? state.checkedTables.delete(item.name) : state.checkedTables.add(item.name));
+    renderTables();
+  } else if (actionName === "clear-tables") {
+    state.checkedTables.clear();
+    renderTables();
+  } else if (actionName === "select-all-fields") {
+    state.fields = new Set(state.resultColumns.map((column) => column.eng_name));
+    renderFields(); renderGrid();
+  } else if (actionName === "invert-fields") {
+    state.fields = new Set(state.resultColumns.filter((column) => column.primary_key || !state.fields.has(column.eng_name)).map((column) => column.eng_name));
+    renderFields(); renderGrid();
+  } else if (actionName === "clear-fields") {
+    state.fields = new Set(state.resultColumns.filter((column) => column.primary_key).map((column) => column.eng_name));
+    renderFields(); renderGrid();
+  } else if (actionName === "load-definition") void run(openDefinitionDialog);
+  else if (actionName === "backup") void run(backupSelectedTables);
+  else if (actionName === "restore") chooseRestoreBackup();
 }
 async function saveSchema() {
   if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再保存表结构");
@@ -1686,7 +1720,7 @@ function drawChartTitle(context, width, height) {
   context.restore();
 }
 function drawChart() {
-  if (!el("tab-data").classList.contains("active") || el("tab-chart").hidden || document.documentElement.classList.contains("chart-collapsed")) return;
+  if (!el("tab-chart").classList.contains("active") || document.documentElement.classList.contains("chart-collapsed")) return;
   const canvas = el("chart"), context = canvas.getContext("2d"), model = buildChartModel();
   for (const control of [el("chart-mode").closest("label"), el("chart-x").closest("label"), el("chart-fields")]) control.hidden = state.chartPinned;
   el("follow-chart-selection").hidden = el("chart-series-summary").hidden = !state.chartPinned;
@@ -2057,8 +2091,25 @@ async function restoreBackup() {
   await refresh(); notice(message, !result.ok); log(message, !result.ok);
 }
 
+function openDefinitionDialog() {
+  if (hasPendingData() || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再加载文件");
+  el("definition-error").textContent = ""; resetDefinitionPreview(); el("definition-dialog").showModal();
+}
+async function backupSelectedTables() {
+  if (!state.checkedTables.size) throw new Error("请在表索引中勾选要备份的表");
+  const tables = [...state.checkedTables], result = await request("backup", "POST", { tables });
+  download(result.text, result.filename, result.mime); log(`备份表：${tables.join(", ")}`);
+}
+function chooseRestoreBackup() {
+  if (!state.busy) { el("restore-file").value = ""; el("restore-file").click(); }
+}
+
 const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel", axis: "y", direction: -1, defaultSize: 240,
-  minimum: chartMinimumHeight, maximum: () => Math.max(170, el("tab-data").clientHeight - el("query-panel").getBoundingClientRect().height - 180),
+  minimum: chartMinimumHeight, maximum: () => {
+    const workspace = document.querySelector(".workspace"), mainTabs = document.querySelector(".workspace > .tabs"), statusbar = document.querySelector(".statusbar");
+    const mainPanel = el("tab-data").classList.contains("active") ? el("query-panel").getBoundingClientRect().height + el("query-splitter").getBoundingClientRect().height + 80 : 80;
+    return Math.max(0, (workspace?.clientHeight || 0) - (mainTabs?.getBoundingClientRect().height || 0) - (statusbar?.getBoundingClientRect().height || 0) - mainPanel - el("chart-splitter").getBoundingClientRect().height);
+  },
   collapseThreshold: 48, cssVariable: "--chart-height", collapsedClass: "chart-collapsed" });
 setupSplitter({ id: "table-list-splitter", panelId: "table-list", axis: "y", defaultSize: 180,
   minimum: () => 72, maximum: () => Math.max(120, el("table-sidebar").clientHeight - 250),
@@ -2090,6 +2141,9 @@ el("schema-context-menu").addEventListener("click", (event) => {
 el("chart-context-menu").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-chart-action]"); if (actionButton && !actionButton.disabled) handleChartContextAction(actionButton.dataset.chartAction);
 });
+el("sidebar-context-menu").addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-sidebar-action]"); if (actionButton && !actionButton.disabled) handleSidebarContextAction(actionButton.dataset.sidebarAction);
+});
 el("chart-context-menu").addEventListener("keydown", (event) => {
   if (event.key === "Tab") { closeChartContextMenu(true); return; }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -2101,6 +2155,7 @@ el("chart-context-menu").addEventListener("keydown", (event) => {
 });
 el("chart-area").addEventListener("contextmenu", openChartContextMenu);
 el("records-panel").addEventListener("contextmenu", (event) => openRowContextMenu(event, null, null));
+el("table-list").addEventListener("contextmenu", openSidebarContextMenu);
 el("data-grid").addEventListener("keydown", (event) => {
   if (event.target.closest(".cell-editor") || !(event.ctrlKey || event.metaKey) || event.altKey) return;
   if (event.key.toLowerCase() !== "c") return;
@@ -2119,6 +2174,12 @@ el("records-panel").addEventListener("keydown", (event) => {
   const bounds = event.target.getBoundingClientRect();
   event.target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
 });
+el("table-list").addEventListener("keydown", (event) => {
+  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+  event.preventDefault();
+  const bounds = event.currentTarget.getBoundingClientRect();
+  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
+});
 el("row-context-menu").addEventListener("keydown", (event) => {
   if (event.key === "Tab") { closeRowContextMenu(true); return; }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -2128,25 +2189,29 @@ el("row-context-menu").addEventListener("keydown", (event) => {
   const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
   buttons[index].focus();
 });
-document.addEventListener("click", (event) => { if (!event.target.closest("#row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-context-menu")) closeSchemaContextMenu(); });
+el("sidebar-context-menu").addEventListener("keydown", (event) => {
+  if (event.key === "Tab") { closeSidebarContextMenu(true); return; }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")]; if (!buttons.length) return;
+  const current = buttons.indexOf(document.activeElement);
+  const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[index].focus();
+});
+document.addEventListener("click", (event) => { if (!event.target.closest("#row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#sidebar-context-menu")) closeSidebarContextMenu(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("row-context-menu").hidden) { event.preventDefault(); closeRowContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("chart-context-menu").hidden) { event.preventDefault(); closeChartContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("schema-context-menu").hidden) { event.preventDefault(); closeSchemaContextMenu(true); } });
-document.addEventListener("contextmenu", (event) => { if (!event.target.closest("#records-panel, #row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-area, #chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-fields, #schema-context-menu")) closeSchemaContextMenu(); });
-document.addEventListener("scroll", (event) => { if (!el("row-context-menu").contains(event.target)) closeRowContextMenu(); if (!el("chart-context-menu").contains(event.target)) closeChartContextMenu(); if (!el("schema-context-menu").contains(event.target)) closeSchemaContextMenu(); }, true);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("sidebar-context-menu").hidden) { event.preventDefault(); closeSidebarContextMenu(true); } });
+document.addEventListener("contextmenu", (event) => { if (!event.target.closest("#records-panel, #row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-area, #chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-fields, #schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#table-list, #sidebar-context-menu")) closeSidebarContextMenu(); });
+document.addEventListener("scroll", (event) => { if (!el("row-context-menu").contains(event.target)) closeRowContextMenu(); if (!el("chart-context-menu").contains(event.target)) closeChartContextMenu(); if (!el("schema-context-menu").contains(event.target)) closeSchemaContextMenu(); if (!el("sidebar-context-menu").contains(event.target)) closeSidebarContextMenu(); }, true);
 document.addEventListener("pointermove", updateCellSelectionFromPointer);
 document.addEventListener("pointerup", finishCellSelection);
 document.addEventListener("pointercancel", finishCellSelection);
 window.addEventListener("blur", finishCellSelection);
-window.addEventListener("blur", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); });
-window.addEventListener("resize", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); });
+window.addEventListener("blur", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
+window.addEventListener("resize", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
 for (const id of ["table-filter", "exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
-el("select-tables").onclick = () => { filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.add(item.name)); renderTables(); };
-el("invert-tables").onclick = () => { filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.has(item.name) ? state.checkedTables.delete(item.name) : state.checkedTables.add(item.name)); renderTables(); };
-el("clear-tables").onclick = () => { state.checkedTables.clear(); renderTables(); };
-for (const [id, mode] of [["all-fields", "all"], ["no-fields", "none"], ["invert-fields", "invert"]]) el(id).onclick = () => {
-  state.fields = new Set(state.resultColumns.filter((column) => column.primary_key || mode === "all" || mode === "invert" && !state.fields.has(column.eng_name)).map((column) => column.eng_name)); renderFields(); renderGrid();
-};
 el("refresh").onclick = () => run(refresh);
 el("query").onclick = () => run(executeSql);
 el("page-size").onchange = () => run(() => queryRows({ reset: true }));
@@ -2172,11 +2237,13 @@ el("new-table").onclick = () => run(async () => {
   renderSchema({ head: { eng_name: "", chn_name: "" }, columns: [{ eng_name: "id", chn_name: "编号", data_type: "int", primary_key: true, disp_type: "整数", disp_menu: "" },
     { eng_name: "name", chn_name: "名称", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" }] }); tab("schema");
 });
-el("app-title").ondblclick = () => run(async () => {
+async function openDatabaseFileDialog() {
   if (!await discardSchema() || !await discardCellEdits()) return;
   setDatabaseFileTab("server"); el("database-file-error").textContent = ""; el("database-file-dialog").showModal();
   await loadDatabaseFiles();
-});
+}
+el("app-title").ondblclick = () => run(openDatabaseFileDialog);
+el("open-database-files").onclick = () => run(openDatabaseFileDialog);
 document.querySelectorAll("[data-database-file-tab]").forEach((button) => { button.onclick = () => setDatabaseFileTab(button.dataset.databaseFileTab); });
 el("refresh-database-files").onclick = () => run(loadDatabaseFiles);
 el("database-repair-embed").onclick = () => run(() => repairDatabase("rebuild-embedded-definition"), "database-repair-error");
@@ -2237,15 +2304,9 @@ document.addEventListener("scroll", (event) => { if (event.target !== el("sql-hi
 window.addEventListener("resize", closeSqlHistory);
 el("import-file").onchange = () => { const file = el("import-file").files[0]; el("import-preview").textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : "尚未选择文件"; };
 el("run-import").onclick = () => run(importFile, "import-error");
-el("load-definition").onclick = () => run(() => {
-  if (hasPendingData() || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再加载文件");
-  el("definition-error").textContent = ""; resetDefinitionPreview(); el("definition-dialog").showModal();
-});
 ["definition-file", "definition-encoding", "definition-mode", "definition-keys"].forEach((id) => el(id).addEventListener("input", resetDefinitionPreview));
 el("preview-definition").onclick = () => run(previewDefinition, "definition-error");
 el("apply-definition").onclick = () => run(applyDefinitionImport, "definition-error");
-el("backup").onclick = () => run(async () => { if (!state.checkedTables.size) throw new Error("请在表索引中勾选要备份的表"); const result = await request("backup", "POST", { tables: [...state.checkedTables] }); download(result.text, result.filename, result.mime); log(`备份表：${[...state.checkedTables].join(", ")}`); });
-el("restore").onclick = () => { if (!state.busy) { el("restore-file").value = ""; el("restore-file").click(); } };
 el("restore-file").onchange = () => run(restoreBackup);
 el("chart-mode").onchange = () => { state.chartMode = el("chart-mode").value; resetChartCursor(); drawChart(); };
 el("chart-x").onchange = () => { resetChartCursor(); drawChart(); };

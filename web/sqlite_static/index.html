@@ -7,22 +7,20 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">R</span><div><h1 id="app-title" title="双击打开数据库文件管理">RTDB 管理终端</h1><span class="eyebrow">实时数据 · SQLite</span></div><span id="current-database-file" class="current-database-file" aria-live="polite">未选择数据库</span><span id="connection" class="badge">连接中</span></div>
-    <div class="button-row"><label class="auto-label">自动刷新 <select id="auto-refresh" aria-label="自动刷新间隔"><option value="0">关闭</option><option value="2">2 秒</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label><button id="refresh" class="secondary">刷新 F5</button></div>
+    <div class="button-row"><label class="auto-label">自动刷新 <select id="auto-refresh" aria-label="自动刷新间隔"><option value="0">关闭</option><option value="2">2 秒</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label><button id="open-database-files" class="secondary">数据库文件</button><button id="refresh" class="secondary">刷新 F5</button></div>
   </header>
   <main class="layout">
     <aside id="table-sidebar" class="sidebar">
-      <div class="panel-title"><h2>表索引</h2><button id="new-table" class="small">＋ 新建</button></div>
-      <input id="table-filter" type="search" placeholder="搜索英文 / 中文表名" aria-label="搜索表名">
-      <div class="filter-options"><label><input id="exact-match" type="checkbox">精确匹配</label><label><input id="nonempty" type="checkbox">仅非空表</label></div>
-      <div class="button-row compact"><button id="select-tables" class="link">全选</button><button id="invert-tables" class="link">反选</button><button id="clear-tables" class="link">取消</button><span id="table-count" class="muted"></span></div>
-      <div id="table-list" class="table-list"><p class="empty">正在加载…</p></div>
+      <div class="sidebar-toolbar">
+        <div class="sidebar-toolbar-row"><h2>表索引</h2><button id="new-table" class="small">＋ 新建</button></div>
+        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索英文 / 中文表名" aria-label="搜索表名"><div class="filter-options"><label><input id="exact-match" type="checkbox">精确匹配</label><label><input id="nonempty" type="checkbox">仅非空表</label></div><span id="table-count" class="muted"></span></div>
+      </div>
+      <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，右键打开操作菜单" title="右键打开表索引操作菜单"><p class="empty">正在加载…</p></div>
       <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="拖拽调整或折叠表列表区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
-      <div class="backup-actions"><button id="load-definition" class="secondary small" title="从 dbdef / E 文件生成或更新表结构和数据">加载 dbdef / E</button><button id="backup" class="secondary small">备份所选表</button><button id="restore" class="secondary small">恢复备份</button></div>
-      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div class="button-row compact"><button id="all-fields" class="link">全选</button><button id="invert-fields" class="link">反选</button><button id="no-fields" class="link">取消</button></div><div id="field-list"><p class="muted">选择表后查看字段</p></div></details>
+      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div id="field-list" tabindex="0" aria-label="字段列表，右键打开操作菜单" title="右键打开字段操作菜单"><p class="muted">选择表后查看字段</p></div></details>
     </aside>
     <div id="sidebar-splitter" class="splitter splitter-vertical" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="table-sidebar" aria-label="拖拽调整或折叠表索引区域" title="向左拖到边缘收起，向右拖拽展开；方向键微调"></div>
     <section class="workspace">
-      <div id="notice" class="notice" role="status" hidden></div>
       <div class="context-bar"><h2 id="current-table">请选择或新建一张表</h2><span id="table-meta" class="muted">—</span></div>
       <nav class="tabs" role="tablist" aria-label="管理功能">
         <button id="nav-data" class="tab active" role="tab" aria-selected="true" aria-controls="tab-data" data-tab="data">结果展示</button>
@@ -36,37 +34,9 @@
           <label class="check-label"><input id="chinese-columns" type="checkbox" checked>中文列名</label></div>
         </div>
         <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="拖拽调整或折叠查询区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
-        <div id="records-panel" class="panel records-panel"><div class="panel-title"><span id="selection-summary" class="muted">未选择记录</span><div class="button-row"><button id="save-cell-edits" class="small" hidden>保存改单元格</button><button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button><span class="context-hint">右键打开操作菜单</span></div></div>
+        <div id="records-panel" class="panel records-panel"><div class="panel-title"><div class="button-row"><button id="save-cell-edits" class="small" hidden>保存改单元格</button><button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button></div></div>
           <div id="data-grid" class="grid-wrap" tabindex="0" aria-label="查询结果表格，右键或 Shift+F10 打开操作菜单"><div class="empty"><strong>从左侧选择一张表</strong><p>查看实时记录，或新建表结构开始录入。</p></div></div>
           <div class="pager"><span id="row-range" class="muted">0 条记录</span><div class="button-row"><button id="prev" class="secondary small">上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <span id="page-total">1</span> 页</label><button id="go-page" class="secondary small">跳转</button><button id="next" class="secondary small">下一页</button></div></div>
-        </div>
-        <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="拖拽调整或折叠曲线与日志区域" title="向下拖到底部收起，向上拖拽展开"></div>
-        <div id="bottom-panel" class="bottom-panel">
-          <div class="bottom-bar">
-            <nav class="tabs bottom-tabs" role="tablist" aria-label="曲线与日志">
-              <button id="nav-chart" class="tab active" role="tab" aria-selected="true" aria-controls="tab-chart" data-bottom-tab="chart">曲线</button>
-              <button id="nav-logs" class="tab" role="tab" aria-selected="false" aria-controls="tab-logs" data-bottom-tab="logs" tabindex="-1" title="按日期查看服务端持久化操作日志">日志</button>
-            </nav>
-            <div id="chart-actions" class="button-row"><span id="chart-edit-hint" class="muted">未选择修改</span><button id="follow-chart-selection" class="secondary small" title="清空当前曲线和图例" hidden>清空曲线</button><button id="save-chart" class="secondary small">导出 PNG</button></div>
-            <div id="logs-actions" class="button-row" hidden><button id="refresh-logs" class="secondary small">刷新</button><button id="export-logs" class="secondary small">导出当前页</button></div>
-          </div>
-          <section id="tab-chart" class="bottom-tab-panel chart-panel active" role="tabpanel" aria-labelledby="nav-chart">
-            <div class="chart-heading"><div class="chart-controls"><label>曲线方向<select id="chart-mode" aria-label="曲线方向"><option value="columns">按列成曲线</option><option value="rows">按行成曲线（key 为曲线名）</option></select></label><label>横轴<select id="chart-x" aria-label="曲线横轴"><option value="">key / 行序号</option></select></label><div id="chart-fields" class="button-row wrap"></div><span id="chart-series-summary" class="muted" hidden></span></div><div id="chart-legend" class="button-row wrap" role="group" aria-label="曲线图例，点击名称显示或隐藏"></div></div>
-            <div id="chart-area" class="chart-area"><div id="chart-empty" class="empty">选择包含数值字段的表后查看曲线。</div><canvas id="chart" aria-label="双轴曲线，悬停显示游标，拖动曲线点修改表格" tabindex="0" hidden></canvas></div>
-          </section>
-          <section id="tab-logs" class="bottom-tab-panel" role="tabpanel" aria-labelledby="nav-logs" hidden>
-            <div class="log-toolbar">
-              <label>日期<select id="log-date" aria-label="日志日期"><option value="">全部日期</option></select></label>
-              <label>关键词<input id="log-keyword" type="search" placeholder="操作、表名、路径或错误" aria-label="日志关键词"></label>
-              <label>类别<select id="log-category" aria-label="日志类别"><option value="">全部类别</option><option value="structure">结构</option><option value="data">数据</option><option value="system">系统</option></select></label>
-              <label>状态<select id="log-status" aria-label="日志状态"><option value="">全部状态</option><option value="success">成功</option><option value="failure">失败</option></select></label>
-              <label>每页<select id="log-page-size" aria-label="日志每页数量"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option></select></label>
-              <button id="query-logs" class="secondary small" type="button">查询</button>
-            </div>
-            <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数（0=永久）<input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="日志保留天数"></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
-            <div id="logs" class="logs" tabindex="0" aria-label="日志内容"></div>
-            <div class="log-pager"><button id="log-prev" class="secondary small" type="button">上一页</button><span id="log-page-label">第 1 / 1 页</span><button id="log-next" class="secondary small" type="button">下一页</button></div>
-          </section>
         </div>
       </section>
       <section id="tab-schema" class="tab-panel" role="tabpanel" aria-labelledby="nav-schema">
@@ -75,6 +45,34 @@
           <div id="schema-fields" class="grid-wrap"></div>
         </div>
       </section>
+      <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="拖拽调整曲线与日志区域高度" title="向上拖到顶端展开至最大，向下拖到底端收起"></div>
+      <div id="bottom-panel" class="bottom-panel">
+        <div class="bottom-bar">
+          <nav class="tabs bottom-tabs" role="tablist" aria-label="曲线与日志">
+            <button id="nav-chart" class="tab active" role="tab" aria-selected="true" aria-controls="tab-chart" data-bottom-tab="chart">曲线</button>
+            <button id="nav-logs" class="tab" role="tab" aria-selected="false" aria-controls="tab-logs" data-bottom-tab="logs" tabindex="-1" title="按日期查看服务端持久化操作日志">日志</button>
+          </nav>
+          <div id="chart-actions" class="button-row"><span id="chart-edit-hint" class="muted">未选择修改</span><button id="follow-chart-selection" class="secondary small" title="清空当前曲线和图例" hidden>清空曲线</button><button id="save-chart" class="secondary small">导出 PNG</button></div>
+          <div id="logs-actions" class="button-row" hidden><button id="refresh-logs" class="secondary small">刷新</button><button id="export-logs" class="secondary small">导出当前页</button></div>
+        </div>
+        <section id="tab-chart" class="bottom-tab-panel chart-panel active" role="tabpanel" aria-labelledby="nav-chart">
+          <div class="chart-heading"><div class="chart-controls"><label>曲线方向<select id="chart-mode" aria-label="曲线方向"><option value="columns">按列成曲线</option><option value="rows">按行成曲线（key 为曲线名）</option></select></label><label>横轴<select id="chart-x" aria-label="曲线横轴"><option value="">key / 行序号</option></select></label><div id="chart-fields" class="button-row wrap"></div><span id="chart-series-summary" class="muted" hidden></span></div><div id="chart-legend" class="button-row wrap" role="group" aria-label="曲线图例，点击名称显示或隐藏"></div></div>
+          <div id="chart-area" class="chart-area"><div id="chart-empty" class="empty">选择包含数值字段的表后查看曲线。</div><canvas id="chart" aria-label="双轴曲线，悬停显示游标，拖动曲线点修改表格" tabindex="0" hidden></canvas></div>
+        </section>
+        <section id="tab-logs" class="bottom-tab-panel" role="tabpanel" aria-labelledby="nav-logs" hidden>
+          <div class="log-toolbar">
+            <label>日期<select id="log-date" aria-label="日志日期"><option value="">全部日期</option></select></label>
+            <label>关键词<input id="log-keyword" type="search" placeholder="操作、表名、路径或错误" aria-label="日志关键词"></label>
+            <label>类别<select id="log-category" aria-label="日志类别"><option value="">全部类别</option><option value="structure">结构</option><option value="data">数据</option><option value="system">系统</option></select></label>
+            <label>状态<select id="log-status" aria-label="日志状态"><option value="">全部状态</option><option value="success">成功</option><option value="failure">失败</option></select></label>
+            <label>每页<select id="log-page-size" aria-label="日志每页数量"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option></select></label>
+            <button id="query-logs" class="secondary small" type="button">查询</button>
+          </div>
+          <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数（0=永久）<input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="日志保留天数"></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
+          <div id="logs" class="logs" tabindex="0" aria-label="日志内容"></div>
+          <div class="log-pager"><button id="log-prev" class="secondary small" type="button">上一页</button><span id="log-page-label">第 1 / 1 页</span><button id="log-next" class="secondary small" type="button">下一页</button></div>
+        </section>
+      </div>
       <footer class="statusbar" aria-label="数据库路径与刷新状态"><span id="storage-path">正在读取服务信息…</span><span id="last-refresh">尚未刷新</span></footer>
     </section>
   </main>
@@ -159,14 +157,11 @@
     <button type="button" role="menuitem" data-action="add-row">新增记录</button>
     <button type="button" role="menuitem" data-action="copy-rows" title="复制完整行，供插入复制行使用">复制选中行</button>
     <button type="button" role="menuitem" data-action="insert-copied-rows">插入复制行</button>
-    <button type="button" role="menuitem" data-action="import">导入记录</button>
-    <button type="button" role="menuitem" data-action="export-json">导出查询（JSON）</button>
     <button type="button" role="menuitem" data-action="export-csv">导出查询（CSV）</button>
     <hr>
     <button type="button" role="menuitem" data-action="copy-cells">复制选中区域</button>
     <button type="button" role="menuitem" data-action="paste-cells">粘贴到选区</button>
     <hr>
-    <button type="button" role="menuitem" data-action="batch-edit">批量修改选中</button>
     <button type="button" role="menuitem" data-action="delete-selected" class="danger">删除选中记录</button>
     <button type="button" role="menuitem" data-action="clear-table" class="danger">清空表</button>
     <hr>
@@ -185,6 +180,20 @@
   </div>
   <div id="schema-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="字段操作" hidden>
     <button type="button" role="menuitem" data-schema-action="remove-column" class="danger">删除字段</button>
+  </div>
+  <div id="sidebar-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表索引操作" hidden>
+    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="select-all-tables">全选</button>
+    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="invert-tables">反选</button>
+    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="clear-tables">取消</button>
+    <hr data-sidebar-separator="tables">
+    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="select-all-fields">全选</button>
+    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="invert-fields">反选</button>
+    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="clear-fields">取消</button>
+    <hr data-sidebar-separator="fields">
+    <hr data-sidebar-separator="files">
+    <button type="button" role="menuitem" data-sidebar-action="load-definition">加载 dbdef / E</button>
+    <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
+    <button type="button" role="menuitem" data-sidebar-action="restore">恢复备份</button>
   </div>
   <script src="/static/app.js"></script>
 </body>
