@@ -669,23 +669,19 @@ function openRowContextMenu(event, record, index) {
   } else if (!cell && record && !state.selected.size && !state.selectedColumns.size && !state.selectedCells.size) selectGridRow(index, {});
   const selection = chartSelection();
   const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, trigger: event.target.closest("[tabindex]") || el("data-grid") };
-  const hasTable = Boolean(state.table), hasRows = Boolean(state.editable && state.selected.size), hasQuery = Boolean(state.lastQuery);
+  const hasTable = Boolean(state.table), hasQuery = Boolean(state.lastQuery);
   const pending = hasPendingData();
   const setDisabled = (actionName, disabled) => { menu.querySelector(`[data-action="${actionName}"]`).disabled = disabled; };
   setDisabled("add-row", !hasTable || draftRecords().length >= 500);
   const rowIndexes = selectedRowIndexes(record, index);
   setDisabled("copy-rows", !state.editable || !rowIndexes.length);
   setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
-  setDisabled("import", !hasTable || pending);
-  setDisabled("export-json", !hasTable || !hasQuery);
   setDisabled("export-csv", !hasTable || !hasQuery || !state.fields.size);
   const hasCellSelection = Boolean(gridSelectionModel());
   setDisabled("copy-cells", !hasCellSelection);
   setDisabled("paste-cells", !hasTable || !state.editable || !hasCellSelection);
-  setDisabled("batch-edit", !hasRows || pending);
   setDisabled("delete-selected", !state.editable || !rowIndexes.length);
   setDisabled("clear-table", !hasTable || pending);
-  menu.querySelector('[data-action="batch-edit"]').title = pending ? "请先保存或撤销单元格修改" : hasRows ? `操作当前页选中的 ${state.selected.size} 行` : "点击行标题选择记录后操作";
   menu.querySelector('[data-action="delete-selected"]').title = !state.editable ? "当前查询结果不可删除，请切换到完整表查询" : rowIndexes.length
     ? `删除选区涉及的 ${rowIndexes.length} 条整行记录；保留其他行的待保存修改` : "请选择行或单元格区域";
   const canPlot = selection.fields.some((column) => selection.indexes.some((rowIndex) =>
