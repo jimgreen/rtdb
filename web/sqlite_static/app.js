@@ -6,7 +6,7 @@ const state = { table: null, tables: [], definition: null, version: null, record
   rowAnchor: null, columnAnchor: null, cellAnchor: null, cellDrag: null, chartMode: "rows", chartAxes: new Map(),
   chartFrame: null, chartHits: [], chartCursor: { index: -1, pinned: false, y: 0 }, chartDrag: null, contextRecord: null,
   chartSeries: [], chartPinned: false, chartCleared: true, chartQueryKey: null, chartHidden: new Set(),
-  chartStyles: new Map(), chartTitle: "", auditRecords: [], auditLoaded: false, logQuery: { date: "", keyword: "", category: "", status: "", page: 1, pageSize: 50, total: 0, pages: 1 },
+  chartStyles: new Map(), chartTitle: "", chartTitleSettings: null, auditRecords: [], auditLoaded: false, logQuery: { date: "", keyword: "", category: "", status: "", page: 1, pageSize: 50, total: 0, pages: 1 },
   logConfig: null, logDates: [], databaseFiles: [], chartAxisSettings: {
     left: { title: "左轴", min: null, max: null, showGrid: true },
     right: { title: "右轴", min: null, max: null, showGrid: true },
@@ -19,11 +19,27 @@ const boolTypes = new Set(["bool", "boolean"]);
 const objectTypes = new Set(["list", "array", "dict", "object", "json"]);
 const colors = ["#2869d5", "#19a186", "#e3922e", "#9764d0", "#dc607b", "#268eac"];
 const chartSettingsStorageKey = "rtdb.chart.settings";
+const chartTitleDefaults = { color: "#314c70", fontSize: 13, fontFamily: "Segoe UI", fontStyle: "bold", position: "top-center", gap: 6 };
+const chartTitleFonts = ["Segoe UI", "Microsoft YaHei", "SimSun", "SimHei", "Arial"];
+const chartTitleStyles = ["normal", "bold", "italic", "bold-italic"];
+const chartTitlePositions = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
+function normalizeChartTitleSettings(value) {
+  const settings = value && typeof value === "object" ? value : {}, bounded = (key, min, max) => typeof settings[key] === "number" && Number.isFinite(settings[key]) ? Math.max(min, Math.min(max, Math.round(settings[key]))) : chartTitleDefaults[key];
+  return {
+    color: /^#[0-9a-f]{6}$/i.test(settings.color) ? settings.color : chartTitleDefaults.color,
+    fontSize: bounded("fontSize", 8, 72), gap: bounded("gap", 0, 32),
+    fontFamily: chartTitleFonts.includes(settings.fontFamily) ? settings.fontFamily : chartTitleDefaults.fontFamily,
+    fontStyle: chartTitleStyles.includes(settings.fontStyle) ? settings.fontStyle : chartTitleDefaults.fontStyle,
+    position: chartTitlePositions.includes(settings.position) ? settings.position : chartTitleDefaults.position
+  };
+}
+state.chartTitleSettings = normalizeChartTitleSettings();
 function loadChartSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(chartSettingsStorageKey) || "null");
     if (!saved || typeof saved !== "object") return;
     if (typeof saved.title === "string") state.chartTitle = saved.title;
+    state.chartTitleSettings = normalizeChartTitleSettings(saved.titleSettings);
     for (const axis of ["left", "right", "x"]) {
       if (!saved.axes?.[axis] || typeof saved.axes[axis] !== "object") continue;
       Object.assign(state.chartAxisSettings[axis], saved.axes[axis]);
@@ -36,7 +52,7 @@ function loadChartSettings() {
 function saveChartSettings() {
   try {
     localStorage.setItem(chartSettingsStorageKey, JSON.stringify({
-      title: state.chartTitle, axes: state.chartAxisSettings, styles: Object.fromEntries(state.chartStyles)
+      title: state.chartTitle, titleSettings: state.chartTitleSettings, axes: state.chartAxisSettings, styles: Object.fromEntries(state.chartStyles)
     }));
   } catch { /* Optional preference persistence. */ }
 }
@@ -622,8 +638,8 @@ function openRowContextMenu(event, record, index) {
   const pending = hasPendingData();
   const setDisabled = (actionName, disabled) => { menu.querySelector(`[data-action="${actionName}"]`).disabled = disabled; };
   setDisabled("add-row", !hasTable || draftRecords().length >= 500);
-  const copyIndexes = selectedRowIndexes(record, index);
-  setDisabled("copy-rows", !state.editable || !copyIndexes.length);
+  const rowIndexes = selectedRowIndexes(record, index);
+  setDisabled("copy-rows", !state.editable || !rowIndexes.length);
   setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
   setDisabled("import", !hasTable || pending);
   setDisabled("export-json", !hasTable || !hasQuery);
@@ -632,18 +648,17 @@ function openRowContextMenu(event, record, index) {
   setDisabled("copy-cells", !hasCellSelection);
   setDisabled("paste-cells", !hasTable || !state.editable || !hasCellSelection);
   setDisabled("batch-edit", !hasRows || pending);
-  setDisabled("delete-selected", !hasRows || pending);
+  setDisabled("delete-selected", !state.editable || !rowIndexes.length);
   setDisabled("clear-table", !hasTable || pending);
-  for (const actionName of ["edit", "copy", "delete"]) menu.querySelector(`[data-action="${actionName}"]`).disabled = !record || !state.editable || pending;
-  for (const actionName of ["batch-edit", "delete-selected"]) menu.querySelector(`[data-action="${actionName}"]`).title = pending ? "请先保存或撤销单元格修改" : hasRows ? `操作当前页选中的 ${state.selected.size} 行` : "点击行标题选择记录后操作";
-  menu.querySelector('[data-action="toggle-select"]').disabled = !record;
+  menu.querySelector('[data-action="batch-edit"]').title = pending ? "请先保存或撤销单元格修改" : hasRows ? `操作当前页选中的 ${state.selected.size} 行` : "点击行标题选择记录后操作";
+  menu.querySelector('[data-action="delete-selected"]').title = !state.editable ? "当前查询结果不可删除，请切换到完整表查询" : rowIndexes.length
+    ? `删除选区涉及的 ${rowIndexes.length} 条整行记录；保留其他行的待保存修改` : "请选择行或单元格区域";
   const canPlot = selection.fields.some((column) => selection.indexes.some((rowIndex) =>
     (!selection.cells.size || selection.cells.has(cellSelectionKey(rowIndex, column.eng_name))) && chartNumber(state.records[rowIndex].row[column.eng_name]) !== null));
   for (const actionName of ["chart-left", "chart-right"]) {
     const button = menu.querySelector(`[data-action="${actionName}"]`); button.disabled = !canPlot;
     button.title = canPlot ? `${selection.indexes.length} 行 × ${selection.columnCount} 列，${selection.mode === "rows" ? "按行绘制，KEY 为曲线名" : "按列绘制，列名为曲线名"}` : "选区中没有可绘制的数值";
   }
-  menu.querySelector('[data-action="toggle-select"]').textContent = state.selected.has(index) ? "取消选择" : "选择记录";
   menu.hidden = false;
   menu.scrollTop = 0;
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
@@ -651,12 +666,35 @@ function openRowContextMenu(event, record, index) {
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
   (menu.querySelector("button:not(:disabled)") || menu).focus({ preventScroll: true });
 }
-async function deleteContextRecord(record) {
+async function deleteRecords(records, title) {
   requireTable();
-  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再删除记录");
-  if (!await confirmAction("删除记录", `删除 ${record.ref.key.join(" / ")} 这条记录？`)) return;
-  await request(tablePath("rows"), "DELETE", { records: [record.ref] });
-  log(`删除 ${state.table}：1 条`); notice("记录已删除"); await queryRows();
+  if (!state.editable) throw new Error("当前查询结果不可删除，请切换到完整表查询");
+  if (!records.length || records.some((record) => !record || !state.records.includes(record))) throw new Error("请选择有效记录");
+  const saved = records.filter((record) => !record.draftId), drafts = records.length - saved.length;
+  const details = [saved.length ? `${saved.length} 条数据库记录` : "", drafts ? `${drafts} 条待保存新行` : ""].filter(Boolean).join("和");
+  if (!await confirmAction(title, `删除 ${state.table} 中选中的 ${records.length} 条整行记录（${details}）？选中行的待保存修改会一并移除，其他行的待保存内容保留。`)) return;
+  // Keep all local drafts and edits intact until the server has deleted the saved rows atomically.
+  if (saved.length) await request(tablePath("rows"), "DELETE", { records: saved.map((record) => record.ref) });
+  const removed = new Set(records.map(recordKey));
+  state.records = state.records.filter((record) => !removed.has(recordKey(record)));
+  for (const [key, edit] of state.pendingEdits) if (removed.has(recordKey(edit.record))) state.pendingEdits.delete(key);
+  state.total = Math.max(0, state.total - saved.length); state.tableTotal = Math.max(0, state.tableTotal - saved.length);
+  const table = state.tables.find((item) => item.name === state.table); if (table) table.row_count = state.tableTotal;
+  state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear();
+  state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
+  state.chartSeries = state.chartSeries.filter((series) => {
+    series.points = series.points.filter((point) => !removed.has(point.identity));
+    if (series.points.length) return true;
+    state.chartAxes.delete(series.key); state.chartHidden.delete(series.key); return false;
+  });
+  state.chartCleared = !state.chartSeries.length;
+  rebindAddedChartSeries(); resetChartCursor(); renderTables(); renderGrid(); drawChart();
+  const message = [saved.length ? `已删除 ${saved.length} 条数据库记录` : "", drafts ? `已移除 ${drafts} 条待保存新行` : ""].filter(Boolean).join("，");
+  log(`${state.table}：${message}`); notice(message);
+  if (!hasPendingData()) {
+    try { await queryRows(); }
+    catch (error) { notice(`${message}；刷新失败：${error.message}`, true); log(`刷新 ${state.table} 失败：${error.message}`, true); }
+  }
 }
 function openImportDialog() {
   requireTable();
@@ -670,13 +708,8 @@ async function exportQuery(format) {
   const result = await request(tablePath("sql-export"), "POST", { ...state.lastQuery, format, columns: [...state.fields] });
   download(result.text, result.filename, result.mime); log(`导出 ${state.table} 全部匹配记录（${format}）`);
 }
-async function deleteSelectedRows() {
-  requireTable();
-  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再删除记录");
-  const records = [...state.selected].map((index) => state.records[index].ref);
-  if (!records.length) throw new Error("请选择记录");
-  if (!await confirmAction("删除选中记录", `删除 ${state.table} 当前页选中的 ${records.length} 条记录？`)) return;
-  await request(tablePath("rows"), "DELETE", { records }); log(`删除 ${state.table}：${records.length} 条`); notice("选中记录已删除"); await queryRows();
+async function deleteSelectedRows(record, index) {
+  await deleteRecords(selectedRowIndexes(record, index).map((rowIndex) => state.records[rowIndex]), "删除选中记录");
 }
 async function clearTable() {
   requireTable();
@@ -697,13 +730,9 @@ function handleRowContextAction(actionName) {
   else if (actionName === "copy-cells") run(copySelectedCells);
   else if (actionName === "paste-cells") run(pasteFromClipboard);
   else if (actionName === "batch-edit") run(() => openRow("batch"));
-  else if (actionName === "delete-selected") run(deleteSelectedRows);
+  else if (actionName === "delete-selected") run(() => deleteSelectedRows(record, index));
   else if (actionName === "clear-table") run(clearTable);
   else if (actionName === "chart-left" || actionName === "chart-right") run(() => addSelectionCurves(context.selection, actionName === "chart-left" ? "left" : "right"));
-  else if (actionName === "edit") run(() => openRow("edit", record));
-  else if (actionName === "copy") run(() => openRow("copy", record));
-  else if (actionName === "toggle-select") selectGridRow(index, { ctrlKey: true });
-  else if (actionName === "delete") run(() => deleteContextRecord(record));
 }
 function cellSelectionKey(index, field) { return `${index}\u0000${field}`; }
 function splitCellSelectionKey(key) { const separator = key.indexOf("\u0000"); return { index: Number(key.slice(0, separator)), field: key.slice(separator + 1) }; }
@@ -993,7 +1022,8 @@ function renderGrid() {
   el("page-number").value = String(Math.floor(state.offset / pageSize) + 1); el("page-number").max = String(pages); el("page-total").textContent = pages;
   el("prev").disabled = state.offset === 0; el("next").disabled = state.offset + pageSize >= state.total;
   const drafts = draftRecords().length;
-  el("row-range").textContent = (state.total ? `${state.offset + 1}–${state.offset + state.records.length - drafts} / ${state.total.toLocaleString()} 条` : "0 条记录") + (drafts ? ` · 新增 ${drafts} 条待保存` : "");
+  const savedCount = state.records.length - drafts;
+  el("row-range").textContent = (savedCount ? `${state.offset + 1}–${state.offset + savedCount} / ${state.total.toLocaleString()} 条` : `当前页 0 / ${state.total.toLocaleString()} 条`) + (drafts ? ` · 新增 ${drafts} 条待保存` : "");
 }
 function openAddRows(record, index) {
   requireTable();
@@ -1152,7 +1182,7 @@ async function saveRow() {
   if (["edit", "batch"].includes(dialog.mode)) {
     const keys = dialog.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name);
     if (dialog.mode === "edit") for (const key of keys) {
-      if (key in values && String(values[key]) !== String(dialog.records[0].row[key])) throw new Error("编辑不能更改主键，请使用复制记录");
+      if (key in values && String(values[key]) !== String(dialog.records[0].row[key])) throw new Error("编辑不能更改主键，请使用“复制选中行”和“插入复制行”");
       delete values[key];
     }
     payload = { changes: dialog.records.map((record) => ({ ref: record.ref, values })) };
@@ -1597,6 +1627,27 @@ function drawChartPoint(context, x, y, style) {
 function canDragChartPoint(point) {
   return !point.column.primary_key && (!integerTypes.has(columnKind(point.column)) || Number.isSafeInteger(Number(point.record.row[point.field])));
 }
+function chartTitleSpace() {
+  return state.chartTitle ? Math.ceil(state.chartTitleSettings.fontSize * 1.3) + state.chartTitleSettings.gap + 8 : 0;
+}
+function chartMinimumHeight() {
+  if (!state.chartTitle || el("chart").hidden || el("tab-chart").hidden) return 170;
+  const controls = el("bottom-panel").querySelector(".bottom-bar").getBoundingClientRect().height + el("tab-chart").querySelector(".chart-heading").getBoundingClientRect().height + 16;
+  return Math.max(170, Math.ceil(controls + chartTitleSpace() + 76 + 60));
+}
+function drawChartTitle(context, width, height) {
+  if (!state.chartTitle) return;
+  const settings = state.chartTitleSettings, [vertical, align] = settings.position.split("-"), lineHeight = Math.ceil(settings.fontSize * 1.3);
+  context.save();
+  context.font = `${settings.fontStyle.includes("italic") ? "italic " : ""}${settings.fontStyle.includes("bold") ? "bold " : ""}${settings.fontSize}px "${settings.fontFamily}", "Microsoft YaHei", sans-serif`;
+  context.fillStyle = settings.color; context.textAlign = align; context.textBaseline = "middle";
+  const metrics = context.measureText(state.chartTitle), availableWidth = Math.max(1, width - 24);
+  const scale = Math.min(1, availableWidth / Math.max(1, metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight));
+  const anchor = align === "left" ? 12 : align === "right" ? width - 12 : width / 2;
+  const x = Math.max(12 + metrics.actualBoundingBoxLeft * scale, Math.min(anchor, width - 12 - metrics.actualBoundingBoxRight * scale));
+  context.fillText(state.chartTitle, x, vertical === "top" ? 4 + lineHeight / 2 : height - 4 - lineHeight / 2, Math.max(1, metrics.width * scale));
+  context.restore();
+}
 function drawChart() {
   if (!el("tab-data").classList.contains("active") || el("tab-chart").hidden || document.documentElement.classList.contains("chart-collapsed")) return;
   const canvas = el("chart"), context = canvas.getContext("2d"), model = buildChartModel();
@@ -1611,11 +1662,15 @@ function drawChart() {
   el("chart-empty").textContent = model.series.length && !visibleSeries.length ? "全部曲线已隐藏，点击右上角图例恢复显示。" : "选中表格数据，右键选择“左轴曲线”或“右轴曲线”添加曲线。";
   el("chart-empty").hidden = Boolean(available); canvas.hidden = !available;
   if (!available) { state.chartFrame = null; state.chartHits = []; return; }
+  // Keep the chosen font size and a usable plot when a large title needs more height.
+  if (state.chartTitle && canvas.clientHeight < chartTitleSpace() + 136) chartLayout.expand();
   const width = canvas.clientWidth, height = canvas.clientHeight, ratio = devicePixelRatio || 1;
   if (!width || !height) return;
   canvas.width = width * ratio; canvas.height = height * ratio; context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.fillStyle = "white"; context.fillRect(0, 0, width, height); context.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
-  const left = 68, right = 68, top = 30, bottom = 46, plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
+  const titleSpace = chartTitleSpace();
+  const titleAtTop = state.chartTitleSettings.position.startsWith("top-");
+  const left = 68, right = 68, top = 30 + (titleAtTop ? titleSpace : 0), bottom = 46 + (titleAtTop ? 0 : titleSpace), plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
   const ranges = state.chartDrag?.ranges || { left: chartScale(visibleSeries.filter((series) => series.axis === "left").flatMap((series) => series.points.map((point) => point.value)), state.chartAxisSettings.left), right: chartScale(visibleSeries.filter((series) => series.axis === "right").flatMap((series) => series.points.map((point) => point.value)), state.chartAxisSettings.right) };
   if (!ranges.left && ranges.right) ranges.left = ranges.right;
   if (!ranges.right && ranges.left) ranges.right = ranges.left;
@@ -1633,9 +1688,9 @@ function drawChart() {
   context.fillStyle = "#6e7f95"; context.textAlign = "center";
   const labelStep = Math.max(1, Math.round(Number(state.chartAxisSettings.x.labelStep) || 1));
   const ticks = [...new Set([...Array.from({ length: model.labels.length }, (_unused, index) => index).filter((index) => index % labelStep === 0), Math.max(0, model.labels.length - 1)])];
-  ticks.forEach((index) => context.fillText(String(model.labels[index]).slice(0, 18), pointX(index), height - 20));
-  context.textAlign = "center"; if (state.chartAxisSettings.x.title) context.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - 4);
-  if (state.chartTitle) { context.font = 'bold 13px "Segoe UI", "Microsoft YaHei", sans-serif'; context.fillStyle = "#314c70"; context.fillText(state.chartTitle, width / 2, 16); context.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif'; }
+  ticks.forEach((index) => context.fillText(String(model.labels[index]).slice(0, 18), pointX(index), height - bottom + 26));
+  context.textAlign = "center"; if (state.chartAxisSettings.x.title) context.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - bottom + 42);
+  drawChartTitle(context, width, height);
   context.textAlign = "left"; context.fillText(state.chartAxisSettings.left.title || "左轴", 7, top - 12); context.textAlign = "right"; context.fillText(state.chartAxisSettings.right.title || "右轴", width - 7, top - 12);
   state.chartHits = [];
   visibleSeries.forEach((series, seriesIndex) => {
@@ -1765,8 +1820,9 @@ function renderChartSeriesSettings(model) {
 function openChartSettings(kind, axis = "left") {
   const dialog = el("chart-settings-dialog"); state.chartSettingsDialog = { kind, axis }; el("chart-settings-error").textContent = "";
   const axisMode = kind === "axis", axisSettings = state.chartAxisSettings[axis];
-  el("chart-settings-title").textContent = axisMode ? `${axis === "x" ? "横轴" : axis === "left" ? "左轴" : "右轴"}设置` : "曲线设置";
-  el("chart-axis-settings").hidden = !axisMode; el("chart-series-settings").hidden = axisMode;
+  dialog.dataset.mode = kind;
+  el("chart-settings-title").textContent = axisMode ? `${axis === "x" ? "横轴" : axis === "left" ? "左轴" : "右轴"}设置` : kind === "title" ? "标题设置" : "曲线设置";
+  el("chart-axis-settings").hidden = !axisMode; el("chart-series-settings").hidden = kind !== "series"; el("chart-title-settings").hidden = kind !== "title";
   if (axisMode) {
     el("chart-axis-settings-hint").textContent = axis === "x" ? "设置横轴标题和标签显示间隔。" : "留空表示自动计算范围；填写最小值和最大值可限制坐标轴范围。";
     el("chart-axis-title").value = axisSettings.title || "";
@@ -1774,9 +1830,13 @@ function openChartSettings(kind, axis = "left") {
     el("chart-axis-max").value = axis === "x" ? "" : axisSettings.max ?? "";
     el("chart-axis-min-label").hidden = axis === "x"; el("chart-axis-max-label").hidden = axis === "x"; el("chart-x-step-label").hidden = axis !== "x"; el("chart-axis-grid-label").hidden = axis === "x";
     el("chart-x-step").value = Math.max(1, Math.round(Number(axisSettings.labelStep) || 1)); el("chart-axis-grid").checked = axisSettings.showGrid !== false;
-  } else {
-    el("chart-title-input").value = state.chartTitle; renderChartSeriesSettings(buildChartModel());
-  }
+  } else if (kind === "title") {
+    el("chart-title-input").value = state.chartTitle;
+    const settings = state.chartTitleSettings;
+    el("chart-title-color").value = settings.color; el("chart-title-size").value = settings.fontSize;
+    el("chart-title-font").value = settings.fontFamily; el("chart-title-style").value = settings.fontStyle;
+    el("chart-title-position").value = settings.position; el("chart-title-gap").value = settings.gap;
+  } else renderChartSeriesSettings(buildChartModel());
   dialog.showModal();
 }
 function applyChartSettings() {
@@ -1790,15 +1850,22 @@ function applyChartSettings() {
         if (settings.min !== null && settings.max !== null && settings.min >= settings.max) throw new Error("坐标轴最小值必须小于最大值");
         settings.showGrid = el("chart-axis-grid").checked;
       }
-    } else {
+    } else if (current.kind === "title") {
+      const fontSize = Number(el("chart-title-size").value), gap = Number(el("chart-title-gap").value);
+      if (!Number.isInteger(fontSize) || fontSize < 8 || fontSize > 72) throw new Error("标题字号须为 8～72 的整数");
+      if (el("chart-title-gap").value === "" || !Number.isInteger(gap) || gap < 0 || gap > 32) throw new Error("标题间距须为 0～32 的整数");
       state.chartTitle = el("chart-title-input").value.trim();
+      state.chartTitleSettings = normalizeChartTitleSettings({ fontSize, gap, color: el("chart-title-color").value,
+        fontFamily: el("chart-title-font").value, fontStyle: el("chart-title-style").value, position: el("chart-title-position").value });
+    } else {
       el("chart-series-list").querySelectorAll("tr[data-series-key]").forEach((row) => {
         const key = row.dataset.seriesKey, style = chartStyle(key), read = (name) => row.querySelector(`[data-setting="${name}"]`), axis = read("axis").value;
         style.name = read("name").value.trim(); style.lineColor = read("lineColor").value; style.lineStyle = read("lineStyle").value; style.lineWidth = Math.max(1, Math.min(8, Number(read("lineWidth").value) || 2)); style.pointColor = read("pointColor").value; style.pointShape = read("pointShape").value; style.pointSize = Math.max(2, Math.min(12, Number(read("pointSize").value) || 3.5));
         state.chartStyles.set(key, style); state.chartAxes.set(key, axis);
       });
     }
-    saveChartSettings(); state.chartSettingsDialog = null; el("chart-settings-dialog").close(); resetChartCursor(); drawChart(); notice("曲线设置已应用");
+    const message = `${el("chart-settings-title").textContent}已应用`;
+    saveChartSettings(); state.chartSettingsDialog = null; el("chart-settings-dialog").close(); resetChartCursor(); drawChart(); notice(message); log(message);
   } catch (error) { el("chart-settings-error").textContent = error.message; }
 }
 function handleChartContextAction(actionName) {
@@ -1807,6 +1874,7 @@ function handleChartContextAction(actionName) {
   else if (actionName === "axis-left") openChartSettings("axis", "left");
   else if (actionName === "axis-right") openChartSettings("axis", "right");
   else if (actionName === "axis-x") openChartSettings("axis", "x");
+  else if (actionName === "title-settings") openChartSettings("title");
   else if (actionName === "series-settings") openChartSettings("series");
 }
 let definitionPreview = null, definitionRevision = 0;
@@ -1953,7 +2021,7 @@ async function restoreBackup() {
 }
 
 const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel", axis: "y", direction: -1, defaultSize: 240,
-  minimum: () => 170, maximum: () => Math.max(170, el("tab-data").clientHeight - el("query-panel").getBoundingClientRect().height - 180),
+  minimum: chartMinimumHeight, maximum: () => Math.max(170, el("tab-data").clientHeight - el("query-panel").getBoundingClientRect().height - 180),
   collapseThreshold: 48, cssVariable: "--chart-height", collapsedClass: "chart-collapsed" });
 setupSplitter({ id: "table-list-splitter", panelId: "table-list", axis: "y", defaultSize: 180,
   minimum: () => 72, maximum: () => Math.max(120, el("table-sidebar").clientHeight - 250),

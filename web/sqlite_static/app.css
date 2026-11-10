@@ -248,6 +248,12 @@ dialog .panel-title { margin-bottom: 14px; }
 #definition-dialog { width: min(920px, calc(100vw - 32px)); }
 #chart-settings-dialog { width: min(1180px, calc(100vw - 32px)); padding: 14px 16px; max-height: calc(100vh - 24px); }
 #chart-settings-dialog .panel-title { margin-bottom: 8px; }
+#chart-settings-dialog[data-mode="title"] { width: min(520px, calc(100vw - 32px)); }
+.chart-title-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+#chart-title-settings label { min-width: 0; gap: 4px; }
+#chart-title-settings input, #chart-title-settings select { width: 100%; height: 32px; padding: 4px 6px; }
+#chart-title-settings input[type="color"] { padding: 2px; cursor: pointer; }
+.chart-title-hint { margin: 4px 0 0; }
 .definition-preview { display: flex; flex-direction: column; max-height: 38vh; overflow: hidden; font-size: 12px; }
 .definition-preview > p { flex-shrink: 0; }
 .definition-table-tabs { margin-bottom: 0; gap: 14px; overflow-y: hidden; }

@@ -115,20 +115,31 @@
       <div class="dialog-actions"><button id="upload-database-file" type="button" disabled>上传并更新服务端</button></div>
     </section>
   </form></dialog>
-  <dialog id="chart-settings-dialog"><form method="dialog">
-    <div class="panel-title"><h2 id="chart-settings-title">曲线设置</h2><button value="cancel" class="icon" aria-label="关闭曲线设置">×</button></div>
+  <dialog id="chart-settings-dialog" aria-labelledby="chart-settings-title"><form method="dialog">
+    <div class="panel-title"><h2 id="chart-settings-title">曲线设置</h2><button value="cancel" formnovalidate class="icon" aria-label="关闭图表设置">×</button></div>
     <section id="chart-axis-settings" class="chart-settings-section" hidden>
       <p id="chart-axis-settings-hint" class="muted"></p>
       <label>坐标轴标题<input id="chart-axis-title" maxlength="80" placeholder="例如：电压 / 时间"></label>
       <div class="schema-head chart-axis-range"><label id="chart-axis-min-label">最小值<input id="chart-axis-min" type="number" step="any" placeholder="自动"></label><label id="chart-axis-max-label">最大值<input id="chart-axis-max" type="number" step="any" placeholder="自动"></label><label id="chart-x-step-label" hidden>标签间隔<input id="chart-x-step" type="number" min="1" step="1" value="1"></label></div>
       <label id="chart-axis-grid-label" class="check-label"><input id="chart-axis-grid" type="checkbox">显示水平网格线</label>
     </section>
+    <section id="chart-title-settings" class="chart-settings-section" hidden>
+      <label>标题文字<input id="chart-title-input" maxlength="120" placeholder="留空则不显示标题"></label>
+      <div class="chart-title-options">
+        <label>字体<select id="chart-title-font"><option value="Segoe UI">默认字体</option><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Arial">Arial</option></select></label>
+        <label>字号（px）<input id="chart-title-size" type="number" min="8" max="72" step="1"></label>
+        <label>颜色<input id="chart-title-color" type="color"></label>
+        <label>样式<select id="chart-title-style"><option value="normal">常规</option><option value="bold">粗体</option><option value="italic">斜体</option><option value="bold-italic">粗斜体</option></select></label>
+        <label>位置<select id="chart-title-position"><option value="top-left">顶部居左</option><option value="top-center">顶部居中</option><option value="top-right">顶部居右</option><option value="bottom-left">底部居左</option><option value="bottom-center">底部居中</option><option value="bottom-right">底部居右</option></select></label>
+        <label>间距（px）<input id="chart-title-gap" type="number" min="0" max="32" step="1"></label>
+      </div>
+      <p class="muted chart-title-hint">间距用于调整标题与图表的距离。设置自动保留，并用于 PNG 导出。</p>
+    </section>
     <section id="chart-series-settings" class="chart-settings-section">
-      <label>图表标题<input id="chart-title-input" maxlength="120" placeholder="可选"></label>
       <div id="chart-series-list" class="chart-series-list"></div>
     </section>
     <p id="chart-settings-error" class="error-text" role="alert"></p>
-    <div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="apply-chart-settings" type="button">应用</button></div>
+    <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">取消</button><button id="apply-chart-settings" type="button">应用</button></div>
   </form></dialog>
   <input id="restore-file" type="file" accept=".json" hidden>
   <div id="sql-history-list" class="sql-history-list" role="listbox" aria-label="SQL 历史语句" hidden></div>
@@ -149,12 +160,6 @@
     <hr>
     <button type="button" role="menuitem" data-action="chart-left">左轴曲线</button>
     <button type="button" role="menuitem" data-action="chart-right">右轴曲线</button>
-    <hr>
-    <button type="button" role="menuitem" data-action="edit">编辑记录</button>
-    <button type="button" role="menuitem" data-action="copy">复制记录</button>
-    <button type="button" role="menuitem" data-action="toggle-select">选择记录</button>
-    <hr>
-    <button type="button" role="menuitem" data-action="delete" class="danger">删除记录</button>
   </div>
   <div id="chart-context-menu" class="row-context-menu chart-context-menu" role="menu" tabindex="-1" aria-label="曲线操作" hidden>
     <button type="button" role="menuitem" data-chart-action="clear-chart" class="danger">清空曲线</button>
@@ -163,6 +168,7 @@
     <button type="button" role="menuitem" data-chart-action="axis-right">右轴设置</button>
     <button type="button" role="menuitem" data-chart-action="axis-x">横轴设置</button>
     <hr>
+    <button type="button" role="menuitem" data-chart-action="title-settings">标题设置</button>
     <button type="button" role="menuitem" data-chart-action="series-settings">曲线设置</button>
   </div>
   <div id="schema-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="字段操作" hidden>
