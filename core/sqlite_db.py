@@ -78,6 +78,7 @@ class SQLiteTable(MutableSequence):
         self._connections = []
         self._connection_lock = threading.RLock()
         self._closed = False
+        self._schema_fingerprint = None
         fingerprint = hashlib.sha256(json.dumps(definition.to_mapping(), sort_keys=True,
                                                 ensure_ascii=False).encode()).hexdigest()
         def initialize(c):
@@ -107,6 +108,7 @@ class SQLiteTable(MutableSequence):
                       'UPDATE metadata SET row_count=row_count-1; END')
         try:
             self._write(initialize)
+            self._schema_fingerprint = fingerprint
         except BaseException:
             self.close()
             raise
@@ -153,6 +155,7 @@ class SQLiteTable(MutableSequence):
                     raise SQLiteBusyError('SQLite writer timeout') from exc
                 time.sleep(min(.005 * 2**attempt, .05))
         try:
+            self._check_schema(c)
             result = callback(c)
             c.commit()
             return result
@@ -170,9 +173,17 @@ class SQLiteTable(MutableSequence):
             raise SQLiteStorageError('nested reads inside callbacks are not supported')
         c.execute('BEGIN')
         try:
+            self._check_schema(c)
             yield c
         finally:
             c.rollback()
+
+    def _check_schema(self, connection):
+        if self._schema_fingerprint is None:
+            return
+        actual = connection.execute('SELECT fingerprint FROM metadata WHERE version=1').fetchone()
+        if not actual or actual[0] != self._schema_fingerprint:
+            raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
 
     def storage_config(self):
         c = self._connection()
@@ -279,7 +290,8 @@ class SQLiteTable(MutableSequence):
         return [self._decode(r, fields) if fields else {} for r in records]
 
     def select(self, where=None, *, columns=None, order_by=None, limit=None, offset=0):
-        return self._select(self._connection(), where, columns=columns, order_by=order_by, limit=limit, offset=offset)
+        with self._read_transaction() as connection:
+            return self._select(connection, where, columns=columns, order_by=order_by, limit=limit, offset=offset)
 
     def find(self, where=None, *, order_by=None):
         rows = self.select(where, order_by=order_by, limit=1)
@@ -295,7 +307,8 @@ class SQLiteTable(MutableSequence):
         if condition is None:
             return len(self.select(where))
         sql, values = condition
-        return self._connection().execute('SELECT COUNT(*) FROM data WHERE '+sql, values).fetchone()[0]
+        with self._read_transaction() as connection:
+            return connection.execute('SELECT COUNT(*) FROM data WHERE '+sql, values).fetchone()[0]
 
     def _insert(self, c, rows):
         if rows:
@@ -399,7 +412,10 @@ class SQLiteTable(MutableSequence):
         return self._write(change)
 
     def __len__(self):
-        return self._connection().execute('SELECT row_count FROM metadata WHERE version=1').fetchone()[0]
+        row = self._connection().execute('SELECT row_count,fingerprint FROM metadata WHERE version=1').fetchone()
+        if row[1] != self._schema_fingerprint:
+            raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
+        return row[0]
 
     def __iter__(self):
         return iter(self.all())

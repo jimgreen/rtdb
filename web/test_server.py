@@ -14,7 +14,7 @@ class WebServerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.server = create_server("127.0.0.1", 0, root=self.root)
+        self.server = create_server("127.0.0.1", 0, root=self.root, engine="file_mapped")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"

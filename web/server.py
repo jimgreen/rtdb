@@ -25,18 +25,11 @@ if __package__ in (None, ""):
 
 from core import FileMappedDatabase, SchemaError, TableDefinition
 from core.file_mapped_db import StorageError
+from web.errors import APIError
 
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
-
-
-class APIError(Exception):
-    def __init__(self, status: int, message: str, *, details: Any = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
-        self.details = details
 
 
 def _definition_json(definition: TableDefinition) -> dict[str, Any]:
@@ -258,6 +251,8 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _send_error(self, error: Exception) -> None:
         if isinstance(error, APIError):
             self._send_json(error.status, {"error": error.message, "details": error.details})
+        elif isinstance(error, (ValueError, TypeError, SchemaError, StorageError)):
+            self._send_json(422, {"error": str(error)})
         else:
             self._send_json(500, {"error": "internal server error", "details": str(error)})
 
@@ -390,10 +385,10 @@ def create_server(
     root: Optional[os.PathLike[str] | str] = None,
     data_dir: Optional[os.PathLike[str] | str] = None,
     schema_dir: Optional[os.PathLike[str] | str] = None,
-    engine: str = "file_mapped",
+    engine: str = "sqlite",
 ) -> ThreadingHTTPServer:
     if engine == "sqlite":
-        from .sqlite_server import create_sqlite_server
+        from web.sqlite_server import create_sqlite_server
         return create_sqlite_server(host, port, root=root, data_dir=data_dir, schema_dir=schema_dir)
     if engine != "file_mapped":
         raise ValueError("engine must be file_mapped or sqlite")
@@ -410,7 +405,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--schema-dir", type=Path)
-    parser.add_argument("--engine", choices=("file_mapped", "sqlite"), default="file_mapped")
+    parser.add_argument("--engine", choices=("file_mapped", "sqlite"), default="sqlite")
     args = parser.parse_args(argv)
     server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, engine=args.engine)
     print(f"RTDB web service listening on http://{args.host}:{args.port}")
