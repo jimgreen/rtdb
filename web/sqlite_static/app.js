@@ -1091,6 +1091,10 @@ function schemaFormValue(withMeta = false) {
     }) };
 }
 function schemaChanged() { state.schemaDirty = true; }
+function schemaDefaultDisplayType(kind) {
+  const type = String(kind || "str").toLowerCase();
+  return integerTypes.has(type) ? "整数" : floatTypes.has(type) ? "浮点数" : "文本";
+}
 function updateSchemaLocks() {
   el("schema-hint").textContent = state.table
     ? "表名和字段属性均可修改；字段单元格双击后编辑，保存时会迁移现有数据并同步 JSON、Python 定义文件。"
@@ -1110,17 +1114,30 @@ function renderSchema(definition) {
   thead.append(head); grid.append(thead);
   for (const column of definition.columns) {
     const row = node("tr"); row.addEventListener("contextmenu", (event) => openSchemaContextMenu(event, row));
+    let previousKind = column.data_type;
+    const defaultDisplay = schemaDefaultDisplayType(previousKind);
+    const displayType = !column.disp_type || (column.disp_type === "数字" && defaultDisplay !== "文本") ? defaultDisplay : column.disp_type;
     const originalName = column.__original_name || (state.table && state.definition?.columns.some((item) => item.eng_name === column.eng_name) ? column.eng_name : "");
     if (originalName) row.dataset.originalName = originalName;
     for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "disp_type", "disp_menu"]) {
-      const cell = node("td"), input = node(property === "data_type" ? "select" : "input"); input.dataset.property = property;
+      const cell = node("td"), input = node(["data_type", "disp_type"].includes(property) ? "select" : "input"); input.dataset.property = property;
+      cell.title = "双击此单元格编辑";
       input.setAttribute("aria-label", `${column.eng_name || "新字段"} ${property}`);
       if (property === "data_type") for (const kind of new Set(["int", "float", "str", "bool", "json", "list", "dict", "datetime", column.data_type])) input.append(new Option(kind, kind));
+      if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
-      else input.value = property === "chn_name" ? chineseName(column) : column[property] ?? "";
+      else input.value = property === "chn_name" ? chineseName(column) : property === "disp_type" ? displayType : column[property] ?? "";
       input.dataset.originalValue = input.type === "checkbox" ? String(input.checked) : input.value;
       const update = () => {
         schemaChanged();
+        if (property === "data_type") {
+          const displayInput = row.querySelector('[data-property="disp_type"]');
+          if (displayInput.value === schemaDefaultDisplayType(previousKind)) {
+            displayInput.value = schemaDefaultDisplayType(input.value);
+            displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+          }
+          previousKind = input.value;
+        }
         const current = input.type === "checkbox" ? String(input.checked) : String(input.value);
         cell.classList.toggle("schema-modified", current !== input.dataset.originalValue);
       };
@@ -1903,7 +1920,7 @@ el("json-mode").onchange = () => {
 };
 el("new-table").onclick = () => run(async () => {
   if (!await discardSchema() || !await discardCellEdits()) return; resetSelection();
-  renderSchema({ head: { eng_name: "", chn_name: "" }, columns: [{ eng_name: "id", chn_name: "编号", data_type: "int", primary_key: true, disp_type: "数字", disp_menu: "" },
+  renderSchema({ head: { eng_name: "", chn_name: "" }, columns: [{ eng_name: "id", chn_name: "编号", data_type: "int", primary_key: true, disp_type: "整数", disp_menu: "" },
     { eng_name: "name", chn_name: "名称", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" }] }); tab("schema");
 });
 el("app-title").ondblclick = () => run(async () => {

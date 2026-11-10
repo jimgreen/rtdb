@@ -169,16 +169,21 @@ td.cell-modified { background: #fff4c7 !important; box-shadow: inset 3px 0 #e2ad
 .schema-head label { flex: 1; }
 #schema-fields input:not([type=checkbox]), #schema-fields select { width: 115px; }
 #schema-fields input[data-property=chn_name] { width: 130px; }
-#schema-fields th { padding: 5px 8px; }
-#schema-fields td { padding: 0; height: 34px; vertical-align: middle; }
+#schema-fields th { padding: 5px 8px; color: #52647d; }
+#schema-fields td { padding: 0; height: 34px; vertical-align: middle; color: #243449; background: white; cursor: cell; }
+#schema-fields td:hover { background: #eef5ff; }
 #schema-fields td:focus-within { background: #f4f8ff; box-shadow: inset 0 0 0 1px #4e8fec; }
 #schema-fields td.schema-modified { background: #fff4c7; box-shadow: inset 3px 0 #e2ad2b; }
 #schema-fields input:disabled, #schema-fields select:disabled { pointer-events: none; }
 #schema-fields td.schema-editing { background: #f4f8ff; box-shadow: inset 0 0 0 1px #4e8fec; }
-#schema-fields td > input:not([type=checkbox]), #schema-fields td > select { display: block; width: 100%; height: 100%; min-height: 34px; box-sizing: border-box; margin: 0; padding: 4px 8px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+#schema-fields td > input:not([type=checkbox]), #schema-fields td > select { display: block; width: 100%; height: 100%; min-height: 34px; box-sizing: border-box; margin: 0; padding: 4px 8px; border: 0; border-radius: 0; background: transparent; color: inherit; box-shadow: none; }
 #schema-fields td > input:not([type=checkbox]):focus, #schema-fields td > select:focus { outline: none; box-shadow: none; }
-#schema-fields td > input[type=checkbox] { display: block; margin: auto; }
-#schema-fields td > input:disabled, #schema-fields td > select:disabled { color: #75839a; cursor: not-allowed; background-color: #f4f6f9; }
+#schema-fields td > input[type=checkbox] { appearance: none; display: grid; place-content: center; width: 16px; height: 16px; margin: auto; border: 1px solid #8b9db5; border-radius: 3px; background: white; }
+#schema-fields td > input[type=checkbox]:checked { background: #2263ce; border-color: #2263ce; }
+#schema-fields td > input[type=checkbox]:checked::after { content: ""; width: 5px; height: 9px; border: solid white; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+#schema-fields td > input[type=checkbox]:focus { outline: none; }
+/* Disabled controls wait for a double-click; they are editable, not unavailable. */
+#schema-fields td > input:disabled, #schema-fields td > select:disabled { color: #243449; -webkit-text-fill-color: #243449; opacity: 1; cursor: inherit; }
 .editor { width: 100%; min-height: 240px; margin: 12px 0; font: 13px/1.7 Consolas, monospace; resize: vertical; background: #fbfcfe; }
 .logs { flex: 1 1 0; min-height: 80px; margin: 4px 0 0; overflow: auto; color: #54708c; font: 12px/1.7 Consolas, "Microsoft YaHei", monospace; }
 .log-toolbar, .log-retention, .log-pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
