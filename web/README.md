@@ -69,7 +69,7 @@ python -m web.server --engine sqlite --port 8878
 }
 ```
 
-`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义。SQLite 内部为每张表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。加载包含多张模块的 dbdef/E 文件时，默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；也可通过 API 的 `database_name` 指定数据库文件名。
+`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义。SQLite 内部为每张表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。加载包含多张模块的 dbdef/E 文件时，默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；API 未提供源文件名时使用第一张表的英文名，也可通过 `database_name` 指定数据库文件名。
 
 文件映射、Redis、SQLite 三个版本都不再接受 `max_elements`、`data_length`。
 SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参数控制物理布局，详见
