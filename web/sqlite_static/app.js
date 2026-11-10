@@ -2,7 +2,7 @@ const el = (id) => document.getElementById(id);
 const state = { table: null, tables: [], definition: null, version: null, records: [], total: 0, tableTotal: 0,
   offset: 0, fields: new Set(), selected: new Set(), checkedTables: new Set(), logs: [], history: [],
   busy: false, schemaDirty: false, timer: null, dialog: null, chartFields: new Set(), lastQuery: null,
-  resultColumns: [], editable: false, pendingEdits: new Map(), selectedColumns: new Set(), selectedCells: new Set(),
+  resultColumns: [], editable: false, pendingEdits: new Map(), draftSequence: 0, copiedRows: null, selectedColumns: new Set(), selectedCells: new Set(),
   rowAnchor: null, columnAnchor: null, cellAnchor: null, cellDrag: null, chartMode: "rows", chartAxes: new Map(),
   chartFrame: null, chartHits: [], chartCursor: { index: -1, pinned: false, y: 0 }, chartDrag: null, contextRecord: null,
   chartSeries: [], chartPinned: false, chartCleared: true, chartQueryKey: null, chartHidden: new Set(),
@@ -344,7 +344,10 @@ function confirmAction(title, message, expected = "") {
   dialog.returnValue = ""; dialog.showModal();
   return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirmed"), { once: true }));
 }
-function recordKey(record) { return JSON.stringify(record?.ref?.key ?? []); }
+function draftRecords() { return state.records.filter((record) => record.draftId); }
+function hasPendingData() { return state.pendingEdits.size > 0 || state.records.some((record) => record.draftId); }
+function recordKey(record) { return record?.draftId ? `draft:${record.draftId}` : JSON.stringify(record?.ref?.key ?? []); }
+function isReadOnlyKey(record, column) { return column.primary_key && !record.draftId; }
 function cellKey(record, field) { return `${recordKey(record)}\u0000${field}`; }
 function columnKind(column) { return String(column?.data_type || "str").toLowerCase(); }
 function displayColumnType(column) {
@@ -380,14 +383,14 @@ function rawMatchesBaseline(column, raw, baseline) {
 }
 function pendingCell(record, field) { return state.pendingEdits.get(cellKey(record, field)); }
 function updateEditActions() {
-  const count = state.pendingEdits.size;
-  el("save-cell-edits").hidden = !count;
-  el("discard-cell-edits").hidden = !count;
-  el("save-cell-edits").textContent = `保存改单元格（${count}）`;
-  el("chart-edit-hint").textContent = count ? `${count} 个单元格已修改` : "未选择修改";
+  const count = state.pendingEdits.size, drafts = draftRecords().length;
+  el("save-cell-edits").hidden = !count && !drafts;
+  el("discard-cell-edits").hidden = !count && !drafts;
+  el("save-cell-edits").textContent = drafts ? `保存修改（新增 ${drafts} 条）` : `保存改单元格（${count}）`;
+  el("chart-edit-hint").textContent = [drafts ? `${drafts} 条新增记录待保存` : "", count ? `${count} 个单元格已修改` : ""].filter(Boolean).join(" · ") || "未选择修改";
 }
 function setPendingCell(record, column, raw) {
-  if (column.primary_key) return;
+  if (isReadOnlyKey(record, column)) return;
   const field = column.eng_name, baseline = record.baseline?.[field];
   let value;
   try { value = parseCellValue(column, raw); } catch { value = String(raw ?? ""); }
@@ -401,10 +404,10 @@ function setPendingCell(record, column, raw) {
   updateEditActions();
 }
 function renderGridCellValue(record, column, cell) {
-  const pending = pendingCell(record, column.eng_name), value = pending ? pending.raw : display(record.row[column.eng_name]);
+  const pending = pendingCell(record, column.eng_name), value = pending ? pending.raw : record.draftId ? cellText(record.row[column.eng_name]) : display(record.row[column.eng_name]);
   cell.replaceChildren(node("span", value, "cell-value"));
   cell.classList.toggle("cell-modified", Boolean(pending));
-  cell.title = column.primary_key ? "KEY 主键列：可选择，不可修改，冻结在左侧" : pending ? "已修改，保存前仅保留在当前页面" : value;
+  cell.title = isReadOnlyKey(record, column) ? "KEY 主键列：可选择，不可修改，冻结在左侧" : record.draftId ? "待新增记录：双击填写，KEY 必填；保存后写入数据库" : pending ? "已修改，保存前仅保留在当前页面" : value;
 }
 function syncGridCell(record, field) {
   const index = state.records.indexOf(record), cell = [...el("data-grid").querySelectorAll("[data-cell-row][data-cell-field]")]
@@ -421,10 +424,10 @@ function syncGridCell(record, field) {
 }
 function inlineCellInput(record, column, index, cell) {
   const kind = columnKind(column);
-  if (column.primary_key || objectTypes.has(kind)) return false;
+  if (isReadOnlyKey(record, column) || objectTypes.has(kind) && !record.draftId) return false;
   if (cell.querySelector(".cell-editor")) return true;
   const input = node("input"); input.className = "cell-editor"; input.dataset.rowIndex = String(index); input.dataset.field = column.eng_name;
-  input.setAttribute("aria-label", `${record.ref.key.join(" / ")} ${column.eng_name}`);
+  input.setAttribute("aria-label", `${record.draftId ? `新增${record.draftId}` : record.ref.key.join(" / ")} ${column.eng_name}`);
   const pending = pendingCell(record, column.eng_name), raw = pending?.raw ?? cellText(record.row[column.eng_name]);
   const before = structuredClone(record.row[column.eng_name]);
   if (boolTypes.has(kind)) { input.type = "checkbox"; input.checked = raw === "true" || raw === true; }
@@ -568,7 +571,7 @@ function updateFieldCount() { el("field-count").textContent = `${state.fields.si
 const defaultSql = () => state.table ? `SELECT * FROM "${state.table}"` : "";
 async function queryRows({ reset = false, silent = false, sql = state.lastQuery?.sql || defaultSql(), order = state.lastQuery?.order || null } = {}) {
   if (!state.table) return;
-  if (state.pendingEdits.size && !silent) throw new Error("请先保存或撤销已修改的单元格");
+  if (hasPendingData()) { if (silent) return; throw new Error("请先保存或撤销待新增记录和单元格修改"); }
   if (reset) state.offset = 0;
   const result = await request(tablePath("sql"), "POST", { sql, order, readonly_only: true, limit: Number(el("page-size").value), offset: state.offset });
   if (state.offset >= result.total && state.offset > 0) {
@@ -616,9 +619,12 @@ function openRowContextMenu(event, record, index) {
   const selection = chartSelection();
   const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, trigger: event.target.closest("[tabindex]") || el("data-grid") };
   const hasTable = Boolean(state.table), hasRows = Boolean(state.editable && state.selected.size), hasQuery = Boolean(state.lastQuery);
-  const pending = state.pendingEdits.size > 0;
+  const pending = hasPendingData();
   const setDisabled = (actionName, disabled) => { menu.querySelector(`[data-action="${actionName}"]`).disabled = disabled; };
-  setDisabled("add-row", !hasTable || pending);
+  setDisabled("add-row", !hasTable || draftRecords().length >= 500);
+  const copyIndexes = selectedRowIndexes(record, index);
+  setDisabled("copy-rows", !state.editable || !copyIndexes.length);
+  setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
   setDisabled("import", !hasTable || pending);
   setDisabled("export-json", !hasTable || !hasQuery);
   setDisabled("export-csv", !hasTable || !hasQuery || !state.fields.size);
@@ -647,14 +653,14 @@ function openRowContextMenu(event, record, index) {
 }
 async function deleteContextRecord(record) {
   requireTable();
-  if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再删除记录");
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再删除记录");
   if (!await confirmAction("删除记录", `删除 ${record.ref.key.join(" / ")} 这条记录？`)) return;
   await request(tablePath("rows"), "DELETE", { records: [record.ref] });
   log(`删除 ${state.table}：1 条`); notice("记录已删除"); await queryRows();
 }
 function openImportDialog() {
   requireTable();
-  if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再导入数据");
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再导入数据");
   el("import-error").textContent = ""; el("import-dialog").showModal();
 }
 async function exportQuery(format) {
@@ -666,7 +672,7 @@ async function exportQuery(format) {
 }
 async function deleteSelectedRows() {
   requireTable();
-  if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再删除记录");
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再删除记录");
   const records = [...state.selected].map((index) => state.records[index].ref);
   if (!records.length) throw new Error("请选择记录");
   if (!await confirmAction("删除选中记录", `删除 ${state.table} 当前页选中的 ${records.length} 条记录？`)) return;
@@ -674,7 +680,7 @@ async function deleteSelectedRows() {
 }
 async function clearTable() {
   requireTable();
-  if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再清空表");
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再清空表");
   const snapshot = await request(tablePath("snapshot"));
   if (!await confirmAction("清空表", `删除 ${state.table} 全部 ${snapshot.count} 条记录（不受当前筛选条件限制）。`, state.table)) return;
   await request(tablePath("clear"), "POST", { confirm: state.table, version: snapshot.version }); log(`清空 ${state.table}`); notice("表已清空"); await queryRows({ reset: true });
@@ -682,7 +688,9 @@ async function clearTable() {
 function handleRowContextAction(actionName) {
   const context = state.contextRecord; closeRowContextMenu(); if (!context) return;
   const { record, index } = context;
-  if (actionName === "add-row") run(() => openRow("add"));
+  if (actionName === "add-row") run(openAddRows);
+  else if (actionName === "copy-rows") run(() => copySelectedRows(record, index));
+  else if (actionName === "insert-copied-rows") run(() => insertCopiedRows(record, index));
   else if (actionName === "import") run(openImportDialog);
   else if (actionName === "export-json") run(() => exportQuery("json"));
   else if (actionName === "export-csv") run(() => exportQuery("csv"));
@@ -865,7 +873,7 @@ async function pasteClipboardText(text) {
       const column = columns[anchorColumn + columnOffset];
       if (!column) throw new Error(`粘贴区域超出当前显示字段（第 ${columnOffset + 1} 列没有对应字段）`);
       const raw = matrix[rowOffset][columnOffset];
-      if (column.primary_key) { skippedKeys++; continue; }
+      if (isReadOnlyKey(record, column)) { skippedKeys++; continue; }
       try { parseCellValue(column, raw); }
       catch (error) { throw new Error(`第 ${rowOffset + 1} 行“${column.eng_name}”字段值无效：${error.message}`); }
       changes.push({ record, column, raw });
@@ -908,7 +916,7 @@ function paintGridSelection() {
     if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
     cell.style.boxShadow = shadows.join(", ");
   });
-  el("selection-summary").textContent = selectionSummary() + (state.pendingEdits.size ? ` · ${state.pendingEdits.size} 个单元格待保存` : "");
+  el("selection-summary").textContent = selectionSummary() + (draftRecords().length ? ` · ${draftRecords().length} 条新增记录待保存` : "") + (state.pendingEdits.size ? ` · ${state.pendingEdits.size} 个单元格待保存` : "");
 }
 function renderGrid() {
   finishCellSelection();
@@ -951,9 +959,10 @@ function renderGrid() {
     thead.append(head); grid.append(thead); const body = node("tbody");
     state.records.forEach((record, index) => {
       const row = node("tr", null, state.selected.has(index) ? "selected" : ""); row.dataset.gridRow = String(index);
+      row.classList.toggle("draft-row", Boolean(record.draftId));
       row.addEventListener("contextmenu", (event) => openRowContextMenu(event, record, index));
       {
-        const rowHeader = node("th", String(state.offset + index + 1), "row-header"); rowHeader.scope = "row"; rowHeader.dataset.gridRow = String(index); rowHeader.title = `选择第 ${state.offset + index + 1} 行：${record.ref?.key.join(" / ") || ""}`;
+        const rowHeader = node("th", record.draftId ? `新${record.draftId}` : String(state.offset + index + 1), "row-header"); rowHeader.scope = "row"; rowHeader.dataset.gridRow = String(index); rowHeader.title = record.draftId ? "待新增记录，保存后写入数据库" : `选择第 ${state.offset + index + 1} 行：${record.ref?.key.join(" / ") || ""}`;
         rowHeader.onclick = (event) => selectGridRow(index, event); row.append(rowHeader);
       }
       columns.forEach((column, columnIndex) => {
@@ -963,10 +972,10 @@ function renderGrid() {
         cell.classList.toggle("cell-selected", state.selectedCells.has(cellSelectionKey(index, column.eng_name)));
         cell.addEventListener("pointerdown", (event) => { startCellSelection(event, index, columnIndex); });
         renderGridCellValue(record, column, cell);
-        if (state.editable && !column.primary_key) cell.ondblclick = (event) => {
+        if (state.editable && !isReadOnlyKey(record, column)) cell.ondblclick = (event) => {
           if (event.target.closest(".cell-editor") || state.busy) return;
           event.preventDefault();
-          if (!inlineCellInput(record, column, index, cell)) openRow("edit", record);
+          if (!inlineCellInput(record, column, index, cell)) run(() => openRow("edit", record));
         };
         row.append(cell);
       });
@@ -983,7 +992,84 @@ function renderGrid() {
   const pageSize = Number(el("page-size").value), pages = Math.max(1, Math.ceil(state.total / pageSize));
   el("page-number").value = String(Math.floor(state.offset / pageSize) + 1); el("page-number").max = String(pages); el("page-total").textContent = pages;
   el("prev").disabled = state.offset === 0; el("next").disabled = state.offset + pageSize >= state.total;
-  el("row-range").textContent = state.total ? `${state.offset + 1}–${state.offset + state.records.length} / ${state.total.toLocaleString()} 条` : "0 条记录";
+  const drafts = draftRecords().length;
+  el("row-range").textContent = (state.total ? `${state.offset + 1}–${state.offset + state.records.length - drafts} / ${state.total.toLocaleString()} 条` : "0 条记录") + (drafts ? ` · 新增 ${drafts} 条待保存` : "");
+}
+function openAddRows() {
+  requireTable();
+  const remaining = 500 - draftRecords().length;
+  if (remaining <= 0) throw new Error("一次最多暂存 500 条新增记录，请先保存或撤销");
+  el("add-row-count").value = "1"; el("add-row-count").max = String(remaining);
+  el("add-rows-error").textContent = ""; el("add-rows-dialog").showModal();
+  el("add-row-count").focus(); el("add-row-count").select();
+}
+function selectedRowIndexes(record, index) {
+  const indexes = state.selected.size ? [...state.selected] : state.selectedCells.size
+    ? [...new Set([...state.selectedCells].map((key) => splitCellSelectionKey(key).index))]
+    : state.selectedColumns.size ? state.records.map((_record, rowIndex) => rowIndex) : record ? [index] : [];
+  return indexes.filter((rowIndex) => state.records[rowIndex]).sort((left, right) => left - right);
+}
+function rowCopySchema() { return JSON.stringify(state.definition?.columns.map((column) => [column.eng_name, column.data_type, column.primary_key])); }
+function canInsertCopiedRows() { return Boolean(state.copiedRows?.rows.length && state.copiedRows.schema === rowCopySchema()); }
+function copySelectedRows(record, index) {
+  requireTable();
+  const indexes = selectedRowIndexes(record, index);
+  if (!state.editable || !indexes.length) throw new Error("请先选择要复制的原始记录行");
+  if (indexes.length > 500) throw new Error("一次最多复制 500 行");
+  const rows = indexes.map((rowIndex) => {
+    const source = state.records[rowIndex];
+    return Object.fromEntries(state.definition.columns.map((column) => {
+      const pending = pendingCell(source, column.eng_name), value = source.row[column.eng_name];
+      return [column.eng_name, pending ? pending.raw : value == null ? null : cellText(value)];
+    }));
+  });
+  state.copiedRows = { schema: rowCopySchema(), rows };
+  notice(`已复制 ${rows.length} 行，可在目标位置右键选择“插入复制行”`);
+  log(`${state.table}：复制选中 ${rows.length} 行`);
+}
+function insertCopiedRows(record, index) {
+  requireTable();
+  if (!state.editable || !canInsertCopiedRows()) throw new Error("请先复制字段结构相同的记录行");
+  if (draftRecords().length + state.copiedRows.rows.length > 500) throw new Error("一次最多暂存 500 条新增记录，请先保存或撤销");
+  const indexes = selectedRowIndexes(record, index);
+  const copies = state.copiedRows.rows.map((source) => {
+    const row = Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, null]));
+    const copy = { draftId: ++state.draftSequence, row, baseline: structuredClone(row) };
+    for (const column of state.definition.columns) {
+      const value = source[column.eng_name];
+      if (value != null) setPendingCell(copy, column, value);
+    }
+    return copy;
+  });
+  const start = indexes.length ? indexes[indexes.length - 1] + 1 : state.records.length;
+  state.records.splice(start, 0, ...copies);
+  state.selected = new Set(copies.map((_copy, copyIndex) => start + copyIndex));
+  state.selectedColumns.clear(); state.selectedCells.clear();
+  rebindAddedChartSeries(); renderGrid(); drawChart();
+  const cell = el("data-grid").querySelector(`td[data-cell-row="${start}"]`);
+  cell?.scrollIntoView({ block: "nearest", inline: "nearest" }); cell?.focus({ preventScroll: true });
+  notice(`已插入 ${copies.length} 条复制行，请修改重复的 KEY 后保存`);
+  log(`${state.table}：暂存 ${copies.length} 条复制行，尚未写入数据库`);
+}
+async function addBlankRows() {
+  requireTable();
+  const count = Number(el("add-row-count").value), remaining = 500 - draftRecords().length;
+  if (!Number.isInteger(count) || count < 1 || count > remaining) throw new Error(`请输入 1–${remaining} 的整数`);
+  if (!state.editable) {
+    await queryRows({ reset: true, sql: defaultSql(), order: null });
+    el("sql-editor").value = defaultSql();
+  }
+  const first = state.records.length;
+  for (let index = 0; index < count; index++) {
+    const row = Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, null]));
+    state.records.push({ draftId: ++state.draftSequence, row, baseline: structuredClone(row) });
+  }
+  state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear();
+  renderGrid(); el("add-rows-dialog").close(); tab("data");
+  const cell = el("data-grid").querySelector(`td[data-cell-row="${first}"]`);
+  cell?.scrollIntoView({ block: "nearest", inline: "nearest" }); cell?.focus({ preventScroll: true });
+  notice(`已加入 ${count} 条空白行，请双击填写 KEY 和其他字段，再保存修改`);
+  log(`${state.table}：暂存新增 ${count} 条空白记录，尚未写入数据库`);
 }
 function fieldDefault(column) {
   const kind = column.data_type.toLowerCase();
@@ -994,6 +1080,7 @@ function fieldDefault(column) {
 }
 function openRow(mode, record = null) {
   requireTable();
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改");
   if (mode !== "add" && !state.editable) throw new Error("请使用 SQL 修改，或重置后选择原始记录");
   const rows = mode === "batch" ? [...state.selected].map((index) => state.records[index]) : record ? [record] : [];
   if (mode === "batch" && !rows.length) throw new Error("请先选择记录");
@@ -1043,40 +1130,77 @@ function readRowFields() {
   }
   return result;
 }
+function showSaveWarning(error) {
+  const message = error.message || String(error);
+  el("save-warning-list").replaceChildren(...message.split("\n").filter(Boolean).map((line) => node("li", line)));
+  if (!el("save-warning-dialog").open) el("save-warning-dialog").showModal();
+  notice("保存检查未通过，请修正提示的问题后再保存", true); log(message, true);
+}
+async function saveValidatedEdits(payload, table = state.table) {
+  try {
+    await request(tablePath("validate-edits", table), "POST", payload);
+    return await request(tablePath("cell-edits", table), "PUT", payload);
+  } catch (error) { showSaveWarning(error); return null; }
+}
 async function saveRow() {
-  const values = el("json-mode").checked ? JSON.parse(el("row-editor").value) : readRowFields();
-  if (!values || Array.isArray(values) || typeof values !== "object") throw new Error("记录须为 JSON 对象");
+  let values;
+  try {
+    values = el("json-mode").checked ? JSON.parse(el("row-editor").value) : readRowFields();
+    if (!values || Array.isArray(values) || typeof values !== "object") throw new Error("记录须为 JSON 对象");
+  } catch (error) { showSaveWarning(error); return; }
   const dialog = state.dialog;
+  let payload;
   if (["edit", "batch"].includes(dialog.mode)) {
     const keys = dialog.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name);
     if (dialog.mode === "edit") for (const key of keys) {
       if (key in values && String(values[key]) !== String(dialog.records[0].row[key])) throw new Error("编辑不能更改主键，请使用复制记录");
       delete values[key];
     }
-    await request(tablePath("rows", dialog.table), "PUT", { records: dialog.records.map((record) => record.ref), values });
-  } else await request(tablePath("rows", dialog.table), "POST", { rows: [values] });
+    payload = { changes: dialog.records.map((record) => ({ ref: record.ref, values })) };
+  } else payload = { inserts: [values] };
+  if (!await saveValidatedEdits(payload, dialog.table)) return;
   el("row-dialog").close(); log(`${el("row-dialog-title").textContent}：${dialog.table}`); notice("数据已保存"); await queryRows();
 }
-async function saveCellEdits() {
-  if (!state.pendingEdits.size) return;
+function pendingEditPayload() {
   const groups = new Map();
   for (const edit of state.pendingEdits.values()) {
+    if (edit.record.draftId) continue;
     const key = recordKey(edit.record); if (!groups.has(key)) groups.set(key, { record: edit.record, values: {} });
     groups.get(key).values[edit.column.eng_name] = parseCellValue(edit.column, edit.raw);
   }
-  const result = await request(tablePath("cell-edits"), "PUT", { changes: [...groups.values()].map((group) => ({ ref: group.record.ref, values: group.values })) });
+  const inserts = draftRecords().map((record, index) => {
+    const values = {};
+    for (const column of state.definition.columns) {
+      const pending = pendingCell(record, column.eng_name), raw = pending ? pending.raw : cellText(record.row[column.eng_name]);
+      try { values[column.eng_name] = pending ? parseCellValue(column, raw) : record.row[column.eng_name]; }
+      catch (error) { throw new Error(`新增第 ${index + 1} 行：${error.message}`); }
+    }
+    return values;
+  });
+  return { changes: [...groups.values()].map((group) => ({ ref: group.record.ref, values: group.values })), inserts };
+}
+async function saveCellEdits() {
+  if (!hasPendingData()) return;
+  let payload;
+  try { payload = pendingEditPayload(); } catch (error) { showSaveWarning(error); return; }
+  const result = await saveValidatedEdits(payload);
+  if (!result) return;
+  state.records = state.records.filter((record) => !record.draftId);
   state.pendingEdits.clear();
-  updateEditActions(); log(`保存 ${state.table}：${result.updated} 条记录`);
-  notice(`已保存 ${result.updated} 条记录`); await queryRows();
+  updateEditActions();
+  const message = result.inserted ? `已新增 ${result.inserted} 条记录${result.updated ? `，修改 ${result.updated} 条记录` : ""}` : `已保存 ${result.updated} 条记录`;
+  log(`${state.table}：${message}`); notice(message); await queryRows();
 }
 async function discardCellEdits() {
-  if (!state.pendingEdits.size) return true;
-  if (!await confirmAction("撤销单元格修改", `放弃当前页面 ${state.pendingEdits.size} 个单元格的修改？`)) return false;
+  if (!hasPendingData()) return true;
+  if (!await confirmAction("撤销修改", `放弃当前页面 ${draftRecords().length} 条待新增记录和 ${state.pendingEdits.size} 个单元格的修改？`)) return false;
+  state.records = state.records.filter((record) => !record.draftId);
   for (const record of state.records) {
     if (!record.baseline) continue;
     record.row = structuredClone(record.baseline);
   }
-  state.pendingEdits.clear(); updateEditActions(); renderGrid(); drawChart(); notice("已撤销单元格修改");
+  state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear();
+  state.pendingEdits.clear(); rebindAddedChartSeries(); updateEditActions(); renderGrid(); drawChart(); notice("已撤销待新增记录和单元格修改");
   return true;
 }
 function schemaFormValue(withMeta = false) {
@@ -1175,7 +1299,7 @@ function handleSchemaContextAction(actionName) {
   row.remove(); schemaChanged(); notice("字段已移除，保存结构后正式生效");
 }
 async function saveSchema() {
-  if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再保存表结构");
+  if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再保存表结构");
   const desired = schemaFormValue(), name = desired.head?.eng_name;
   if (!name) throw new Error("英文表名不能为空");
   const columnRenames = {};
@@ -1250,7 +1374,7 @@ function singleLineSql(sql) {
 }
 async function executeSql() {
   closeSqlHistory();
-  requireTable(); if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再执行 SQL"); const sql = normalizeSqlText(el("sql-editor").value);
+  requireTable(); if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再执行 SQL"); const sql = normalizeSqlText(el("sql-editor").value);
   if (!sql) throw new Error("请输入 SQL");
   el("sql-editor").value = sql;
   const keyword = sql.replace(/^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/, "").match(/^\w+/)?.[0].toUpperCase();
@@ -1329,7 +1453,7 @@ function buildSelectionChartModel({ fields = chartSelectedFields(), indexes = ch
   if (!fields.length || !indexes.length) return { mode, labels: [], series: [] };
   if (mode === "rows") {
     const series = indexes.map((rowIndex, seriesIndex) => {
-      const record = state.records[rowIndex], key = `row:${record.ref ? recordKey(record) : rowIndex}`, style = chartStyle(key, seriesIndex);
+      const record = state.records[rowIndex], key = `row:${record.ref || record.draftId ? recordKey(record) : rowIndex}`, style = chartStyle(key, seriesIndex);
       const points = preferFloatChartPoints(fields.map((column) => point(record, rowIndex, column, chartColumnLabel(column))));
       return { key, name: style.name || chartKeyLabel(record, rowIndex), style, axis: state.chartAxes.get(key) || "left", color: style.lineColor, points };
     });
@@ -1359,7 +1483,7 @@ function addSelectionCurves(selection, axis) {
   const series = model.series.filter((item) => item.points.some((point) => Number.isFinite(point.value)));
   if (!series.length) throw new Error("选区中没有可绘制的数值");
   for (const item of series) {
-    const points = item.points.map((point) => ({ ...point, identity: point.record.ref ? recordKey(point.record) : `result:${point.rowIndex}` }));
+    const points = item.points.map((point) => ({ ...point, identity: point.record.ref || point.record.draftId ? recordKey(point.record) : `result:${point.rowIndex}` }));
     const key = `added:${model.mode}:${JSON.stringify(points.map((point) => [point.identity, point.field, point.selected]))}`;
     const added = { key, name: item.name, mode: model.mode, field: model.mode === "columns" ? points[0].field : null, points };
     const index = state.chartSeries.findIndex((existing) => existing.key === key);
@@ -1779,7 +1903,7 @@ async function previewDefinition() {
 }
 async function applyDefinitionImport() {
   if (!definitionPreview) throw new Error("请先预览文件");
-  if (state.pendingEdits.size || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再导入文件");
+  if (hasPendingData() || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再导入文件");
   const overrides = collectDefinitionOverrides();
   const result = await request("definition-import", "POST", { ...definitionPreview, definition_overrides: overrides });
   const message = result.results.map((item) => `${item.name}：${item.ok ? `加载成功，现有 ${item.rows} 条（新增 ${item.inserted || 0}、更新 ${item.updated || 0}、跳过 ${item.skipped || 0}；文件内重复 ${item.duplicates || 0} 条）` : item.error}`).join("；") + (result.pending.length ? `；尚未处理：${result.pending.join(", ")}` : "");
@@ -1791,7 +1915,7 @@ async function applyDefinitionImport() {
   notice(message, !result.ok); log(message, !result.ok);
 }
 async function importFile() {
-  requireTable(); if (state.pendingEdits.size) throw new Error("请先保存或撤销已修改的单元格，再导入数据"); const file = el("import-file").files[0]; if (!file) throw new Error("请选择文件");
+  requireTable(); if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再导入数据"); const file = el("import-file").files[0]; if (!file) throw new Error("请选择文件");
   if (file.size > 16 * 1024 * 1024) throw new Error("页面导入文件上限为 16 MiB");
   const text = new TextDecoder(el("import-encoding").value, { fatal: true }).decode(await file.arrayBuffer());
   const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json", mode = el("import-mode").value;
@@ -1912,6 +2036,10 @@ el("go-page").onclick = () => run(async () => { const page = Number(el("page-num
   if (!Number.isInteger(page) || page < 1 || page > Math.max(1, Math.ceil(state.total / size))) throw new Error("页码超出范围"); state.offset = (page - 1) * size; await queryRows(); });
 el("save-cell-edits").onclick = () => run(saveCellEdits);
 el("discard-cell-edits").onclick = () => run(discardCellEdits);
+el("add-rows-form").onsubmit = (event) => {
+  event.preventDefault(); run(addBlankRows, "add-rows-error");
+};
+document.querySelectorAll("[data-add-rows-cancel]").forEach((button) => { button.onclick = () => el("add-rows-dialog").close(); });
 el("save-row").onclick = () => run(saveRow, "row-error");
 el("json-mode").onchange = () => {
   try { if (el("json-mode").checked) el("row-editor").value = JSON.stringify(readRowFields(), null, 2); else buildRowFields(JSON.parse(el("row-editor").value));
@@ -1985,7 +2113,7 @@ window.addEventListener("resize", closeSqlHistory);
 el("import-file").onchange = () => { const file = el("import-file").files[0]; el("import-preview").textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : "尚未选择文件"; };
 el("run-import").onclick = () => run(importFile, "import-error");
 el("load-definition").onclick = () => run(() => {
-  if (state.pendingEdits.size || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再加载文件");
+  if (hasPendingData() || state.schemaDirty) throw new Error("请先保存或撤销页面中的修改，再加载文件");
   el("definition-error").textContent = ""; resetDefinitionPreview(); el("definition-dialog").showModal();
 });
 ["definition-file", "definition-encoding", "definition-mode", "definition-keys"].forEach((id) => el(id).addEventListener("input", resetDefinitionPreview));
@@ -2041,10 +2169,10 @@ el("cleanup-logs").onclick = () => run(async () => {
 });
 el("auto-refresh").onchange = () => {
   clearInterval(state.timer); const seconds = Number(el("auto-refresh").value);
-  if (seconds) state.timer = setInterval(() => { if (!state.busy && !document.hidden && !document.querySelector("dialog[open]") && !state.contextRecord && !state.schemaDirty && !state.selected.size && !state.selectedColumns.size && !state.selectedCells.size && !state.pendingEdits.size) run(() => queryRows({ silent: true })); }, seconds * 1000);
+  if (seconds) state.timer = setInterval(() => { if (!state.busy && !document.hidden && !document.querySelector("dialog[open]") && !state.contextRecord && !state.schemaDirty && !state.selected.size && !state.selectedColumns.size && !state.selectedCells.size && !hasPendingData()) run(() => queryRows({ silent: true })); }, seconds * 1000);
 };
 document.addEventListener("keydown", (event) => { if (event.key === "F5") { event.preventDefault(); if (!document.querySelector("dialog[open]")) run(refresh); } });
-window.addEventListener("beforeunload", (event) => { if (state.schemaDirty || state.pendingEdits.size) { event.preventDefault(); event.returnValue = ""; } });
+window.addEventListener("beforeunload", (event) => { if (state.schemaDirty || hasPendingData()) { event.preventDefault(); event.returnValue = ""; } });
 let chartResizeFrame;
 const chartObserver = new ResizeObserver(() => {
   cancelAnimationFrame(chartResizeFrame);

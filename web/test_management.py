@@ -8,6 +8,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 from core import SQLiteDatabase
+from core.sqlite_db import SQLiteTable
 from web.server import create_server
 from web import test_sqlite_server as sqlite_tests
 
@@ -139,6 +140,85 @@ class ManagementTests(unittest.TestCase):
         rows = self.page()['records']
         self.assertEqual(rows[0]['row']['value'], 12.5)
         self.assertEqual(rows[1]['row']['name'], 'changed')
+
+    def test_blank_row_drafts_and_edits_save_atomically(self):
+        self.insert([record(1)])
+        ref = self.page()['records'][0]['ref']
+        changes = [{'ref': ref, 'values': {'value': 12.5}}]
+        # Insert conflicts are detected before any existing-row update.
+        self.manage('PUT', 'cell-edits', {'changes': changes, 'inserts': [record(2), record(1)]}, status=422)
+        self.assertEqual([entry['row'] for entry in self.page()['records']], [record(1)])
+        result = self.manage('PUT', 'cell-edits', {'changes': changes, 'inserts': [record(2), record(3)]})
+        self.assertEqual((result['updated'], result['inserted']), (1, 2))
+        self.assertEqual([entry['row']['value'] for entry in self.page()['records']], [12.5, 2, 3])
+        logs = self.call('GET', '/api/manage/logs?limit=500')['logs']
+        for status in ('success', 'failure'):
+            self.assertTrue(any(item['operation'] == '添加并修改数据' and item['status'] == status for item in logs))
+
+    def test_blank_row_save_validates_keys_types_and_versions(self):
+        self.insert([record(1)])
+        ref = self.page()['records'][0]['ref']
+        for rows in ([record(2), record(2)], [{**record(2), 'site': ''}], [{**record(2), 'id': None}],
+                     [{**record(2), 'value': 'bad'}]):
+            with self.subTest(rows=rows):
+                self.manage('PUT', 'cell-edits', {'inserts': rows}, status=422)
+                self.assertEqual(self.page()['total'], 1)
+        self.manage('PUT', 'cell-edits', {'changes': [{'ref': {**ref, 'version': 'stale'}, 'values': {'value': 99}}],
+                    'inserts': [record(2)]}, status=409)
+        self.manage('PUT', 'cell-edits', {'changes': [{'ref': ref, 'values': {'id': 5}}],
+                    'inserts': [record(2)]}, status=422)
+        self.assertEqual([entry['row'] for entry in self.page()['records']], [record(1)])
+        for payload in ({}, {'changes': [], 'inserts': []}, {'inserts': None}, {'inserts': [record(2)] * 501}):
+            self.manage('PUT', 'cell-edits', payload, status=400)
+        # Blank non-key values remain NULL, and 64-bit integer keys remain exact.
+        huge = '9223372036854775807'
+        result = self.manage('PUT', 'cell-edits', {'inserts': [{'site': 'B', 'id': huge}]})
+        self.assertEqual((result['updated'], result['inserted']), (0, 1))
+        row = self.page(order='site DESC')['records'][0]['row']
+        self.assertEqual(row, dict(site='B', id=huge, name=None, value=None, enabled=None))
+
+    def test_save_preflight_checks_all_keys_without_writes(self):
+        self.insert([record(1), record(9)])
+        ref = self.page(limit=1)['records'][0]['ref']
+        changes = [{'ref': ref, 'values': {'value': 99}}]
+        bad_rows = [{'site': None, 'id': 2}, {'site': '  \t', 'id': 3},
+                    {'site': 'B', 'id': None}, {'site': 'B', 'id': ' '}, {'site': 'B'},
+                    record(2), {**record(2), 'id': '02'}, record(9)]
+        with patch.object(SQLiteTable, '_change', side_effect=AssertionError('unexpected update')) as change, \
+                patch.object(SQLiteTable, '_insert', side_effect=AssertionError('unexpected insert')) as insert:
+            for method, action in [('POST', 'validate-edits'), ('PUT', 'cell-edits')]:
+                result = self.manage(method, action, {'changes': changes, 'inserts': bad_rows}, status=422)
+                message = result['error']
+                for row in range(1, 6):
+                    self.assertIn(f'新增第 {row} 行', message)
+                self.assertIn('不能为空', message)
+                self.assertIn('新增第 7 行与新增第 6 行主键重复', message)
+                self.assertIn('数据库已有记录主键重复', message)
+            good = {'changes': changes, 'inserts': [record(2), {**record(1), 'site': 'B'},
+                                                  {'site': 'C', 'id': '9223372036854775807'},
+                                                  {'site': 'C', 'id': '9223372036854775806'}]}
+            self.assertEqual(self.manage('POST', 'validate-edits', good),
+                             dict(ok=True, updated=1, inserted=4))
+            change.assert_not_called()
+            insert.assert_not_called()
+        self.assertEqual([entry['row'] for entry in self.page()['records']], [record(1), record(9)])
+        logs = self.call('GET', '/api/manage/logs?limit=500')['logs']
+        for status in ('success', 'failure'):
+            self.assertTrue(any(item['operation'] == '保存前检查' and item['status'] == status for item in logs))
+
+    def test_save_rechecks_keys_after_successful_preflight(self):
+        self.insert([record(1)])
+        ref = self.page()['records'][0]['ref']
+        payload = {'changes': [{'ref': ref, 'values': {'value': 99}}], 'inserts': [record(2), record(3)]}
+        self.assertTrue(self.manage('POST', 'validate-edits', payload)['ok'])
+        # Another writer inserts the same key between validation and saving.
+        self.insert([record(3)])
+        with patch.object(SQLiteTable, '_change', side_effect=AssertionError('unexpected update')) as change, \
+                patch.object(SQLiteTable, '_insert', side_effect=AssertionError('unexpected insert')) as insert:
+            self.manage('PUT', 'cell-edits', payload, status=422)
+            change.assert_not_called()
+            insert.assert_not_called()
+        self.assertEqual([entry['row'] for entry in self.page()['records']], [record(1), record(3)])
 
     def test_sql_cannot_change_primary_keys(self):
         self.insert([record(1), record(2)])

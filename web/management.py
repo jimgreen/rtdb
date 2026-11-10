@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from core import SQLiteDatabase, TableDefinition
+from core import SQLiteDatabase, TableDefinition, SchemaError
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _OBJECT
 from .audit import status_for_exception
 from .errors import APIError
@@ -138,34 +138,77 @@ class SQLiteManagement:
             raise APIError(400, '请选择 1–500 条记录')
         return self.cell_edits(name, {'changes': [{'ref': record, 'values': payload.get('values')} for record in records]})
 
+    @staticmethod
+    def _cell_edit_payload(payload):
+        changes, inserts = payload.get('changes', []), payload.get('inserts', [])
+        if (not isinstance(changes, list) or not isinstance(inserts, list)
+                or len(changes) > 500 or len(inserts) > 500 or not (changes or inserts)):
+            raise APIError(400, '请提供待保存记录，新增和修改分别最多 500 条')
+        return changes, inserts
+
+    def _prepare_cell_edits(self, table, connection, changes, inserts):
+        new_rows, new_keys, warnings = [], {}, []
+        for index, row in enumerate(inserts, 1):
+            if not isinstance(row, dict):
+                raise APIError(400, f'新增第 {index} 行必须是记录对象')
+            missing = [key for key in table.primary_keys if row.get(key) is None
+                       or isinstance(row[key], str) and not row[key].strip()]
+            if missing:
+                warnings.append(f'新增第 {index} 行：主键字段 {"、".join(missing)} 不能为空')
+                continue
+            try:
+                value = self.manager._coerce(table, row, complete=True)
+            except (APIError, SchemaError) as error:
+                warnings.append(f'新增第 {index} 行：{error}')
+                continue
+            identity = tuple(value[key] for key in table.primary_keys)
+            key_text = '，'.join(f'{key}={value[key]!r}' for key in table.primary_keys)
+            if identity in new_keys:
+                warnings.append(f'新增第 {index} 行与新增第 {new_keys[identity]} 行主键重复（{key_text}）')
+            elif table._select(connection, dict(zip(table.primary_keys, identity)), limit=1):
+                warnings.append(f'新增第 {index} 行与数据库已有记录主键重复（{key_text}）')
+            new_keys.setdefault(identity, index)
+            new_rows.append(value)
+        if warnings:
+            raise APIError(422, '\n'.join(warnings), details={'warnings': warnings})
+
+        prepared, seen = [], set()
+        for change in changes:
+            if not isinstance(change, dict):
+                raise APIError(400, '单元格修改必须为对象')
+            reference = change.get('ref')
+            if not isinstance(reference, dict):
+                raise APIError(400, '记录引用必须是对象')
+            values = self.manager._coerce(table, change.get('values'))
+            if not values or set(values) & set(table.primary_keys):
+                raise APIError(422, '请选择非主键字段修改；复制记录可创建新主键')
+            where = self.manager._key(table, reference.get('key'))
+            identity = fingerprint(where)
+            if identity in seen:
+                raise APIError(400, '重复选择了同一记录')
+            seen.add(identity)
+            rows = table._select(connection, where)
+            if not rows or fingerprint(rows[0]) != reference.get('version'):
+                raise APIError(409, '记录已变化，本批修改未保存，请刷新后重试')
+            prepared.append((where, values))
+        return prepared, new_rows
+
+    def validate_edits(self, name, payload):
+        changes, inserts = self._cell_edit_payload(payload)
+        with self.manager.session(name) as table, table._read_transaction() as connection:
+            prepared, new_rows = self._prepare_cell_edits(table, connection, changes, inserts)
+        return dict(ok=True, updated=len(prepared), inserted=len(new_rows))
+
     def cell_edits(self, name, payload):
-        changes = payload.get('changes')
-        if not isinstance(changes, list) or not 1 <= len(changes) <= 500:
-            raise APIError(400, '请选择 1–500 条记录')
+        changes, inserts = self._cell_edit_payload(payload)
         with self.manager.session(name) as table:
             def update(connection):
-                prepared, seen = [], set()
-                for change in changes:
-                    if not isinstance(change, dict):
-                        raise APIError(400, '单元格修改必须为对象')
-                    reference = change.get('ref')
-                    if not isinstance(reference, dict):
-                        raise APIError(400, '记录引用必须是对象')
-                    values = self.manager._coerce(table, change.get('values'))
-                    if not values or set(values) & set(table.primary_keys):
-                        raise APIError(422, '请选择非主键字段修改；复制记录可创建新主键')
-                    where = self.manager._key(table, reference.get('key'))
-                    identity = fingerprint(where)
-                    if identity in seen:
-                        raise APIError(400, '重复选择了同一记录')
-                    seen.add(identity)
-                    rows = table._select(connection, where)
-                    if not rows or fingerprint(rows[0]) != reference.get('version'):
-                        raise APIError(409, '记录已变化，本批修改已撤销，请刷新后重试')
-                    prepared.append((where, values))
-                return sum(table._change(connection, 'update', where, values, strict=True) for where, values in prepared)
+                prepared, new_rows = self._prepare_cell_edits(table, connection, changes, inserts)
+                updated = sum(table._change(connection, 'update', where, values, strict=True) for where, values in prepared)
+                inserted = table._insert(connection, new_rows)
+                return dict(updated=updated, inserted=inserted) if 'inserts' in payload else dict(updated=updated)
 
-            return {'updated': table._write(update)}
+            return table._write(update)
 
     def clear(self, name, payload):
         if payload.get('confirm') != name:
@@ -379,10 +422,13 @@ class SQLiteManagement:
                 }.get(action, ('system', f'访问表操作：{action}')) + (table,)
             if method == 'PUT' and action == 'schema':
                 return 'structure', '添加表结构' if payload.get('creating') else '修改表结构', table
+            if method == 'PUT' and action == 'cell-edits' and payload.get('inserts'):
+                return 'data', '添加并修改数据' if payload.get('changes') else '添加数据', table
             return {
                 ('POST', 'rows'): ('data', '添加数据'),
                 ('PUT', 'rows'): ('data', '批量修改数据'),
                 ('PUT', 'cell-edits'): ('data', '修改单元格数据'),
+                ('POST', 'validate-edits'): ('data', '保存前检查'),
                 ('DELETE', 'rows'): ('data', '删除数据'),
                 ('POST', 'clear'): ('data', '清空表数据'),
                 ('POST', 'import'): ('data', '加载数据文件'),
@@ -486,6 +532,7 @@ class SQLiteManagement:
                 return {'definition': definition, 'version': fingerprint(definition), 'row_count': count}
         operations = {('POST', 'rows'): self.manager.insert, ('PUT', 'rows'): self.batch_edit,
                       ('PUT', 'cell-edits'): self.cell_edits,
+                      ('POST', 'validate-edits'): self.validate_edits,
                       ('DELETE', 'rows'): self.manager.delete_rows, ('POST', 'clear'): self.clear,
                       ('POST', 'import'): self.import_data, ('POST', 'sql'): self.sql, ('POST', 'sql-export'): self.sql_export,
                       ('DELETE', 'schema'): self.manager.drop}
