@@ -10,6 +10,7 @@ import csv
 import base64
 import copy
 import hashlib
+import itertools
 import io
 import json
 import math
@@ -28,7 +29,8 @@ from pathlib import Path
 from core import SQLiteDatabase, TableDefinition, SchemaError, SchemaRegistry, load_database_definition
 from core.file_mapped_db import _locked
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT
-from core.sqlite_schema import find_embedded_table, load_embedded_database, remove_embedded_definition, write_embedded_definition
+from core.sqlite_schema import (ensure_embedded_schema, find_embedded_table, load_embedded_database,
+                                remove_embedded_definition, write_embedded_definition)
 from core.definition_files import python_definition, normalize_definition_labels
 from .audit import OperationAuditLog, error_summary, result_summary, status_for_exception
 from .errors import APIError
@@ -335,6 +337,104 @@ def rebuild_schema_data(connection, old, desired, rows=None, encoder=None, table
     connection.execute(f'CREATE TRIGGER "{trigger_prefix}count_delete" AFTER DELETE ON {data_sql} BEGIN UPDATE {metadata_sql} SET row_count=row_count-1; END')
 
 
+def _sql_quote_name(value):
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _sqlite_declared_type(value):
+    """Collapse a legacy SQLite declaration to the RTDB scalar types."""
+
+    raw = str(value or '').upper()
+    if 'INT' in raw:
+        return 'int'
+    if any(token in raw for token in ('REAL', 'FLOA', 'DOUB')):
+        return 'float'
+    # Legacy BINARY/BLOB values are exposed as STR by the RTDB contract.
+    return 'str'
+
+
+def _unique_columns(connection, data_name='data'):
+    """Return the logical key recorded by the legacy primary_key index."""
+
+    indexes = connection.execute(f'PRAGMA index_list({_sql_quote_name(data_name)})').fetchall()
+    for row in indexes:
+        # SQLite returns seq, name, unique, origin, partial.
+        if len(row) >= 3 and row[1] == 'primary_key' and row[2]:
+            columns = connection.execute(f'PRAGMA index_info({_sql_quote_name(row[1])})').fetchall()
+            return tuple(item[2] for item in sorted(columns, key=lambda item: item[0]) if item[2])
+    return ()
+
+
+def _find_unique_key(connection, fields, data_name='data'):
+    """Find a safe fallback key when an old file has no primary_key index."""
+
+    recorded = _unique_columns(connection, data_name)
+    if recorded and all(field in fields for field in recorded):
+        return recorded
+    if not fields:
+        raise APIError(422, '旧数据库没有可用的数据字段')
+    table_sql = _sql_quote_name(data_name)
+    row_count = connection.execute(f'SELECT COUNT(*) FROM {table_sql}').fetchone()[0]
+    if row_count == 0:
+        return (fields[0],)
+
+    def valid(columns):
+        null_clause = ' OR '.join(f'{_sql_quote_name(column)} IS NULL' for column in columns)
+        grouped = ','.join(_sql_quote_name(column) for column in columns)
+        if connection.execute(f'SELECT 1 FROM {table_sql} WHERE {null_clause} LIMIT 1').fetchone():
+            return False
+        return connection.execute(
+            f'SELECT 1 FROM {table_sql} GROUP BY {grouped} HAVING COUNT(*) > 1 LIMIT 1'
+        ).fetchone() is None
+
+    for size in range(1, min(3, len(fields)) + 1):
+        for columns in itertools.combinations(fields, size):
+            if valid(columns):
+                return columns
+    raise APIError(422, '旧数据库没有可自动确定的唯一主键，请先提供正式结构定义')
+
+
+def _legacy_definition(connection, name, path):
+    """Build a conservative cN definition for a pre-embedded RTDB file."""
+
+    table_sql = _sql_quote_name('data')
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='data'"
+    ).fetchone():
+        raise APIError(422, f'{path.name} 缺少旧 RTDB data 表，无法自动生成内置定义')
+    pragma = connection.execute(f'PRAGMA table_info({table_sql})').fetchall()
+    fields = [row for row in pragma if row[1] != '_pos']
+    expected = [f'c{index}' for index in range(len(fields))]
+    actual = [row[1] for row in fields]
+    if actual != expected:
+        raise APIError(422, f'{path.name} 的 data 字段不是连续的 c0...cN，不能安全自动生成定义')
+    primary_keys = _find_unique_key(connection, actual)
+    columns = []
+    for row in fields:
+        kind = _sqlite_declared_type(row[2])
+        columns.append({
+            'eng_name': row[1], 'chn_name': row[1], 'data_type': kind,
+            'primary_key': row[1] in primary_keys,
+            'disp_type': '整数' if kind == 'int' else '浮点数' if kind == 'float' else '文本',
+            'disp_menu': '',
+        })
+    definition = TableDefinition.from_mapping(
+        {'head': {'eng_name': name, 'chn_name': name}, 'columns': columns},
+        path.parent, name,
+    )
+    count = connection.execute(f'SELECT COUNT(*) FROM {table_sql}').fetchone()[0]
+    return definition, tuple(primary_keys), int(count)
+
+
+def _archive_sqlite_bundle(data_dir, path, label):
+    archive = Path(data_dir) / '.web-archive' / f'{path.stem}-{label}-{uuid.uuid4().hex}'
+    archive.mkdir(parents=True, exist_ok=True)
+    for source in _sqlite_bundle(data_dir, path.stem):
+        if source.exists():
+            shutil.copy2(source, archive / source.name)
+    return archive
+
+
 class SQLiteManager:
     max_rows = 100000
 
@@ -604,6 +704,180 @@ class SQLiteManager:
         if not item['selectable']:
             raise APIError(409, f'文件不可加载：{item.get("error") or item["status"]}')
         return {'selected': True, 'name': item['name'], 'filename': filename, 'file': item}
+
+    @staticmethod
+    def _database_filename(payload):
+        filename = payload.get('filename') if isinstance(payload, dict) else None
+        if not isinstance(filename, str) or not _DATABASE_FILE_RE.fullmatch(filename):
+            raise APIError(400, '请选择有效的 .sqlite3 数据库文件')
+        return filename
+
+    def rebuild_embedded_definition(self, payload):
+        """Register a legacy cN RTDB file using its physical SQLite layout.
+
+        This action deliberately keeps the legacy column names (c0, c1, ...).
+        It makes the file usable and auditable without pretending that missing
+        business names can be recovered from SQLite affinity alone.
+        """
+
+        filename = self._database_filename(payload)
+        path = self.data_dir / filename
+        if not path.is_file():
+            raise APIError(404, f'服务端文件不存在：{filename}')
+        with self._gate, _locked(self._schema_lock):
+            self._recover()
+            current = self._database_file_snapshot(path)
+            if current.get('embedded_definition_exists'):
+                return {'generated': False, 'filename': filename, 'name': path.stem,
+                        'message': '文件已经存在 SQLite 内置结构定义', 'file': current}
+            archive = _archive_sqlite_bundle(self.data_dir, path, 'before-embedded-definition')
+            try:
+                with closing(sqlite3.connect(str(path), timeout=10, isolation_level=None)) as connection:
+                    connection.execute('PRAGMA journal_mode=WAL')
+                    connection.execute('PRAGMA synchronous=FULL')
+                    connection.execute('BEGIN IMMEDIATE')
+                    try:
+                        definition, primary_keys, row_count = _legacy_definition(connection, path.stem, path)
+                        ensure_embedded_schema(connection, path.stem, path.stem)
+                        write_embedded_definition(connection, definition, path.stem, path.stem)
+                        connection.execute(
+                            'CREATE TABLE IF NOT EXISTS "metadata" ('
+                            'version INTEGER PRIMARY KEY CHECK(version=1), '
+                            'fingerprint TEXT NOT NULL, row_count INTEGER NOT NULL)'
+                        )
+                        connection.execute(
+                            'INSERT INTO "metadata"(version, fingerprint, row_count) VALUES (1, ?, ?) '
+                            'ON CONFLICT(version) DO UPDATE SET fingerprint=excluded.fingerprint, '
+                            'row_count=excluded.row_count',
+                            (fingerprint(definition.to_mapping()), row_count),
+                        )
+                        existing_index = next(
+                            (row for row in connection.execute('PRAGMA index_list("data")').fetchall()
+                             if len(row) >= 2 and row[1] == 'primary_key'),
+                            None,
+                        )
+                        existing_columns = _unique_columns(connection, 'data')
+                        if existing_index is None or not existing_index[2] or existing_columns != primary_keys:
+                            connection.execute('DROP INDEX IF EXISTS "primary_key"')
+                            connection.execute(
+                                'CREATE UNIQUE INDEX "primary_key" ON "data" (' +
+                                ','.join(_sql_quote_name(column) for column in primary_keys) + ')'
+                            )
+                        connection.commit()
+                    except BaseException:
+                        connection.rollback()
+                        raise
+                definition_mapping = definition.to_mapping()
+                atomic_json(self.schema_dir / (path.stem + '.json'), definition_mapping)
+                atomic_text(self.schema_dir / (path.stem + '.py'), python_definition(definition_mapping))
+            except BaseException:
+                raise
+        item = self._database_file_snapshot(path)
+        return {
+            'generated': True, 'filename': filename, 'name': path.stem,
+            'primary_keys': list(primary_keys), 'row_count': row_count,
+            'definition': definition_mapping, 'backup': str(archive), 'file': item,
+            'warning': '缺失的业务字段名称无法从旧 SQLite 文件恢复，当前使用物理字段名 c0、c1……；请用正式 dbdef/E 定义更新。',
+        }
+
+    def delete_orphan_database_file(self, payload):
+        """Archive an unregistered database file after an explicit confirmation."""
+
+        filename = self._database_filename(payload)
+        if payload.get('confirm') != filename:
+            raise APIError(400, f'请输入文件名确认删除：{filename}')
+        path = self.data_dir / filename
+        if not path.is_file():
+            raise APIError(404, f'服务端文件不存在：{filename}')
+        with self._gate, _locked(self._schema_lock):
+            self._recover()
+            item = self._database_file_snapshot(path)
+            if item.get('selectable') or item.get('embedded_definition_exists'):
+                raise APIError(409, '该文件已有可用定义，不能通过未定义文件入口删除')
+            if item.get('status') != '缺少内置结构定义':
+                raise APIError(409, f'当前文件不是“缺少内置结构定义”状态：{item.get("status")}')
+            archive = self.data_dir / '.web-archive' / f'{path.stem}-orphan-{uuid.uuid4().hex}'
+            archive.mkdir(parents=True, exist_ok=True)
+            moved = []
+            candidates = _sqlite_bundle(self.data_dir, path.stem) + [
+                self.schema_dir / (path.stem + '.json'), self.schema_dir / (path.stem + '.py')]
+            try:
+                for source in candidates:
+                    if not source.exists():
+                        continue
+                    target = archive / source.name
+                    os.replace(source, target)
+                    moved.append((source, target))
+            except BaseException:
+                for source, target in reversed(moved):
+                    if target.exists():
+                        os.replace(target, source)
+                raise
+        return {'deleted': True, 'filename': filename, 'name': path.stem, 'archive': str(archive)}
+
+    def rebuild_from_embedded_definition(self, payload):
+        """Rebuild legacy physical data tables from SQLite embedded metadata."""
+
+        filename = self._database_filename(payload)
+        path = self.data_dir / filename
+        if not path.is_file():
+            raise APIError(404, f'服务端文件不存在：{filename}')
+        with self._gate, _locked(self._schema_lock):
+            self._recover()
+            document = load_embedded_database(path)
+            if document is None:
+                raise APIError(409, '当前文件没有 SQLite 内置定义，请先执行“重新生成内置定义表”或加载正式定义')
+            archive = _archive_sqlite_bundle(self.data_dir, path, 'before-embedded-rebuild')
+            with closing(sqlite3.connect(str(path), timeout=10, isolation_level=None)) as connection:
+                connection.execute('PRAGMA journal_mode=WAL')
+                connection.execute('PRAGMA synchronous=FULL')
+                connection.execute('BEGIN IMMEDIATE')
+                try:
+                    for definition in document.tables:
+                        shared = document.is_grouped
+                        data_name = 'data' if not shared else f'rtdb_data_{definition.eng_name}'
+                        metadata_name = 'metadata' if not shared else f'rtdb_metadata_{definition.eng_name}'
+                        data_sql = _sql_quote_name(data_name)
+                        metadata_sql = _sql_quote_name(metadata_name)
+                        if not connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (data_name,)
+                        ).fetchone():
+                            raise APIError(422, f'{definition.eng_name} 缺少物理数据表：{data_name}')
+                        physical = connection.execute(f'PRAGMA table_info({data_sql})').fetchall()
+                        fields = [row for row in physical if row[1] != '_pos']
+                        expected = [f'c{index}' for index in range(len(fields))]
+                        if [row[1] for row in fields] != expected or len(fields) != len(definition.columns):
+                            raise APIError(422, f'{definition.eng_name} 的物理字段数量或顺序与内置定义不一致')
+                        old_mapping = {
+                            'head': definition.to_mapping()['head'],
+                            'columns': [dict(column, data_type=_sqlite_declared_type(row[2]))
+                                        for column, row in zip(definition.to_mapping()['columns'], fields)],
+                        }
+                        old_definition = TableDefinition.from_mapping(old_mapping, path.parent, definition.eng_name)
+                        stub = type('PhysicalTable', (), {
+                            '_data_name': data_name, '_data_sql': data_sql,
+                            '_metadata_name': metadata_name, '_metadata_sql': metadata_sql,
+                        })()
+                        rebuild_schema_data(connection, old_definition, definition, table=stub if shared else None)
+                        count = connection.execute(f'SELECT COUNT(*) FROM {data_sql}').fetchone()[0]
+                        connection.execute(
+                            f'UPDATE {metadata_sql} SET fingerprint=?, row_count=? WHERE version=1',
+                            (fingerprint(definition.to_mapping()), count),
+                        )
+                        write_embedded_definition(connection, definition, path.stem, document.chn_name)
+                    integrity = connection.execute('PRAGMA quick_check').fetchone()[0]
+                    if integrity != 'ok':
+                        raise APIError(422, f'重建后 SQLite 完整性检查失败：{integrity}')
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            output = document.to_mapping()
+            atomic_json(self.schema_dir / (path.stem + '.json'), output)
+            atomic_text(self.schema_dir / (path.stem + '.py'), python_definition(output))
+        item = self._database_file_snapshot(path)
+        return {'rebuilt': True, 'filename': filename, 'name': path.stem,
+                'backup': str(archive), 'file': item, 'tables': list(document.table_names)}
 
     def create_database_file(self, payload):
         if not isinstance(payload, dict):

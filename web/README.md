@@ -93,6 +93,9 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 | POST | `/api/manage/database-files/select` | 选择并校验服务端文件，参数为 `{ "filename": "devices.sqlite3" }` |
 | POST | `/api/manage/database-files/create` | 新建服务端数据库文件；单表参数为 `{ "name": "measurements", "chn_name": "测量表" }`，多表可增加 `tables: [{"head": ..., "columns": ...}, ...]` |
 | POST | `/api/manage/database-files/upload` | 上传并原子更新文件，参数为 Base64 `files: [{ "name": "x.sqlite3", "content": "..." }, { "name": "x.json", "content": "..." }]`；覆盖时增加 `confirm` |
+| POST | `/api/manage/database-files/rebuild-embedded-definition` | 根据旧 `data` 表的 `cN` 字段生成 SQLite 内置定义，并归档操作前文件 |
+| POST | `/api/manage/database-files/delete-orphan` | 删除未定义数据表；必须携带 `{ "filename": "x.sqlite3", "confirm": "x.sqlite3" }`，文件会先归档 |
+| POST | `/api/manage/database-files/rebuild-from-embedded` | 根据 SQLite 内置定义重建物理数据表、索引和元数据 |
 | GET / PUT | `/api/manage/log-config` | 读取/设置日志保留天数；`0` 表示永久保留 |
 | POST | `/api/manage/logs/cleanup` | 按当前保留天数立即清理旧日志文件 |
 | GET | `/api/sqlite/tables` | 所有定义、结构版本和记录数 |
@@ -242,6 +245,7 @@ GET /api/data/links?where={"site":"a","device":2}
 - E 数据支持“按主键合并”“追加”“替换整表数据”。合并时，文件未提供的原有字段值保留。重复主键仅警告，不阻断预览和加载：追加时保留已有/首次记录，跳过与数据库或文件内的冲突记录；合并和替换时采用文件内同一主键的最后一条记录。预览仍可人工调整 KEY（如联合主键）再确认导入。预览、执行结果和持久化日志记录重复/跳过数量及警告。空主键、无效类型转换、超范围整数仍会拒绝导入。字符串含空格/换行须用单引号或双引号包围；同种引号用连续两个转义；空字符串写 `''`，空值写 `\N`。
 - dbdef 可以迁移有数据的表：保留同名字段，新增非主键字段为 NULL；删除非主键字段会删除对应数据，预览会列明。有数据时禁止变更已有字段类型、主键和保留字段的相对顺序，与表结构编辑页一致。
 - 旧版 `max_record_num` / `data_length` 是导入源的描述信息，不写入新的 JSON。当前 JSON 严格结构契约保持不变。
+- 数据库文件管理中的“处理报警”提供三种方式：**重新生成内置定义表**仅根据旧物理表生成 `c0、c1……` 兼容定义，不恢复丢失的业务字段名称；**删除未定义数据表**会先归档再移除文件；**重建数据表**要求已有 SQLite 内置定义，并按定义重建 `data` 表、索引和元数据。缺少业务定义时，应继续通过正式 dbdef/E/JSON 更新字段名称和显示属性。
 - 预览不写业务表或定义文件。应用时重新检查数据/结构版本；先验证文件内全部表，再逐表提交。单张表的结构和数据在同一 SQLite 事务中更新，JSON/Python 使用原子替换和恢复日志同步。**多张表并非一个整体事务**：中途失败会列出已完成、失败及未处理表。结构变更后，外部长期持有数据库对象的程序应重新打开连接。
 - 单文件最大 20 MiB、最多 200 张表、单表最多 100,000 行。一般表结构表单的保存也同步更新 Python 定义。
 

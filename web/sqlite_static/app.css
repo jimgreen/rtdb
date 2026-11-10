@@ -247,6 +247,14 @@ dialog .panel-title { margin-bottom: 14px; }
 .database-file-selection { min-height: 44px; margin-top: 10px; padding: 8px; border: 1px dashed #b9c9dc; border-radius: 5px; background: #f8fafc; white-space: pre-wrap; overflow-wrap: anywhere; color: #526b88; font: 12px/1.6 Consolas, "Microsoft YaHei", monospace; }
 .database-file-selection.has-files { border-style: solid; background: #f4f8ff; }
 #database-file-upload .dialog-actions { margin-top: 12px; }
+.database-repair-options { display: grid; gap: 8px; margin: 12px 0; }
+.database-repair-options button { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border: 1px solid #d4deeb; border-radius: 7px; background: #fff; color: #304b6d; text-align: left; cursor: pointer; }
+.database-repair-options button:hover:not(:disabled), .database-repair-options button:focus-visible { border-color: #477bd2; background: #f4f8ff; color: #1d5fc5; }
+.database-repair-options button.danger-outline { color: #a73548; border-color: #e2b4bd; }
+.database-repair-options button.danger-outline:hover:not(:disabled), .database-repair-options button.danger-outline:focus-visible { background: #fff4f5; border-color: #c85a6b; color: #972b3e; }
+.database-repair-options button:disabled { cursor: not-allowed; opacity: .55; }
+.database-repair-options strong { font-size: 13px; }
+.database-repair-options small { color: #71839a; font-size: 11px; line-height: 1.45; }
 .backup-actions { flex-wrap: wrap; }
 #definition-dialog { width: min(920px, calc(100vw - 32px)); }
 #chart-settings-dialog { width: min(1180px, calc(100vw - 32px)); padding: 14px 16px; max-height: calc(100vh - 24px); }

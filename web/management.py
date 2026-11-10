@@ -400,6 +400,12 @@ class SQLiteManagement:
             return 'structure', '新建数据库文件', None
         if method == 'POST' and parts == ['database-files', 'upload']:
             return 'structure', '上传并更新数据库文件', None
+        if method == 'POST' and parts == ['database-files', 'rebuild-embedded-definition']:
+            return 'structure', '重新生成 SQLite 内置定义表', None
+        if method == 'POST' and parts == ['database-files', 'delete-orphan']:
+            return 'structure', '删除未定义数据表', None
+        if method == 'POST' and parts == ['database-files', 'rebuild-from-embedded']:
+            return 'structure', '重建数据表', None
         if method == 'GET' and parts == ['logs']:
             return 'system', '加载操作日志', None
         if method == 'GET' and parts == ['log-config']:
@@ -480,6 +486,12 @@ class SQLiteManagement:
             return self.manager.create_database_file(payload)
         if method == 'POST' and parts == ['database-files', 'upload']:
             return self.manager.upload_database_file(payload)
+        if method == 'POST' and parts == ['database-files', 'rebuild-embedded-definition']:
+            return self.manager.rebuild_embedded_definition(payload)
+        if method == 'POST' and parts == ['database-files', 'delete-orphan']:
+            return self.manager.delete_orphan_database_file(payload)
+        if method == 'POST' and parts == ['database-files', 'rebuild-from-embedded']:
+            return self.manager.rebuild_from_embedded_definition(payload)
         if method == 'GET' and parts == ['logs']:
             try:
                 page = int(query.get('page', 1))

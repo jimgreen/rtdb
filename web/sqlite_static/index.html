@@ -115,6 +115,18 @@
       <div class="dialog-actions"><button id="upload-database-file" type="button" disabled>上传并更新服务端</button></div>
     </section>
   </form></dialog>
+  <dialog id="database-repair-dialog" aria-labelledby="database-repair-title"><form method="dialog">
+    <div class="panel-title"><h2 id="database-repair-title">处理数据库报警</h2><button value="cancel" class="icon" aria-label="关闭数据库报警处理">×</button></div>
+    <p id="database-repair-file" class="muted"></p>
+    <p id="database-repair-status" class="error-text" role="alert"></p>
+    <div class="database-repair-options">
+      <button id="database-repair-embed" type="button"><strong>1. 重新生成内置定义表</strong><small>根据当前 data 表的 c0、c1……和 SQLite 类型生成内置结构，让界面停止报警。业务字段名称需要后续用正式定义更新。</small></button>
+      <button id="database-repair-delete" type="button" class="danger-outline"><strong>2. 删除未定义数据表</strong><small>删除当前未定义数据库文件。系统会先归档到 .web-archive，便于恢复。</small></button>
+      <button id="database-repair-rebuild" type="button" class="secondary"><strong>3. 重建数据表</strong><small>根据 SQLite 内置定义重新生成物理 data 表、索引和元数据。需要文件已经存在内置定义。</small></button>
+    </div>
+    <p id="database-repair-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button value="cancel" class="secondary">取消</button></div>
+  </form></dialog>
   <dialog id="chart-settings-dialog" aria-labelledby="chart-settings-title"><form method="dialog">
     <div class="panel-title"><h2 id="chart-settings-title">曲线设置</h2><button value="cancel" formnovalidate class="icon" aria-label="关闭图表设置">×</button></div>
     <section id="chart-axis-settings" class="chart-settings-section" hidden>

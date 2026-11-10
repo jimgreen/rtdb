@@ -11,7 +11,7 @@ const state = { table: null, tables: [], definition: null, version: null, record
     left: { title: "左轴", min: null, max: null, showGrid: true },
     right: { title: "右轴", min: null, max: null, showGrid: true },
     x: { title: "", labelStep: 1 }
-  }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null };
+  }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null };
 let sqlHistoryItems = [], sqlHistoryActive = -1;
 const integerTypes = new Set(["int", "integer", "long"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
@@ -282,11 +282,31 @@ function renderDatabaseFiles() {
     const definitionCell = node("td", databaseFileDefinitionText(file));
     const statusCell = node("td", file.status || "未知", `file-status ${file.selectable ? "ok" : "bad"}`); statusCell.title = file.error || file.status || "";
     const actionCell = node("td");
-    const button = action(file.selectable ? "打开" : "不可用", () => run(() => selectDatabaseFile(file.filename)), "secondary small");
-    button.disabled = !file.selectable; actionCell.append(button);
+    if (file.selectable) actionCell.append(action("打开", () => run(() => selectDatabaseFile(file.filename)), "secondary small"));
+    else actionCell.append(action("处理报警", () => openDatabaseRepair(file), "secondary small"));
     row.append(fileCell, tableCell, countCell, definitionCell, statusCell, actionCell); body.append(row);
   }
   table.append(body); target.append(table);
+}
+function openDatabaseRepair(file) {
+  state.databaseRepairFile = file;
+  el("database-repair-file").textContent = `${file.filename} · ${file.status || "未知状态"}`;
+  el("database-repair-status").textContent = file.error || "请选择一种处理方式。";
+  el("database-repair-error").textContent = "";
+  el("database-repair-dialog").showModal();
+}
+async function repairDatabase(actionName) {
+  const file = state.databaseRepairFile;
+  if (!file) throw new Error("未选择待处理的数据库文件");
+  if (actionName === "delete-orphan" && !await confirmAction("删除未定义数据表", `将删除 ${file.filename}。文件会先归档，确认后继续。`, file.filename)) return;
+  const result = await request(`database-files/${actionName}`, "POST", {
+    filename: file.filename, ...(actionName === "delete-orphan" ? { confirm: file.filename } : {})
+  });
+  el("database-repair-dialog").close(); state.databaseRepairFile = null;
+  await refreshTables(); await loadDatabaseFiles();
+  const message = actionName === "delete-orphan" ? `已删除未定义数据表：${file.filename}（已归档）`
+    : actionName === "rebuild-embedded-definition" ? `已重新生成内置定义表：${file.filename}` : `已重建数据表：${file.filename}`;
+  notice(result.warning ? `${message}；${result.warning}` : message); log(message);
 }
 async function loadDatabaseFiles() {
   const result = await request("database-files");
@@ -2159,6 +2179,10 @@ el("app-title").ondblclick = () => run(async () => {
 });
 document.querySelectorAll("[data-database-file-tab]").forEach((button) => { button.onclick = () => setDatabaseFileTab(button.dataset.databaseFileTab); });
 el("refresh-database-files").onclick = () => run(loadDatabaseFiles);
+el("database-repair-embed").onclick = () => run(() => repairDatabase("rebuild-embedded-definition"), "database-repair-error");
+el("database-repair-delete").onclick = () => run(() => repairDatabase("delete-orphan"), "database-repair-error");
+el("database-repair-rebuild").onclick = () => run(() => repairDatabase("rebuild-from-embedded"), "database-repair-error");
+el("database-repair-dialog").addEventListener("close", () => { state.databaseRepairFile = null; });
 el("database-file-upload-input").onchange = renderDatabaseUploadSelection;
 el("upload-database-file").onclick = () => run(uploadDatabaseFile, "database-file-error");
 el("create-database-file").onclick = () => run(createDatabaseFile);
