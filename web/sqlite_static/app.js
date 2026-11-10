@@ -2,7 +2,7 @@ const el = (id) => document.getElementById(id);
 const state = { table: null, tables: [], definition: null, version: null, records: [], total: 0, tableTotal: 0,
   offset: 0, fields: new Set(), selected: new Set(), checkedTables: new Set(), logs: [], history: [],
   busy: false, schemaDirty: false, timer: null, dialog: null, chartFields: new Set(), lastQuery: null,
-  resultColumns: [], editable: false, pendingEdits: new Map(), draftSequence: 0, copiedRows: null, selectedColumns: new Set(), selectedCells: new Set(),
+  resultColumns: [], editable: false, pendingEdits: new Map(), draftSequence: 0, copiedRows: null, addRowIndex: null, selectedColumns: new Set(), selectedCells: new Set(),
   rowAnchor: null, columnAnchor: null, cellAnchor: null, cellDrag: null, chartMode: "rows", chartAxes: new Map(),
   chartFrame: null, chartHits: [], chartCursor: { index: -1, pinned: false, y: 0 }, chartDrag: null, contextRecord: null,
   chartSeries: [], chartPinned: false, chartCleared: true, chartQueryKey: null, chartHidden: new Set(),
@@ -688,7 +688,7 @@ async function clearTable() {
 function handleRowContextAction(actionName) {
   const context = state.contextRecord; closeRowContextMenu(); if (!context) return;
   const { record, index } = context;
-  if (actionName === "add-row") run(openAddRows);
+  if (actionName === "add-row") run(() => openAddRows(record, index));
   else if (actionName === "copy-rows") run(() => copySelectedRows(record, index));
   else if (actionName === "insert-copied-rows") run(() => insertCopiedRows(record, index));
   else if (actionName === "import") run(openImportDialog);
@@ -995,10 +995,11 @@ function renderGrid() {
   const drafts = draftRecords().length;
   el("row-range").textContent = (state.total ? `${state.offset + 1}–${state.offset + state.records.length - drafts} / ${state.total.toLocaleString()} 条` : "0 条记录") + (drafts ? ` · 新增 ${drafts} 条待保存` : "");
 }
-function openAddRows() {
+function openAddRows(record, index) {
   requireTable();
   const remaining = 500 - draftRecords().length;
   if (remaining <= 0) throw new Error("一次最多暂存 500 条新增记录，请先保存或撤销");
+  state.addRowIndex = record ? index + 1 : null;
   el("add-row-count").value = "1"; el("add-row-count").max = String(remaining);
   el("add-rows-error").textContent = ""; el("add-rows-dialog").showModal();
   el("add-row-count").focus(); el("add-row-count").select();
@@ -1059,13 +1060,15 @@ async function addBlankRows() {
     await queryRows({ reset: true, sql: defaultSql(), order: null });
     el("sql-editor").value = defaultSql();
   }
-  const first = state.records.length;
-  for (let index = 0; index < count; index++) {
+  const first = state.addRowIndex === null ? state.records.length : Math.min(state.addRowIndex, state.records.length);
+  const rows = Array.from({ length: count }, () => {
     const row = Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, null]));
-    state.records.push({ draftId: ++state.draftSequence, row, baseline: structuredClone(row) });
-  }
+    return { draftId: ++state.draftSequence, row, baseline: structuredClone(row) };
+  });
+  state.records.splice(first, 0, ...rows);
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear();
-  renderGrid(); el("add-rows-dialog").close(); tab("data");
+  state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
+  rebindAddedChartSeries(); renderGrid(); drawChart(); el("add-rows-dialog").close(); tab("data");
   const cell = el("data-grid").querySelector(`td[data-cell-row="${first}"]`);
   cell?.scrollIntoView({ block: "nearest", inline: "nearest" }); cell?.focus({ preventScroll: true });
   notice(`已加入 ${count} 条空白行，请双击填写 KEY 和其他字段，再保存修改`);
