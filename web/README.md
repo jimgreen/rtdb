@@ -2,8 +2,8 @@
 
 `web/sqlite_server.py` 提供 SQLite HTTP 服务，`web/sqlite_static/` 提供中文 HTML 界面。
 SQLite 管理终端的交互参考 Qt `tools/rtdbmng`，包括表索引、字段树、SQL 增删改查、排序、分页和日志区域。
-管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：一张逻辑表一个 `.sqlite3` 文件，
-搭配同名 JSON 定义。当前不直接管理任意第三方 SQLite 文件或跨表 JOIN。
+管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：既兼容一张逻辑表一个 `.sqlite3` 文件，
+也支持一个 grouped JSON/Python 定义文件与一个 `.sqlite3` 文件包含多张逻辑表。当前不直接管理任意第三方 SQLite 文件或跨表 JOIN。
 
 从仓库根目录启动：
 
@@ -42,7 +42,7 @@ python -m web.server --engine sqlite --port 8878
 - 导入 CSV/JSON 采用一次事务，失败不留下部分记录；导出包含上一次成功 SQL 查询的全部结果及排序，最多 100,000 行，CSV 遵循显示字段选择。
 - 清空表、删除表和 SQL 写入需要输入表名确认；SQL 写入使用执行时最新内容，不带行版本检查。
 - 日志页读取服务端持久化审计日志，记录结构、数据和系统操作的成功/失败、HTTP 状态、耗时、结果摘要和错误信息；新日志按本地日期写入数据目录的 `rtdb-operation-logs/YYYY-MM-DD.jsonl`，旧版单文件日志继续兼容读取。页面支持指定日期、关键词、类别、状态过滤和分页；导出当前查询页。日志保留天数可在页面设置，`0` 表示永久保留；设置大于 0 后，服务启动及每天首次写入时自动清理过期日期文件，也可立即执行清理。
-- 双击顶部“RTDB 管理终端”标题打开数据库文件管理窗口。服务端文件页按文件名、表名、记录数、定义文件和校验状态浏览 `.sqlite3` 文件，可打开有效文件或新建默认表文件；上传本地文件页支持选择同名 `.sqlite3` 与可选 `.json` 定义，服务端校验 `metadata`、结构指纹、记录数和 `quick_check` 后原子更新数据库，并生成同名 Python 定义。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
+- 双击顶部“RTDB 管理终端”标题打开数据库文件管理窗口。服务端文件页按文件名、表名列表、记录数、定义文件和校验状态浏览 `.sqlite3` 文件，可打开有效文件或新建默认表文件；上传本地文件页支持同名 `.sqlite3` 与可选 `.json` 定义，单个 grouped JSON 会逐表校验 `rtdb_metadata_<table>`、结构指纹、记录数和 `quick_check` 后原子更新数据库，并生成包含全部表类的 Python 定义。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
 
 表定义统一为：
 
@@ -56,6 +56,20 @@ python -m web.server --engine sqlite --port 8878
   ]
 }
 ```
+
+一个数据库文件可以改用 grouped 定义，同时描述多张表：
+
+```json
+{
+  "database": {"eng_name": "ems", "chn_name": "EMS 数据库"},
+  "tables": [
+    {"head": {"chn_name": "节点表", "eng_name": "nodes"}, "columns": []},
+    {"head": {"chn_name": "线路表", "eng_name": "lines"}, "columns": []}
+  ]
+}
+```
+
+`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义。SQLite 内部为每张表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。加载包含多张模块的 dbdef/E 文件时，默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；也可通过 API 的 `database_name` 指定数据库文件名。
 
 文件映射、Redis、SQLite 三个版本都不再接受 `max_elements`、`data_length`。
 SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参数控制物理布局，详见
@@ -76,7 +90,7 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 | GET | `/api/manage/logs?page=1&page_size=50&date=YYYY-MM-DD&keyword=...&category=...&status=...` | 按日期、关键词、类别和状态分页查询持久化操作日志 |
 | GET | `/api/manage/database-files` | 浏览服务端 RTDB `.sqlite3` 文件及定义、记录数、大小和校验状态 |
 | POST | `/api/manage/database-files/select` | 选择并校验服务端文件，参数为 `{ "filename": "devices.sqlite3" }` |
-| POST | `/api/manage/database-files/create` | 新建服务端数据库文件，参数为 `{ "name": "measurements", "chn_name": "测量表" }` |
+| POST | `/api/manage/database-files/create` | 新建服务端数据库文件；单表参数为 `{ "name": "measurements", "chn_name": "测量表" }`，多表可增加 `tables: [{"head": ..., "columns": ...}, ...]` |
 | POST | `/api/manage/database-files/upload` | 上传并原子更新文件，参数为 Base64 `files: [{ "name": "x.sqlite3", "content": "..." }, { "name": "x.json", "content": "..." }]`；覆盖时增加 `confirm` |
 | GET / PUT | `/api/manage/log-config` | 读取/设置日志保留天数；`0` 表示永久保留 |
 | POST | `/api/manage/logs/cleanup` | 按当前保留天数立即清理旧日志文件 |
@@ -93,6 +107,8 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 | POST | `/api/sqlite/tables/{name}/import` | `{ "format": "csv或json", "text": "内容" }` |
 | GET | `/api/sqlite/tables/{name}/export` | `format=csv/json`，可带 `where`、`order` |
 | GET | `/api/sqlite/tables/{name}/check` | quick_check、实际数量与元数据数量核对 |
+
+`POST /api/manage/definition-preview` 与 `POST /api/manage/definition-import` 接受可选的 `source_name` 或 `database_name`。一次请求包含多张表时，所有表始终写入同一个 grouped `.sqlite3`、`.json` 和 `.py` 文件；未提供数据库名时，使用请求中第一张表的英文名作为文件名。
 
 SELECT/WITH 查询和单条 INSERT/UPDATE/DELETE 使用 SQLite 原生执行。
 支持聚合、表达式、LIKE、IN 等；DML 通过受限可写视图触发器做类型和主键校验。

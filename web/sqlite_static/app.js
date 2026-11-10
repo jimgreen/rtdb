@@ -268,9 +268,15 @@ function renderDatabaseFiles() {
   const body = node("tbody");
   for (const file of state.databaseFiles) {
     const row = node("tr");
-    const name = state.tables.find((item) => item.name === file.name);
+    const fileTables = Array.isArray(file.tables) ? file.tables : [];
+    const names = fileTables.map((entry) => entry.name);
+    const name = state.tables.find((item) => names.includes(item.name)) || state.tables.find((item) => item.name === file.name);
     const fileCell = node("td", `${file.filename} · ${formatBytes(file.size_bytes)}`); fileCell.title = file.path || file.filename;
-    const tableCell = node("td", name ? `${chineseName(name.definition.head)} / ${file.name}` : file.name); tableCell.title = file.name;
+    const labels = names.length ? names.map((tableName) => {
+      const item = state.tables.find((candidate) => candidate.name === tableName);
+      return item ? `${chineseName(item.definition.head)} / ${tableName}` : tableName;
+    }) : [name ? `${chineseName(name.definition.head)} / ${file.name}` : file.name];
+    const tableCell = node("td", labels.join("、")); tableCell.title = labels.join("\n");
     const countCell = node("td", file.row_count == null ? "—" : Number(file.row_count).toLocaleString());
     const definitionCell = node("td", databaseFileDefinitionText(file));
     const statusCell = node("td", file.status || "未知", `file-status ${file.selectable ? "ok" : "bad"}`); statusCell.title = file.error || file.status || "";
@@ -293,8 +299,10 @@ async function selectDatabaseFile(filename) {
   const result = await request("database-files/select", "POST", { filename });
   el("database-file-dialog").close();
   await refreshTables();
-  await selectTable(result.name);
-  notice(`已选择服务端数据库文件：${filename}`);
+  const names = Array.isArray(result.file?.tables) ? result.file.tables.map((item) => item.name) : [];
+  const target = names.includes(state.table) ? state.table : names[0] || result.name;
+  if (target && state.tables.some((item) => item.name === target)) await selectTable(target);
+  notice(`已选择服务端数据库文件：${filename}${names.length > 1 ? `，包含 ${names.length} 张表` : ""}`);
 }
 function setDatabaseFileTab(name) {
   document.querySelectorAll("[data-database-file-tab]").forEach((button) => {
@@ -335,8 +343,10 @@ async function uploadDatabaseFile() {
   for (const file of files) encoded.push({ name: file.name, content: await fileToBase64(file) });
   const result = await request("database-files/upload", "POST", { files: encoded, ...(existing ? { confirm: name } : {}) });
   el("database-file-dialog").close(); el("database-file-upload-input").value = ""; renderDatabaseUploadSelection();
-  await refreshTables(); await loadDatabaseFiles(); await selectTable(result.name);
-  const message = `${result.replaced ? "已覆盖并更新" : "已上传"} ${result.filename}，${Number(result.row_count).toLocaleString()} 条记录`;
+  await refreshTables(); await loadDatabaseFiles();
+  const target = result.tables?.[0]?.name || result.name;
+  if (target && state.tables.some((item) => item.name === target)) await selectTable(target);
+  const message = `${result.replaced ? "已覆盖并更新" : "已上传"} ${result.filename}，${result.tables?.length || 1} 张表，${Number(result.row_count).toLocaleString()} 条记录`;
   notice(message); log(message);
 }
 async function createDatabaseFile() {
@@ -1945,7 +1955,7 @@ async function previewDefinition() {
   const content = await new Promise((resolve, reject) => {
     const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file);
   });
-  const payload = { content, format: file.name.toLowerCase().endsWith(".dbdef") ? "dbdef" : "e", encoding: el("definition-encoding").value, mode: el("definition-mode").value, keys: el("definition-keys").value };
+  const payload = { content, source_name: file.name, format: file.name.toLowerCase().endsWith(".dbdef") ? "dbdef" : "e", encoding: el("definition-encoding").value, mode: el("definition-mode").value, keys: el("definition-keys").value };
   const result = await request("definition-preview", "POST", payload);
   if (revision !== definitionRevision) throw new Error("文件或选项已改变，请重新预览");
   const host = el("definition-preview"); host.replaceChildren(node("p", `${file.name} · ${result.encoding} · ${result.tables.length} 张表`));

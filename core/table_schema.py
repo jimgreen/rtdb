@@ -1,9 +1,13 @@
 """JSON table-definition files for :mod:`core.file_mapped_db`.
 
-The definition directory contains one UTF-8 JSON file per table:
+The definition directory accepts either one UTF-8 JSON file per table or one
+grouped UTF-8 JSON file containing multiple tables:
 
 ``<table>.json``
     One JSON object containing a ``head`` object and a ``columns`` array.
+``<database>.json``
+    A JSON object containing optional ``database`` metadata and a ``tables``
+    array. Each item in ``tables`` uses the same ``head``/``columns`` shape.
 
 The JSON field names are fixed English names: ``chn_name``, ``eng_name``,
 ``primary_key``, ``data_type``, ``disp_type``, ``disp_menu`` and optional ``default_value``. Definitions are data only; no executable code
@@ -22,6 +26,7 @@ from typing import Any, Iterable, Iterator, Mapping, Optional, Union
 
 __all__ = [
     "ColumnDefinition",
+    "DatabaseDefinition",
     "SchemaError",
     "SchemaRegistry",
     "TableDefinition",
@@ -336,6 +341,83 @@ class TableDefinition:
         return path
 
 
+@dataclass(frozen=True)
+class DatabaseDefinition:
+    """A JSON definition document containing one or more table definitions.
+
+    The legacy document shape (one ``head`` and ``columns`` pair) remains
+    valid.  New documents use ``tables`` and keep the database label optional::
+
+        {"database": {"eng_name": "ems", "chn_name": "EMS"},
+         "tables": [{"head": ..., "columns": ...}, ...]}
+
+    ``path`` is the source JSON file shared by all tables in the document.
+    """
+
+    eng_name: str
+    chn_name: str
+    tables: tuple[TableDefinition, ...]
+    path: Path
+
+    def __post_init__(self) -> None:
+        if not _IDENTIFIER.fullmatch(self.eng_name):
+            raise SchemaError(f"database name must be an English identifier, got {self.eng_name!r}")
+        if not self.tables:
+            raise SchemaError(f"database {self.eng_name!r} must contain at least one table")
+        names = [table.eng_name for table in self.tables]
+        if len(names) != len(set(names)):
+            raise SchemaError(f"database {self.eng_name!r} contains duplicate table names")
+
+    @property
+    def table_names(self) -> tuple[str, ...]:
+        return tuple(table.eng_name for table in self.tables)
+
+    @property
+    def is_grouped(self) -> bool:
+        return len(self.tables) > 1 or self.path.stem != self.tables[0].eng_name
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "database": {"chn_name": self.chn_name, "eng_name": self.eng_name},
+            "tables": [table.to_mapping() for table in self.tables],
+        }
+
+
+def load_database_definition(path: Union[str, os.PathLike[str]]) -> DatabaseDefinition:
+    """Load either a legacy single-table JSON or a grouped JSON document."""
+
+    path = Path(path).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise SchemaError(f"definition file does not exist: {path}")
+    try:
+        with path.open("r", encoding="utf-8-sig") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SchemaError(f"invalid JSON definition {path}: {exc}") from exc
+    if isinstance(payload, Mapping) and isinstance(payload.get("tables"), list):
+        values = payload["tables"]
+        database = payload.get("database") if isinstance(payload.get("database"), Mapping) else {}
+        eng_name = _clean(database.get("eng_name")) or path.stem
+        chn_name = _clean(database.get("chn_name")) or eng_name
+    elif isinstance(payload, list):
+        values = payload
+        eng_name, chn_name = path.stem, path.stem
+    else:
+        values = [payload]
+        head = payload.get("head") if isinstance(payload, Mapping) else {}
+        if not isinstance(head, Mapping):
+            head = {}
+        eng_name = _clean(head.get("eng_name")) or path.stem
+        chn_name = _clean(head.get("chn_name")) or eng_name
+    if not isinstance(values, list) or not values:
+        raise SchemaError("definition document requires a non-empty tables array")
+    tables: list[TableDefinition] = []
+    for value in values:
+        table = TableDefinition.from_mapping(value, path.parent)
+        tables.append(TableDefinition(head=table.head, columns=table.columns, path=path))
+    return DatabaseDefinition(eng_name=eng_name, chn_name=chn_name, tables=tuple(tables), path=path)
+
+
 def _validate_table_name(name: str) -> str:
     name = _clean(name)
     if not _TABLE_FILE_NAME.fullmatch(name):
@@ -355,22 +437,75 @@ class SchemaRegistry:
     def __init__(self, directory: Union[str, os.PathLike[str]]) -> None:
         self.directory = Path(directory).expanduser().resolve()
         self._cache: dict[str, TableDefinition] = {}
+        self._database_cache: dict[Path, DatabaseDefinition] = {}
+        self._source_by_table: dict[str, Path] = {}
+
+    def _definition_files(self) -> Iterator[Path]:
+        """Yield user-authored definition documents only.
+
+        The web service keeps crash-recovery journals and lock/temporary JSON
+        documents beside the definitions.  They are implementation details and
+        must never be interpreted as table definitions during discovery.
+        """
+        if not self.directory.exists():
+            return
+        for path in sorted(self.directory.glob("*.json")):
+            if path.is_file() and not path.name.startswith(".") and not path.name.endswith(".tmp"):
+                yield path
+
+    def _read_database(self, path: Path) -> DatabaseDefinition:
+        path = path.resolve()
+        document = self._database_cache.get(path)
+        if document is None:
+            document = load_database_definition(path)
+            self._database_cache[path] = document
+            for table in document.tables:
+                previous = self._source_by_table.get(table.eng_name)
+                if previous is not None and previous != path:
+                    raise SchemaError(f"table {table.eng_name!r} is defined by both {previous.name} and {path.name}")
+                self._source_by_table[table.eng_name] = path
+                self._cache[table.eng_name] = table
+        return document
 
     def load(self, table_name: str) -> TableDefinition:
         table_name = _validate_table_name(table_name)
         definition = self._cache.get(table_name)
         if definition is None:
-            definition = TableDefinition.load(self.directory, table_name)
-            self._cache[table_name] = definition
+            for path in self._definition_files():
+                self._read_database(path)
+                if table_name in self._cache:
+                    break
+            definition = self._cache.get(table_name)
+            if definition is None:
+                raise SchemaError(f"definition file does not exist for table: {table_name}")
         return definition
 
     def names(self) -> tuple[str, ...]:
         if not self.directory.exists():
             return ()
-        return tuple(sorted(path.stem for path in self.directory.glob("*.json") if path.is_file()))
+        for path in self._definition_files():
+            self._read_database(path)
+        return tuple(sorted(self._cache))
+
+    def source_path(self, table_name: str) -> Path:
+        self.load(table_name)
+        return self._source_by_table[table_name]
+
+    def database_name(self, table_name: str) -> str:
+        return self.source_path(table_name).stem
+
+    def database_definition(self, table_name: str) -> DatabaseDefinition:
+        return self._read_database(self.source_path(table_name))
+
+    def database_definitions(self) -> tuple[DatabaseDefinition, ...]:
+        if not self.directory.exists():
+            return ()
+        return tuple(self._read_database(path) for path in self._definition_files())
 
     def clear(self) -> None:
         self._cache.clear()
+        self._database_cache.clear()
+        self._source_by_table.clear()
 
     def definitions(self) -> tuple[TableDefinition, ...]:
         return tuple(self.load(name) for name in self.names())

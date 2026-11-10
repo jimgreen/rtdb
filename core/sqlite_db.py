@@ -1,8 +1,11 @@
 """SQLite-backed relation, list, key-value and SQL interfaces.
 
-One schema-defined table per .sqlite3 file, WAL + synchronous=FULL, a connection
-per thread, and native scalar columns/indexes. SQLite serializes writers across
-processes. Transactions return only after COMMIT; reads do not cache rows.
+One legacy table per .sqlite3 file or a grouped JSON definition containing
+multiple logical tables per .sqlite3 file, WAL + synchronous=FULL, a connection
+per thread, and native scalar columns/indexes. Grouped files use independent
+physical data and metadata tables for each logical table. SQLite serializes
+writers across processes. Transactions return only after COMMIT; reads do not
+cache rows.
 Structured fields optionally use MessagePack BLOBs, never pickle or row JSON.
 """
 from __future__ import annotations
@@ -43,6 +46,10 @@ class SQLiteBusyError(SQLiteStorageError):
     """Another writer held the database beyond the configured retry budget."""
 
 
+def _quote_sql_name(value):
+    return '"' + str(value).replace('"', '""') + '"'
+
+
 class SQLiteWriteProcessError(SQLiteStorageError):
     """The dedicated writer process could not complete a queued request."""
 
@@ -55,13 +62,18 @@ _OBJECT = {'list', 'array', 'dict', 'object', 'json'}
 
 
 class SQLiteTable(MutableSequence):
-    def __init__(self, database, definition):
+    def __init__(self, database, definition, *, database_path=None, shared=False):
         self.database = database
         self.definition = self.schema = definition
         self.name = definition.eng_name
         self.columns = definition.column_names
         self.primary_keys = definition.primary_keys
-        self.path = database.directory / (self.name + '.sqlite3')
+        self.path = Path(database_path or (database.directory / (self.name + '.sqlite3'))).resolve()
+        self.shared = bool(shared)
+        self._data_name = 'data' if not self.shared else f'rtdb_data_{self.name}'
+        self._metadata_name = 'metadata' if not self.shared else f'rtdb_metadata_{self.name}'
+        self._data_sql = _quote_sql_name(self._data_name)
+        self._metadata_sql = _quote_sql_name(self._metadata_name)
         self._fields = {name: f'c{i}' for i, name in enumerate(self.columns)}
         self._types = {c.eng_name: c.data_type.strip().lower() for c in definition.columns}
         self._msgpack = None
@@ -82,9 +94,9 @@ class SQLiteTable(MutableSequence):
         fingerprint = hashlib.sha256(json.dumps(definition.to_mapping(), sort_keys=True,
                                                 ensure_ascii=False).encode()).hexdigest()
         def initialize(c):
-            c.execute('CREATE TABLE IF NOT EXISTS metadata (version INTEGER PRIMARY KEY CHECK(version=1), '
+            c.execute(f'CREATE TABLE IF NOT EXISTS {self._metadata_sql} (version INTEGER PRIMARY KEY CHECK(version=1), '
                       'fingerprint TEXT NOT NULL, row_count INTEGER NOT NULL)')
-            old = c.execute('SELECT fingerprint FROM metadata WHERE version=1').fetchone()
+            old = c.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
             if old:
                 if old[0] != fingerprint:
                     raise SchemaError(f'SQLite {self.name}: schema differs from stored definition')
@@ -95,17 +107,21 @@ class SQLiteTable(MutableSequence):
                 typ = ('INTEGER' if kind in _INT | _BOOL else 'REAL' if kind in _FLOAT
                        else 'TEXT' if kind in _TEXT else 'BLOB')
                 parts.append(column + ' ' + typ + (' NOT NULL' if field in self.primary_keys else ''))
-            c.execute('CREATE TABLE data (' + ','.join(parts) + ')')
-            c.execute('CREATE UNIQUE INDEX primary_key ON data (' +
+            c.execute(f'CREATE TABLE {self._data_sql} (' + ','.join(parts) + ')')
+            index_prefix = self._data_name if self.shared else ''
+            primary_index = f'{index_prefix}_primary_key' if index_prefix else 'primary_key'
+            c.execute(f'CREATE UNIQUE INDEX {_quote_sql_name(primary_index)} ON {self._data_sql} (' +
                       ','.join(self._fields[k] for k in self.primary_keys) + ')')
             for name, col in self._fields.items():
                 if (name,) != self.primary_keys:
-                    c.execute(f'CREATE INDEX idx_{col} ON data ({col})')
-            c.execute('INSERT INTO metadata VALUES (1,?,0)', (fingerprint,))
-            c.execute('CREATE TRIGGER count_insert AFTER INSERT ON data BEGIN '
-                      'UPDATE metadata SET row_count=row_count+1; END')
-            c.execute('CREATE TRIGGER count_delete AFTER DELETE ON data BEGIN '
-                      'UPDATE metadata SET row_count=row_count-1; END')
+                    index_name = f'{index_prefix}_idx_{col}' if index_prefix else f'idx_{col}'
+                    c.execute(f'CREATE INDEX {_quote_sql_name(index_name)} ON {self._data_sql} ({col})')
+            c.execute(f'INSERT INTO {self._metadata_sql} VALUES (1,?,0)', (fingerprint,))
+            trigger_prefix = f'{index_prefix}_' if index_prefix else ''
+            c.execute(f'CREATE TRIGGER {_quote_sql_name(trigger_prefix + "count_insert")} AFTER INSERT ON {self._data_sql} BEGIN '
+                      f'UPDATE {self._metadata_sql} SET row_count=row_count+1; END')
+            c.execute(f'CREATE TRIGGER {_quote_sql_name(trigger_prefix + "count_delete")} AFTER DELETE ON {self._data_sql} BEGIN '
+                      f'UPDATE {self._metadata_sql} SET row_count=row_count-1; END')
         try:
             self._write(initialize)
             self._schema_fingerprint = fingerprint
@@ -181,7 +197,7 @@ class SQLiteTable(MutableSequence):
     def _check_schema(self, connection):
         if self._schema_fingerprint is None:
             return
-        actual = connection.execute('SELECT fingerprint FROM metadata WHERE version=1').fetchone()
+        actual = connection.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
         if not actual or actual[0] != self._schema_fingerprint:
             raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
 
@@ -189,6 +205,14 @@ class SQLiteTable(MutableSequence):
         c = self._connection()
         return {name: c.execute('PRAGMA ' + name).fetchone()[0] for name in
                 ('journal_mode', 'synchronous', 'mmap_size', 'busy_timeout', 'wal_autocheckpoint')}
+
+    @property
+    def data_table_name(self):
+        return self._data_name
+
+    @property
+    def metadata_table_name(self):
+        return self._metadata_name
 
     def _encode(self, name, value):
         if value is None:
@@ -273,7 +297,7 @@ class SQLiteTable(MutableSequence):
         condition = self._where_sql(where)
         ordering = _parse_order_by(order_by)
         if condition is None or any(self._types.get(f) in _OBJECT for f, desc in ordering):
-            rows = [self._decode(r) for r in c.execute('SELECT '+','.join(self._fields.values())+' FROM data ORDER BY _pos')]
+            rows = [self._decode(r) for r in c.execute('SELECT '+','.join(self._fields.values())+f' FROM {self._data_sql} ORDER BY _pos')]
             predicate = _compile_where(where)
             rows = [row for row in rows if predicate(copy.deepcopy(row))]
             _sort_rows(rows, order_by)
@@ -286,7 +310,7 @@ class SQLiteTable(MutableSequence):
         order.append('_pos')
         predicate, values = condition
         projection = ','.join(self._fields[f] for f in fields) or '_pos'
-        records = c.execute(f'SELECT {projection} FROM data WHERE {predicate} ORDER BY '+','.join(order)+
+        records = c.execute(f'SELECT {projection} FROM {self._data_sql} WHERE {predicate} ORDER BY '+','.join(order)+
                             ' LIMIT ? OFFSET ?', (*values, -1 if limit is None else limit, offset))
         return [self._decode(r, fields) if fields else {} for r in records]
 
@@ -309,11 +333,11 @@ class SQLiteTable(MutableSequence):
             return len(self.select(where))
         sql, values = condition
         with self._read_transaction() as connection:
-            return connection.execute('SELECT COUNT(*) FROM data WHERE '+sql, values).fetchone()[0]
+            return connection.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, values).fetchone()[0]
 
     def _insert(self, c, rows):
         if rows:
-            c.executemany('INSERT INTO data ('+','.join(self._fields.values())+') VALUES ('+
+            c.executemany(f'INSERT INTO {self._data_sql} ('+','.join(self._fields.values())+') VALUES ('+
                           ','.join('?' for _ in self.columns)+')',
                           [tuple(self._encode(f, row[f]) for f in self.columns) for row in rows])
         return len(rows)
@@ -338,7 +362,7 @@ class SQLiteTable(MutableSequence):
             raise ValueError('batch conditions require scalar equalities')
         sql, args = condition
         if strict:
-            count = c.execute('SELECT COUNT(*) FROM data WHERE '+sql, args).fetchone()[0]
+            count = c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
             if count > 1:
                 raise ValueError('key is not unique')
             if not count:
@@ -346,14 +370,14 @@ class SQLiteTable(MutableSequence):
                     raise KeyError(where)
                 return self._insert(c, [upsert])
         if limit is not None:
-            sql = ' _pos IN (SELECT _pos FROM data WHERE '+sql+' ORDER BY _pos LIMIT ?)'
+            sql = f' _pos IN (SELECT _pos FROM {self._data_sql} WHERE '+sql+' ORDER BY _pos LIMIT ?)'
             args = [*args, limit]
         if kind == 'delete':
-            return c.execute('DELETE FROM data WHERE '+sql, args).rowcount
+            return c.execute(f'DELETE FROM {self._data_sql} WHERE '+sql, args).rowcount
         if not patch:
-            return c.execute('SELECT COUNT(*) FROM data WHERE '+sql, args).fetchone()[0]
+            return c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
         assignments = ','.join(self._fields[f]+'=?' for f in patch)
-        return c.execute('UPDATE data SET '+assignments+' WHERE '+sql,
+        return c.execute(f'UPDATE {self._data_sql} SET '+assignments+' WHERE '+sql,
                          [*(self._encode(f, v) for f,v in patch.items()), *args]).rowcount
 
     def update(self, values, where=None, *, limit=None):
@@ -407,13 +431,13 @@ class SQLiteTable(MutableSequence):
             result = callback(rows, list(self.columns))
             rows = [self._normalise_row(r, complete=True) for r in rows]
             self.definition.validate_rows(rows)
-            c.execute('DELETE FROM data')
+            c.execute(f'DELETE FROM {self._data_sql}')
             self._insert(c, rows)
             return copy.deepcopy(result)
         return self._write(change)
 
     def __len__(self):
-        row = self._connection().execute('SELECT row_count,fingerprint FROM metadata WHERE version=1').fetchone()
+        row = self._connection().execute(f'SELECT row_count,fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
         if row[1] != self._schema_fingerprint:
             raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
         return row[0]
@@ -564,7 +588,7 @@ class SQLiteTableKeyValue(MutableMapping):
                     placeholders = ','.join('('+','.join('?' for _ in range(width))+')' for _ in chunk)
                     csql = '('+key_fields+') IN (VALUES '+placeholders+')'
                     args = [v for key,values in chunk for v in values]
-                    for record in c.execute('SELECT '+projection+' FROM data WHERE '+csql, args):
+                    for record in c.execute('SELECT '+projection+f' FROM {self.table._data_sql} WHERE '+csql, args):
                         row = self.table._decode(record)
                         values = tuple(row[k] for k in self.key_columns)
                         key = requested[values[0] if width == 1 else values]
@@ -1194,7 +1218,15 @@ class SQLiteDatabase:
         name = _validate_identifier(name, label='table name')
         with self._lock:
             if name not in self._tables:
-                self._tables[name] = SQLiteTable(self, self.schema_registry.load(name))
+                definition = self.schema_registry.load(name)
+                database_name = self.schema_registry.database_name(name)
+                shared = database_name != name or len(self.schema_registry.database_definition(name).tables) > 1
+                self._tables[name] = SQLiteTable(
+                    self,
+                    definition,
+                    database_path=self.directory / (database_name + '.sqlite3'),
+                    shared=shared,
+                )
             return self._tables[name]
     __getitem__ = table
     execute = FileMappedDatabase.execute

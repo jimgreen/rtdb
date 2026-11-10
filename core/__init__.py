@@ -15,11 +15,13 @@ from .file_mapped_db import (
 )
 from .table_schema import (
     ColumnDefinition,
+    DatabaseDefinition,
     SchemaError,
     SchemaRegistry,
     TableDefinition,
     TableHead,
     load_table_definition,
+    load_database_definition,
 )
 from .redis_db import (
     RedisDatabase,
@@ -49,11 +51,13 @@ __all__ = [
     "FileMappedWriteProcessError",
     "Table",
     "ColumnDefinition",
+    "DatabaseDefinition",
     "SchemaError",
     "SchemaRegistry",
     "TableDefinition",
     "TableHead",
     "load_table_definition",
+    "load_database_definition",
     "RedisDatabase",
     "RedisTable",
     "RedisTableKeyValue",

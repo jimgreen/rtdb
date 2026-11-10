@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -19,11 +20,11 @@ import threading
 import tempfile
 import time
 import uuid
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 
-from core import SQLiteDatabase, TableDefinition, SchemaError
+from core import SQLiteDatabase, TableDefinition, SchemaError, SchemaRegistry, load_database_definition
 from core.file_mapped_db import _locked
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT
 from core.definition_files import python_definition, normalize_definition_labels
@@ -72,6 +73,71 @@ def _sqlite_fingerprint(path):
             return None
         found = connection.execute('SELECT fingerprint FROM metadata WHERE version=1').fetchone()
         return found[0] if found else None
+
+
+def _sqlite_table_fingerprint(path, table_name=None):
+    """Read one table's stored schema fingerprint from legacy or grouped DBs."""
+    if table_name is None:
+        return _sqlite_fingerprint(path)
+    if not path.exists():
+        return None
+    metadata = 'rtdb_metadata_' + table_name
+    quote = lambda value: '"' + value.replace('"', '""') + '"'
+    with closing(sqlite3.connect(path)) as connection:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (metadata,)).fetchone():
+            return None
+        found = connection.execute(f'SELECT fingerprint FROM {quote(metadata)} WHERE version=1').fetchone()
+        return found[0] if found else None
+
+
+def _read_definition_json(path):
+    with Path(path).open('r', encoding='utf-8-sig') as stream:
+        return json.load(stream)
+
+
+def _definition_context(schema_dir, name):
+    """Return source path, raw JSON, parsed document and grouped flag."""
+    try:
+        source = SchemaRegistry(schema_dir).source_path(name)
+    except SchemaError as error:
+        raise APIError(404, f'表不存在：{name}') from error
+    raw = _read_definition_json(source)
+    document = load_database_definition(source)
+    grouped = document.is_grouped
+    return source, raw, document, grouped
+
+
+def _replace_definition_table(raw, old_name, replacement):
+    """Replace one table in a grouped JSON document, preserving its siblings."""
+    if isinstance(raw, dict) and isinstance(raw.get('tables'), list):
+        result = copy.deepcopy(raw)
+        replaced = False
+        for index, item in enumerate(result['tables']):
+            if isinstance(item, dict) and isinstance(item.get('head'), dict) and item['head'].get('eng_name') == old_name:
+                result['tables'][index] = copy.deepcopy(replacement)
+                replaced = True
+                break
+        if not replaced:
+            raise APIError(404, f'定义文件中不存在表：{old_name}')
+        return result
+    return copy.deepcopy(replacement)
+
+
+def _rename_shared_table(connection, old_name, new_name):
+    """Rename a logical table's physical objects inside a shared SQLite file."""
+    old_data, new_data = f'rtdb_data_{old_name}', f'rtdb_data_{new_name}'
+    old_meta, new_meta = f'rtdb_metadata_{old_name}', f'rtdb_metadata_{new_name}'
+    quote = lambda value: '"' + value.replace('"', '""') + '"'
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (new_data,)).fetchone():
+        raise APIError(409, f'目标表名已存在：{new_name}')
+    for suffix in ('count_insert', 'count_delete'):
+        connection.execute(f'DROP TRIGGER IF EXISTS {quote(old_data + "_" + suffix)}')
+    connection.execute(f'ALTER TABLE {quote(old_data)} RENAME TO {quote(new_data)}')
+    connection.execute(f'ALTER TABLE {quote(old_meta)} RENAME TO {quote(new_meta)}')
+    connection.execute(f'CREATE TRIGGER {quote(new_data + "_count_insert")} AFTER INSERT ON {quote(new_data)} '
+                       f'BEGIN UPDATE {quote(new_meta)} SET row_count=row_count+1; END')
+    connection.execute(f'CREATE TRIGGER {quote(new_data + "_count_delete")} AFTER DELETE ON {quote(new_data)} '
+                       f'BEGIN UPDATE {quote(new_meta)} SET row_count=row_count-1; END')
 
 
 def _sqlite_bundle(root, name):
@@ -198,7 +264,7 @@ def _schema_rows(table, connection, old, desired, renames):
     source_by_target.update({target: source for source, target in renames.items()})
     fields = ','.join(table._fields.values())
     result = []
-    for raw in connection.execute(f'SELECT _pos,{fields} FROM data ORDER BY _pos'):
+    for raw in connection.execute(f'SELECT _pos,{fields} FROM {table._data_sql} ORDER BY _pos'):
         old_row = table._decode(raw[1:])
         row = {}
         for column in desired.columns:
@@ -222,40 +288,49 @@ def validate_populated_schema(old, desired):
         raise APIError(409, '有数据时不能修改已有字段的相对顺序；可以增删非主键字段')
 
 
-def rebuild_schema_data(connection, old, desired, rows=None, encoder=None):
+def rebuild_schema_data(connection, old, desired, rows=None, encoder=None, table=None):
     """Rebuild cN storage inside the caller's transaction, preserving row positions."""
-    sequence = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='data'").fetchone()
+    data_name = table._data_name if table is not None else 'data'
+    data_sql = table._data_sql if table is not None else '"data"'
+    metadata_sql = table._metadata_sql if table is not None else '"metadata"'
+    next_name = data_name + '_schema_next'
+    next_sql = '"' + next_name.replace('"', '""') + '"'
+    sequence = connection.execute('SELECT seq FROM sqlite_sequence WHERE name=?', (data_name,)).fetchone()
     high_water = sequence[0] if sequence else 0
     parts = ['_pos INTEGER PRIMARY KEY AUTOINCREMENT']
     for i, column in enumerate(desired.columns):
         kind = column.data_type.lower()
         affinity = 'INTEGER' if kind in _INT | _BOOL else 'REAL' if kind in _FLOAT else 'TEXT' if kind in _TEXT else 'BLOB'
         parts.append(f'c{i} {affinity}' + (' NOT NULL' if column.primary_key else ''))
-    connection.execute('CREATE TABLE data_schema_next (' + ','.join(parts) + ')')
+    connection.execute(f'CREATE TABLE {next_sql} (' + ','.join(parts) + ')')
     old_fields = {column.eng_name: f'c{i}' for i, column in enumerate(old.columns)}
     fields = ','.join(f'c{i}' for i in range(len(desired.columns)))
     if rows is None:
         sources = ','.join(old_fields.get(column.eng_name, 'NULL') for column in desired.columns)
-        connection.execute(f'INSERT INTO data_schema_next (_pos,{fields}) SELECT _pos,{sources} FROM data')
+        connection.execute(f'INSERT INTO {next_sql} (_pos,{fields}) SELECT _pos,{sources} FROM {data_sql}')
     else:
         if encoder is None:
             raise ValueError('an encoder is required for converted schema rows')
         values = [(position, *(encoder(row.get(column.eng_name), column) for column in desired.columns))
                   for position, row in rows]
-        connection.executemany(f'INSERT INTO data_schema_next (_pos,{fields}) VALUES (' +
+        connection.executemany(f'INSERT INTO {next_sql} (_pos,{fields}) VALUES (' +
                                ','.join('?' for _ in range(len(desired.columns) + 1)) + ')', values)
-    connection.execute('DROP TABLE data')
-    connection.execute('ALTER TABLE data_schema_next RENAME TO data')
+    connection.execute(f'DROP TABLE {data_sql}')
+    connection.execute(f'ALTER TABLE {next_sql} RENAME TO "{data_name}"')
     # Preserve deleted rows' high-water mark, including migrations of empty tables.
-    connection.execute("DELETE FROM sqlite_sequence WHERE name='data'")
-    connection.execute("INSERT INTO sqlite_sequence(name,seq) VALUES ('data',?)", (high_water,))
-    connection.execute('CREATE UNIQUE INDEX primary_key ON data (' + ','.join(f'c{i}' for i, column in enumerate(desired.columns) if column.primary_key) + ')')
+    connection.execute('DELETE FROM sqlite_sequence WHERE name=?', (data_name,))
+    connection.execute('INSERT INTO sqlite_sequence(name,seq) VALUES (?,?)', (data_name, high_water))
+    index_prefix = data_name if table is not None else ''
+    primary_index = f'{index_prefix}_primary_key' if index_prefix else 'primary_key'
+    connection.execute(f'CREATE UNIQUE INDEX "{primary_index}" ON {data_sql} (' + ','.join(f'c{i}' for i, column in enumerate(desired.columns) if column.primary_key) + ')')
     for i, column in enumerate(desired.columns):
         if (column.eng_name,) != desired.primary_keys:
-            connection.execute(f'CREATE INDEX idx_c{i} ON data (c{i})')
+            index_name = f'{index_prefix}_idx_c{i}' if index_prefix else f'idx_c{i}'
+            connection.execute(f'CREATE INDEX "{index_name}" ON {data_sql} (c{i})')
     # Copy before installing count triggers: metadata.row_count stays unchanged.
-    connection.execute('CREATE TRIGGER count_insert AFTER INSERT ON data BEGIN UPDATE metadata SET row_count=row_count+1; END')
-    connection.execute('CREATE TRIGGER count_delete AFTER DELETE ON data BEGIN UPDATE metadata SET row_count=row_count-1; END')
+    trigger_prefix = f'{index_prefix}_' if index_prefix else ''
+    connection.execute(f'CREATE TRIGGER "{trigger_prefix}count_insert" AFTER INSERT ON {data_sql} BEGIN UPDATE {metadata_sql} SET row_count=row_count+1; END')
+    connection.execute(f'CREATE TRIGGER "{trigger_prefix}count_delete" AFTER DELETE ON {data_sql} BEGIN UPDATE {metadata_sql} SET row_count=row_count-1; END')
 
 
 class SQLiteManager:
@@ -283,15 +358,48 @@ class SQLiteManager:
         return value
 
     def definition(self, name):
-        path = self.schema_dir / (self.name(name) + '.json')
-        if not path.is_file():
-            raise APIError(404, f'表不存在：{name}')
-        return TableDefinition.from_json_file(path)
+        try:
+            return SchemaRegistry(self.schema_dir).load(self.name(name))
+        except SchemaError as error:
+            raise APIError(404, f'表不存在：{name}') from error
+
+    def definition_source(self, name):
+        try:
+            return SchemaRegistry(self.schema_dir).source_path(self.name(name))
+        except SchemaError as error:
+            raise APIError(404, f'表不存在：{name}') from error
+
+    def database_path(self, name, *, fallback=None):
+        """Resolve the SQLite file that owns a logical table."""
+        try:
+            source = self.definition_source(name)
+            return self.data_dir / (source.stem + '.sqlite3')
+        except APIError:
+            return self.data_dir / ((fallback or name) + '.sqlite3')
 
     def _recover(self):
         if not self._journal.exists():
             return
         pending = json.loads(self._journal.read_text(encoding='utf-8'))
+        if pending.get('grouped'):
+            schema_path = Path(pending['schema_path'])
+            python_path = schema_path.with_suffix('.py')
+            database_path = Path(pending['database_path'])
+            old_fingerprint = fingerprint(pending['old'])
+            new_fingerprint = fingerprint(pending['new'])
+            actual = _sqlite_table_fingerprint(database_path, pending.get('physical_name', pending['old_name']))
+            if actual == new_fingerprint:
+                atomic_json(schema_path, pending['new_document'])
+                if pending.get('python'):
+                    atomic_text(python_path, python_definition(pending['new_document']))
+            elif actual == old_fingerprint:
+                atomic_json(schema_path, pending['old_document'])
+                if pending.get('python'):
+                    atomic_text(python_path, python_definition(pending['old_document']))
+            else:
+                raise APIError(409, '待恢复多表数据库的结构指纹不匹配，请检查结构变更日志')
+            self._journal.unlink()
+            return
         old_name = self.name(pending.get('old_name', pending['name']))
         new_name = self.name(pending.get('new_name', pending['name']))
         old_definition, new_definition = pending.get('old'), pending.get('new')
@@ -381,44 +489,52 @@ class SQLiteManager:
         item = dict(name=name, filename=path.name, path=str(path), size_bytes=path.stat().st_size,
                     modified_at=_file_mtime(path), definition_exists=schema_path.is_file(),
                     python_exists=python_path.is_file(), rtdb=False, selectable=False,
-                    row_count=None, stored_fingerprint=None, definition_match=False,
+                    row_count=None, stored_fingerprint=None, definition_match=False, tables=[],
                     status='未检查', error=None)
         try:
-            with closing(sqlite3.connect(str(path))) as connection:
-                metadata = connection.execute(
-                    "SELECT row_count, fingerprint FROM metadata WHERE version=1"
-                ).fetchone()
-                if metadata is None:
-                    item.update(status='不是 RTDB SQLite 文件', error='缺少 metadata 元数据')
-                    return item
-                row_count, stored_fingerprint = metadata
-                if not isinstance(row_count, int) or row_count < 0 or not isinstance(stored_fingerprint, str):
-                    raise sqlite3.DatabaseError('metadata 元数据无效')
-                if not connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='data'"
-                ).fetchone():
-                    raise sqlite3.DatabaseError('缺少 data 数据表')
-                actual_count = connection.execute('SELECT COUNT(*) FROM data').fetchone()[0]
-                integrity = connection.execute('PRAGMA quick_check').fetchone()[0]
-                if integrity != 'ok' or actual_count != row_count:
-                    item.update(rtdb=True, row_count=row_count, stored_fingerprint=stored_fingerprint,
-                                status='完整性检查失败', error=f'quick_check={integrity}, 记录数={actual_count}')
-                    return item
-                item.update(rtdb=True, row_count=row_count, stored_fingerprint=stored_fingerprint)
-        except (OSError, sqlite3.Error) as error:
-            item.update(status='无法读取', error=str(error))
-            return item
-        if not schema_path.is_file():
-            item.update(status='缺少 JSON 定义', error=f'缺少 {schema_path.name}')
-            return item
-        try:
-            definition = TableDefinition.from_json_file(schema_path)
-            if definition.eng_name != name:
-                item.update(status='定义表名不匹配', error=f'JSON 表名为 {definition.eng_name}')
-                return item
-            item['definition_match'] = fingerprint(definition.to_mapping()) == item['stored_fingerprint']
+            document = load_database_definition(schema_path) if schema_path.is_file() else None
         except (OSError, SchemaError, json.JSONDecodeError) as error:
             item.update(status='JSON 定义无效', error=str(error))
+            return item
+        if document is None:
+            item.update(status='缺少 JSON 定义', error=f'缺少 {schema_path.name}')
+            return item
+        shared = document.is_grouped
+        definitions = {table.eng_name: table for table in document.tables}
+        if not shared and name not in definitions:
+            item.update(status='定义表名不匹配', error=f'JSON 表名为 {next(iter(definitions), "未知")}')
+            return item
+        try:
+            with closing(sqlite3.connect(str(path))) as connection:
+                integrity = connection.execute('PRAGMA quick_check').fetchone()[0]
+                if integrity != 'ok':
+                    item.update(status='完整性检查失败', error=f'quick_check={integrity}')
+                    return item
+                total = 0
+                matches = True
+                for table_name, definition in definitions.items():
+                    data_name = 'data' if not shared else f'rtdb_data_{table_name}'
+                    metadata_name = 'metadata' if not shared else f'rtdb_metadata_{table_name}'
+                    quote = lambda value: '"' + value.replace('"', '""') + '"'
+                    metadata = connection.execute(f'SELECT row_count, fingerprint FROM {quote(metadata_name)} WHERE version=1').fetchone()
+                    if metadata is None:
+                        raise sqlite3.DatabaseError(f'缺少 {metadata_name} 元数据')
+                    row_count, stored_fingerprint = metadata
+                    if not isinstance(row_count, int) or row_count < 0 or not isinstance(stored_fingerprint, str):
+                        raise sqlite3.DatabaseError(f'{metadata_name} 元数据无效')
+                    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (data_name,)).fetchone():
+                        raise sqlite3.DatabaseError(f'缺少 {data_name} 数据表')
+                    actual_count = connection.execute(f'SELECT COUNT(*) FROM {quote(data_name)}').fetchone()[0]
+                    table_match = actual_count == row_count and stored_fingerprint == fingerprint(definition.to_mapping())
+                    matches = matches and table_match
+                    total += row_count
+                    item['tables'].append(dict(name=table_name, row_count=row_count,
+                                               stored_fingerprint=stored_fingerprint,
+                                               definition_match=table_match))
+                item.update(rtdb=True, row_count=total, stored_fingerprint=None,
+                            definition_match=matches)
+        except (OSError, sqlite3.Error) as error:
+            item.update(status='无法读取', error=str(error))
             return item
         if not item['definition_match']:
             item.update(status='结构指纹不匹配', error='SQLite metadata 与 JSON 定义不一致')
@@ -460,6 +576,47 @@ class SQLiteManager:
         label = normalize_definition_labels({'head': {'eng_name': name, 'chn_name': payload.get('chn_name')}})['head']['chn_name']
         if not isinstance(label, str) or not label.strip():
             raise APIError(400, '中文表名不能为空')
+        grouped_values = payload.get('tables')
+        if grouped_values is not None:
+            if not isinstance(grouped_values, list) or not grouped_values:
+                raise APIError(400, 'tables 必须是非空表结构数组')
+            definitions = []
+            names = set()
+            for value in grouped_values:
+                if not isinstance(value, dict):
+                    raise APIError(400, 'tables 中每项必须是表结构对象')
+                value = copy.deepcopy(value)
+                if not isinstance(value.get('head'), dict):
+                    raise APIError(400, 'tables 中每项必须包含 head 对象')
+                table_name = self.name(value['head'].get('eng_name', ''))
+                if table_name in names:
+                    raise APIError(400, f'重复表名：{table_name}')
+                names.add(table_name)
+                value['head']['chn_name'] = normalize_definition_labels(value)['head']['chn_name'] or table_name
+                try:
+                    definitions.append(TableDefinition.from_mapping(value, self.schema_dir, table_name))
+                except SchemaError as error:
+                    raise APIError(422, f'{table_name} 定义无效：{error}') from error
+            target_json = self.schema_dir / (name + '.json')
+            target_db = self.data_dir / (name + '.sqlite3')
+            target_python = self.schema_dir / (name + '.py')
+            if any(path.exists() for path in (target_json, target_db, target_python)):
+                raise APIError(409, f'数据库文件已存在：{name}.sqlite3')
+            document = {'database': {'eng_name': name, 'chn_name': label.strip()},
+                        'tables': [definition.to_mapping() for definition in definitions]}
+            atomic_json(target_json, document)
+            try:
+                with SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir) as db:
+                    for definition in definitions:
+                        db[definition.eng_name]
+                atomic_text(target_python, python_definition(document))
+            except BaseException:
+                target_json.unlink(missing_ok=True)
+                target_db.unlink(missing_ok=True)
+                target_python.unlink(missing_ok=True)
+                raise
+            return {'created': True, 'filename': target_db.name, 'name': name,
+                    'tables': [definition.eng_name for definition in definitions]}
         definition = payload.get('definition')
         if definition is None:
             definition = {
@@ -526,42 +683,71 @@ class SQLiteManager:
             json_content = json_items[0][1] if json_items else None
             if json_content is not None:
                 try:
-                    document = json.loads(json_content.decode('utf-8-sig'))
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    raise APIError(422, f'{name}.json 不是有效的 UTF-8 JSON') from error
-                try:
-                    definition = TableDefinition.from_mapping(document, self.schema_dir, name)
-                except SchemaError as error:
+                    raw_document = json.loads(json_content.decode('utf-8-sig'))
+                    stage_definition = stage / (name + '.json')
+                    stage_definition.write_text(json.dumps(raw_document, ensure_ascii=False), encoding='utf-8')
+                    database_document = load_database_definition(stage_definition)
+                except (UnicodeDecodeError, json.JSONDecodeError, OSError, SchemaError) as error:
                     raise APIError(422, f'{name}.json 定义无效：{error}') from error
-                if definition.eng_name != name:
-                    raise APIError(422, f'{name}.json 的英文表名必须为 {name}')
             else:
                 if not schema_path.is_file():
                     raise APIError(422, f'服务端缺少 {name}.json，请同时上传同名 JSON 定义')
-                definition = self.definition(name)
+                try:
+                    raw_document = _read_definition_json(schema_path)
+                    database_document = load_database_definition(schema_path)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, SchemaError) as error:
+                    raise APIError(422, f'{name}.json 定义无效：{error}') from error
+            definitions = list(database_document.tables)
+            if not definitions:
+                raise APIError(422, 'JSON 定义至少需要一张表')
+            grouped = database_document.is_grouped
+            if not grouped and (len(definitions) != 1 or definitions[0].eng_name != name):
+                raise APIError(422, f'{name}.json 的英文表名必须为 {name}')
+            if grouped and database_document.eng_name != name:
+                # The SQLite file name identifies the grouped database; table
+                # names remain the logical names inside the document.
+                raw_document = copy.deepcopy(raw_document)
+                raw_document.setdefault('database', {})['eng_name'] = name
 
             try:
                 with closing(sqlite3.connect(str(stage_db))) as connection:
-                    metadata = connection.execute(
-                        'SELECT row_count, fingerprint FROM metadata WHERE version=1'
-                    ).fetchone()
-                    if metadata is None:
-                        raise APIError(422, '上传文件缺少 RTDB metadata 元数据')
-                    row_count, stored_fingerprint = metadata
-                    if not connection.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='data'"
-                    ).fetchone():
-                        raise APIError(422, '上传文件缺少 RTDB data 数据表')
-                    actual_count = connection.execute('SELECT COUNT(*) FROM data').fetchone()[0]
                     integrity = connection.execute('PRAGMA quick_check').fetchone()[0]
+                    total_count = 0
+                    table_results = []
+                    for definition in definitions:
+                        data_name = 'data' if not grouped else f'rtdb_data_{definition.eng_name}'
+                        metadata_name = 'metadata' if not grouped else f'rtdb_metadata_{definition.eng_name}'
+                        quote = lambda value: '"' + value.replace('"', '""') + '"'
+                        metadata = connection.execute(
+                            f'SELECT row_count, fingerprint FROM {quote(metadata_name)} WHERE version=1'
+                        ).fetchone()
+                        if metadata is None:
+                            raise APIError(422, f'上传文件缺少 {metadata_name} 元数据')
+                        row_count, stored_fingerprint = metadata
+                        if not connection.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (data_name,)
+                        ).fetchone():
+                            raise APIError(422, f'上传文件缺少 {data_name} 数据表')
+                        actual_count = connection.execute(f'SELECT COUNT(*) FROM {quote(data_name)}').fetchone()[0]
+                        if actual_count != row_count or stored_fingerprint != fingerprint(definition.to_mapping()):
+                            raise APIError(409, f'{definition.eng_name} 的 SQLite metadata 与 JSON 定义不一致')
+                        if not isinstance(row_count, int) or row_count < 0 or row_count > self.max_rows:
+                            raise APIError(413, f'{definition.eng_name} 记录数超过 {self.max_rows} 条')
+                        total_count += row_count
+                        table_results.append({'name': definition.eng_name, 'row_count': row_count})
+            except APIError:
+                raise
             except sqlite3.Error as error:
                 raise APIError(422, f'上传文件不是有效的 SQLite 数据库：{error}') from error
-            if integrity != 'ok' or actual_count != row_count:
-                raise APIError(422, f'上传文件完整性检查失败：quick_check={integrity}，记录数={actual_count}，metadata={row_count}')
-            if not isinstance(row_count, int) or row_count < 0 or row_count > self.max_rows:
-                raise APIError(413, f'上传文件记录数超过 {self.max_rows} 条')
-            if stored_fingerprint != fingerprint(definition.to_mapping()):
-                raise APIError(409, 'SQLite metadata 与 JSON 定义结构指纹不一致')
+            if integrity != 'ok':
+                raise APIError(422, f'上传文件完整性检查失败：quick_check={integrity}')
+            if grouped:
+                output_document = copy.deepcopy(raw_document)
+                output_document['tables'] = [definition.to_mapping() for definition in definitions]
+                output_document.setdefault('database', {})['eng_name'] = name
+                output_document['database'].setdefault('chn_name', name)
+            else:
+                output_document = definitions[0].to_mapping()
 
             target_db = self.data_dir / database_name
             target_json = self.schema_dir / (name + '.json')
@@ -590,8 +776,8 @@ class SQLiteManager:
                         if source.exists():
                             os.replace(source, self.data_dir / source.name)
                     if json_content is not None:
-                        atomic_json(target_json, definition.to_mapping())
-                    atomic_text(target_python, python_definition(definition.to_mapping()))
+                        atomic_json(target_json, output_document)
+                    atomic_text(target_python, python_definition(output_document))
                 except BaseException:
                     for path in paths:
                         if path.exists() and path not in {item[0] for item in moved}:
@@ -603,7 +789,7 @@ class SQLiteManager:
                 finally:
                     shutil.rmtree(backup, ignore_errors=True)
             return {'ok': True, 'updated': True, 'name': name, 'filename': database_name,
-                    'row_count': row_count, 'bytes': len(database_bytes), 'replaced': replaced,
+                    'row_count': total_count, 'tables': table_results, 'bytes': len(database_bytes), 'replaced': replaced,
                     'definition_updated': json_content is not None, 'python_updated': True}
         finally:
             shutil.rmtree(stage, ignore_errors=True)
@@ -634,7 +820,8 @@ class SQLiteManager:
                 item = dict(name=name, definition=definition.to_mapping(), schema_version=fingerprint(definition.to_mapping()))
                 try:
                     table = db[name]
-                    item.update(row_count=len(table), bytes=table.path.stat().st_size, error=None)
+                    item.update(row_count=len(table), bytes=table.path.stat().st_size,
+                                database_file=table.path.name, database_name=table.path.stem, error=None)
                 except (SchemaError, sqlite3.Error) as exc:
                     item.update(row_count=None, bytes=0, error=str(exc))
                 result.append(item)
@@ -663,7 +850,7 @@ class SQLiteManager:
     def _view(table, connection):
         name = '"' + table.name + '"'
         columns = ','.join(f'{physical} AS "{logical}"' for logical, physical in table._fields.items())
-        connection.execute(f'CREATE TEMP VIEW IF NOT EXISTS {name} AS SELECT {columns} FROM main.data')
+        connection.execute(f'CREATE TEMP VIEW IF NOT EXISTS {name} AS SELECT {columns} FROM main.{table._data_sql}')
         return name
 
     @contextmanager
@@ -675,7 +862,7 @@ class SQLiteManager:
                 return sqlite3.SQLITE_OK
             if action == sqlite3.SQLITE_READ and (
                     database == 'temp' and first == table.name or
-                    database == 'main' and first == 'data'):
+                    database == 'main' and first == table._data_name):
                 return sqlite3.SQLITE_OK
             if action == sqlite3.SQLITE_FUNCTION and (second or '').lower() not in ('load_extension', 'writefile', 'readfile'):
                 return sqlite3.SQLITE_OK
@@ -765,10 +952,10 @@ class SQLiteManager:
             raise APIError(400, '请输入完整表名确认清空')
         with self.session(name) as table:
             def clear(c):
-                count = c.execute('SELECT row_count FROM metadata').fetchone()[0]
+                count = c.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
                 if payload.get('expected_count') != count:
                     raise APIError(409, '记录数量已变化，请刷新后重试')
-                return c.execute('DELETE FROM data').rowcount
+                return c.execute(f'DELETE FROM {table._data_sql}').rowcount
             return {'deleted': table._write(clear)}
 
     def sql(self, name, payload):
@@ -856,15 +1043,17 @@ class SQLiteManager:
         changed_key = ' OR '.join(f'NEW."{key}" IS NOT OLD."{key}"' for key in table.primary_keys)
         protect_keys = f"SELECT RAISE(ABORT, 'KEY 主键不可修改，请新增或复制记录') WHERE {changed_key};"
         triggers = {
-            'web_insert': f'INSERT INTO data ({fields}) VALUES ({values});',
-            'web_update': protect_keys + f'UPDATE data SET {updates} WHERE {where};',
-            'web_delete': f'DELETE FROM data WHERE {where};',
+            'web_insert': f'INSERT INTO {table._data_sql} ({fields}) VALUES ({values});',
+            'web_update': protect_keys + f'UPDATE {table._data_sql} SET {updates} WHERE {where};',
+            'web_delete': f'DELETE FROM {table._data_sql} WHERE {where};',
         }
         for trigger, body in triggers.items():
             kind = trigger.split('_')[1].upper()
             c.execute(f'CREATE TEMP TRIGGER {trigger} INSTEAD OF {kind} ON {view} '
                       f'BEGIN {body} SELECT rtdb_written(); END')
         deadline = time.perf_counter() + 5
+        count_triggers = ({f'{table._data_name}_count_insert', f'{table._data_name}_count_delete'}
+                          if table.shared else {'count_insert', 'count_delete'})
 
         def authorizer(action, first, second, database, source):
             if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
@@ -875,13 +1064,13 @@ class SQLiteManager:
                 return sqlite3.SQLITE_OK
             if action == sqlite3.SQLITE_READ:
                 if (database == 'temp' and first == table.name or
-                        database == 'main' and first == 'data' or
-                        first == 'metadata' and source in ('capacity', 'count_insert', 'count_delete')):
+                        database == 'main' and first == table._data_name or
+                        first == table._metadata_name and source in count_triggers):
                     return sqlite3.SQLITE_OK
             if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE):
                 if (database == 'temp' and first == table.name or
-                        database == 'main' and first == 'data' and source in triggers or
-                        database == 'main' and first == 'metadata' and source in ('count_insert', 'count_delete')):
+                        database == 'main' and first == table._data_name and source in triggers or
+                        database == 'main' and first == table._metadata_name and source in count_triggers):
                     return sqlite3.SQLITE_OK
             return sqlite3.SQLITE_DENY
 
@@ -965,35 +1154,93 @@ class SQLiteManager:
                 rows.append(self._coerce(table, row, complete=True))
             return {'inserted': table.insert_many(rows)}
 
-    def save_schema(self, name, payload, *, creating=False):
+    def save_schema(self, name, payload, *, creating=False, _already_locked=False):
         old_name = self.name(name)
         desired = TableDefinition.from_mapping(normalize_definition_labels(payload.get('definition')), self.schema_dir)
         new_name = self.name(desired.eng_name)
         if any(c.data_type.lower() not in _INT | _FLOAT | _BOOL | _TEXT | _OBJECT for c in desired.columns):
             raise APIError(422, '不支持的 SQLite 字段类型')
-        with self._gate, _locked(self._schema_lock):
+        gate = nullcontext() if _already_locked else self._gate
+        lock = nullcontext() if _already_locked else _locked(self._schema_lock)
+        with gate, lock:
             self._recover()
-            old_schema_path = self.schema_dir / (old_name + '.json')
-            new_schema_path = self.schema_dir / (new_name + '.json')
-            exists = old_schema_path.exists()
-            if creating and (new_schema_path.exists() or (self.data_dir / (new_name + '.sqlite3')).exists()):
+            if creating and payload.get('database_file'):
+                database_file = payload.get('database_file')
+                if not isinstance(database_file, str):
+                    raise APIError(400, 'database_file 必须是 .sqlite3 文件名')
+                database_name = database_file[:-len('.sqlite3')] if database_file.endswith('.sqlite3') else database_file
+                database_name = self.name(database_name)
+                grouped_schema = self.schema_dir / (database_name + '.json')
+                grouped_db = self.data_dir / (database_name + '.sqlite3')
+                if not grouped_schema.is_file() or not grouped_db.is_file():
+                    raise APIError(404, f'目标数据库文件不存在：{database_name}.sqlite3')
+                raw_document = _read_definition_json(grouped_schema)
+                if not (isinstance(raw_document, dict) and isinstance(raw_document.get('tables'), list)):
+                    raise APIError(409, '只有多表 JSON 定义可以追加表结构')
+                if any(isinstance(item, dict) and isinstance(item.get('head'), dict)
+                       and item['head'].get('eng_name') == new_name for item in raw_document['tables']):
+                    raise APIError(409, f'表名已存在：{new_name}')
+                new_document = copy.deepcopy(raw_document)
+                new_document['tables'].append(desired.to_mapping())
+                atomic_json(grouped_schema, new_document)
+                try:
+                    with SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir) as db:
+                        db[new_name]
+                    atomic_text(grouped_schema.with_suffix('.py'), python_definition(new_document))
+                except BaseException:
+                    atomic_json(grouped_schema, raw_document)
+                    atomic_text(grouped_schema.with_suffix('.py'), python_definition(raw_document))
+                    raise
+                return dict(name=new_name, definition=desired.to_mapping(),
+                            schema_version=fingerprint(desired.to_mapping()))
+            try:
+                old_schema_path, old_document, old_database, old_grouped = _definition_context(self.schema_dir, old_name)
+                exists = True
+            except APIError:
+                old_schema_path, old_document, old_database, old_grouped = (
+                    self.schema_dir / (old_name + '.json'), None, None, False)
+                exists = False
+            registry = SchemaRegistry(self.schema_dir)
+            try:
+                target_source = registry.source_path(new_name)
+                target_exists = True
+            except SchemaError:
+                target_source = self.schema_dir / (new_name + '.json')
+                target_exists = False
+            if creating and (target_exists or (self.data_dir / (new_name + '.sqlite3')).exists()):
                 raise APIError(409, '表名已存在')
             if not creating and not exists:
                 raise APIError(404, '表不存在')
-            if not creating and new_name != old_name and (new_schema_path.exists() or any(
+            if not creating and new_name != old_name and (target_exists or any(
                     path.exists() for path in _sqlite_bundle(self.data_dir, new_name))):
                 raise APIError(409, f'目标表名已存在：{new_name}')
             old = self.definition(old_name) if exists else None
             if old and payload.get('version') != fingerprint(old.to_mapping()):
                 raise APIError(409, '表结构已变化，请刷新后修改')
             renames = _normalise_column_renames(old, desired, payload.get('column_renames')) if old else {}
+            old_mapping = old.to_mapping() if old else None
+            desired_mapping = desired.to_mapping()
+            grouped = bool(old and old_grouped)
+            if grouped:
+                new_document = _replace_definition_table(old_document, old_name, desired_mapping)
+                schema_path = old_schema_path
+                database_path = self.data_dir / (old_schema_path.stem + '.sqlite3')
+                physical_name = new_name
+            else:
+                new_document = desired_mapping
+                schema_path = self.schema_dir / (new_name + '.json')
+                database_path = self.data_dir / (new_name + '.sqlite3')
+                physical_name = old_name
             pending = dict(name=old_name, old_name=old_name, new_name=new_name,
-                           old=old.to_mapping() if old else None, new=desired.to_mapping(), python=True,
+                           old=old_mapping, new=desired_mapping, python=True,
                            created=old is None)
+            if grouped:
+                pending.update(grouped=True, schema_path=str(schema_path), database_path=str(database_path),
+                               physical_name=physical_name, old_document=old_document, new_document=new_document)
             atomic_json(self._journal, pending)
             try:
                 if old is None:
-                    atomic_json(new_schema_path, desired.to_mapping())
+                    atomic_json(schema_path, desired_mapping)
                     with SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir) as db:
                         db[new_name]
                 else:
@@ -1013,22 +1260,27 @@ class SQLiteManager:
                                         raise APIError(422, '修改后包含结构化字段，但当前环境缺少 msgpack') from error
                                     msgpack = None
                                 packer = table._msgpack or msgpack
+                                rebuild_kwargs = {'table': table} if table.shared else {}
                                 rebuild_schema_data(c, old, desired, rows,
-                                                    lambda value, column: _encode_schema_value(value, column, packer))
-                            c.execute('UPDATE metadata SET fingerprint=? WHERE version=1', (fingerprint(desired.to_mapping()),))
+                                                    lambda value, column: _encode_schema_value(value, column, packer),
+                                                    **rebuild_kwargs)
+                            c.execute(f'UPDATE {table._metadata_sql} SET fingerprint=? WHERE version=1', (fingerprint(desired_mapping),))
+                            if grouped and new_name != old_name:
+                                _rename_shared_table(c, old_name, new_name)
                         table._write(migrate)
                 if new_name != old_name:
-                    _rename_sqlite_bundle(self.data_dir, old_name, new_name)
-                atomic_json(new_schema_path, desired.to_mapping())
-                atomic_text(new_schema_path.with_suffix('.py'), python_definition(desired.to_mapping()))
-                if new_name != old_name:
+                    if not grouped:
+                        _rename_sqlite_bundle(self.data_dir, old_name, new_name)
+                atomic_json(schema_path, new_document)
+                atomic_text(schema_path.with_suffix('.py'), python_definition(new_document))
+                if new_name != old_name and not grouped:
                     old_schema_path.unlink(missing_ok=True)
                     old_schema_path.with_suffix('.py').unlink(missing_ok=True)
                 self._journal.unlink()
             except BaseException:
                 self._recover()
                 raise
-        return dict(name=new_name, definition=desired.to_mapping(), schema_version=fingerprint(desired.to_mapping()))
+        return dict(name=new_name, definition=desired_mapping, schema_version=fingerprint(desired_mapping))
 
     def drop(self, name, payload):
         if payload.get('confirm') != name:
@@ -1044,29 +1296,71 @@ class SQLiteManager:
                     raise APIError(409, '表结构已变化，请刷新')
                 if table._connection().execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
                     raise APIError(409, '数据库仍被其他进程使用')
+            source = table.path
+            schema_path, raw_document, parsed_document, grouped = _definition_context(self.schema_dir, name)
             archive = self.data_dir / '.web-archive' / (name + '-' + uuid.uuid4().hex)
             archive.mkdir(parents=True)
-            # Move the closed DB first; a live external Windows handle fails
-            # here before removing its definition. Keep the empty table recoverable.
-            source = self.data_dir / (name + '.sqlite3')
-            os.replace(source, archive / source.name)
+            if not grouped:
+                # Move the closed DB first; a live external Windows handle fails
+                # here before removing its definition. Keep the empty table recoverable.
+                os.replace(source, archive / source.name)
+                try:
+                    os.replace(schema_path, archive / schema_path.name)
+                    python_path = schema_path.with_suffix('.py')
+                    if python_path.exists():
+                        os.replace(python_path, archive / python_path.name)
+                except BaseException:
+                    archived_json = archive / schema_path.name
+                    if archived_json.exists():
+                        os.replace(archived_json, schema_path)
+                    os.replace(archive / source.name, source)
+                    raise
+                return {'deleted': True, 'archive': str(archive)}
+
+            if len(parsed_document.tables) == 1:
+                os.replace(source, archive / source.name)
+                try:
+                    os.replace(schema_path, archive / schema_path.name)
+                    python_path = schema_path.with_suffix('.py')
+                    if python_path.exists():
+                        os.replace(python_path, archive / python_path.name)
+                except BaseException:
+                    archived_json = archive / schema_path.name
+                    if archived_json.exists():
+                        os.replace(archived_json, schema_path)
+                    os.replace(archive / source.name, source)
+                    raise
+                return {'deleted': True, 'archive': str(archive)}
+
+            # Removing one table from a shared file keeps all sibling tables and
+            # rewrites the shared JSON/Python document atomically.
+            shutil.copy2(source, archive / source.name)
+            remaining = [table.to_mapping() for table in parsed_document.tables if table.eng_name != name]
+            new_document = copy.deepcopy(raw_document)
+            new_document['tables'] = remaining
             try:
-                os.replace(self.schema_dir / (name + '.json'), archive / (name + '.json'))
-                python_path = self.schema_dir / (name + '.py')
-                if python_path.exists():
-                    os.replace(python_path, archive / python_path.name)
+                with SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir) as db:
+                    table = db[name]
+                    def remove(c):
+                        c.execute(f'DROP TABLE {table._data_sql}')
+                        c.execute(f'DROP TABLE {table._metadata_sql}')
+                    table._write(remove)
+                atomic_json(schema_path, new_document)
+                atomic_text(schema_path.with_suffix('.py'), python_definition(new_document))
             except BaseException:
-                archived_json = archive / (name + '.json')
-                if archived_json.exists():
-                    os.replace(archived_json, self.schema_dir / archived_json.name)
-                os.replace(archive / source.name, source)
+                if source.exists():
+                    source.unlink()
+                shutil.copy2(archive / source.name, source)
+                atomic_json(schema_path, raw_document)
+                atomic_text(schema_path.with_suffix('.py'), python_definition(raw_document))
                 raise
-            return {'deleted': True, 'archive': str(archive)}
+            return {'deleted': True, 'archive': str(archive), 'database_file': source.name,
+                    'remaining_tables': [item['head']['eng_name'] for item in remaining]}
 
     def check(self, name):
         with self.session(name) as table:
             c = table._connection()
             integrity = [r[0] for r in c.execute('PRAGMA quick_check')]
-            stored, counted = len(table), c.execute('SELECT COUNT(*) FROM data').fetchone()[0]
+            stored, counted = len(table), c.execute(f'SELECT COUNT(*) FROM {table._data_sql}').fetchone()[0]
             return dict(ok=integrity == ['ok'] and stored == counted, integrity=integrity,
                         row_count=stored, actual_count=counted, storage=table.storage_config())

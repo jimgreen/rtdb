@@ -225,17 +225,23 @@ class DefinitionImportTests(unittest.TestCase):
                 name = f'conflicts_{mode}_{int(existing)}'
                 with self.subTest(mode=mode, existing=existing):
                     if existing:
-                        self.apply(*self.preview(f'<{name}>\n@ id value\n# 1744819200 5\n# 9 90\n</{name}>'))
+                        initial = (f'<{name}>\n@ id value\n# 1744819200 5\n# 9 90\n</{name}>\n'
+                                   f'<{name}_next>\n@ id\n# 1\n</{name}_next>')
+                        self.apply(*self.preview(initial, source_name=f'{name}.e'))
                     text = (f'<{name}>\n@ id value\n# 1744819200 10\n# 1744819200 20\n'
                             f'# 2 30\n# 2 40\n</{name}>\n<{name}_next>\n@ id\n# 1\n</{name}_next>')
-                    payload, preview = self.preview(text, mode=mode)
+                    options = {'mode': mode}
+                    if existing:
+                        options['source_name'] = f'{name}.e'
+                    payload, preview = self.preview(text, **options)
                     summary = preview['tables'][0]
                     skipped = (3 if existing else 2) if mode == 'append' else 0
+                    total_skipped = skipped + (1 if existing and mode == 'append' else 0)
                     self.assertEqual((summary['duplicates'], summary['skipped']), (2, skipped))
                     self.assertTrue(any('文件内主键重复 2 条' in warning for warning in summary['warnings']))
                     result = self.apply(payload, preview)
                     self.assertTrue(result['ok'])
-                    self.assertEqual((result['duplicates'], result['skipped']), (2, skipped))
+                    self.assertEqual((result['duplicates'], result['skipped']), (2, total_skipped))
                     self.assertEqual(result['results'][0]['warnings'], summary['warnings'])
                     rows = {item['row']['id']: item['row']['value'] for item in self.rows(name)}
                     expected = {1744819200: (5 if existing else 10), 2: 30} if mode == 'append' else {1744819200: 20, 2: 40}
@@ -243,12 +249,15 @@ class DefinitionImportTests(unittest.TestCase):
                         expected[9] = 90
                     self.assertEqual(rows, expected)
                     self.assertEqual(len(self.rows(name + '_next')), 1)
-                    self.assert_files(name)
+                    grouped = json.loads((self.root / 'def/table' / f'{name}.json').read_text(encoding='utf-8'))
+                    self.assertEqual({item['head']['eng_name'] for item in grouped['tables']}, {name, name + '_next'})
+                    module = runpy.run_path(str(self.root / 'def/table' / f'{name}.py'))
+                    self.assertEqual(set(module['TABLE_DEFINITIONS']), {name, name + '_next'})
                     self.assertTrue(self.call('GET', f'/api/manage/tables/{name}/check')['ok'])
                     logs = self.call('GET', '/api/manage/logs?limit=500')['logs']
                     audit = next(item for item in logs if item['operation'] == '加载定义文件并更新结构/数据')
                     self.assertEqual(audit['status'], 'success')
-                    self.assertEqual((audit['result']['duplicates'], audit['result']['skipped']), (2, skipped))
+                    self.assertEqual((audit['result']['duplicates'], audit['result']['skipped']), (2, total_skipped))
                     self.assertTrue(any('文件内主键重复 2 条' in warning for warning in audit['result']['warnings']))
 
     def test_duplicate_preview_allows_confirming_composite_keys(self):

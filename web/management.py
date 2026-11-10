@@ -20,6 +20,13 @@ class SQLiteManagement:
     def __init__(self, manager):
         self.manager = manager
 
+    def table_exists(self, name):
+        try:
+            self.manager.definition(name)
+            return True
+        except APIError:
+            return False
+
     def rows(self, name, query):
         started = time.perf_counter()
         limit, offset = int(query.get('limit', 100)), int(query.get('offset', 0))
@@ -29,7 +36,7 @@ class SQLiteManagement:
             with table._read_transaction() as connection:
                 rows, total = self.manager._selection(table, connection, query.get('where', ''),
                     query.get('order', ''), limit, offset)
-                table_total = connection.execute('SELECT row_count FROM metadata').fetchone()[0]
+                table_total = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
             records = [{'row': row, 'ref': {'key': [row[key] for key in table.primary_keys],
                                            'version': fingerprint(row)}} for row in rows]
         return dict(records=records, total=total, table_total=table_total, limit=limit, offset=offset,
@@ -61,7 +68,7 @@ class SQLiteManagement:
             editable = bool(re.fullmatch(r'SELECT\s+\*\s+FROM\s+(?:"' + re.escape(name) + r'"|' + re.escape(name) + r')', statement, re.I))
             source = f'({statement}\n)'
             with table._read_transaction() as connection:
-                table_total = connection.execute('SELECT row_count FROM metadata').fetchone()[0]
+                table_total = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
                 with self.manager._reader(table, connection):
                     columns = [item[0] for item in connection.execute(f'SELECT * FROM {source} LIMIT 0').description]
                     order = payload.get('order')
@@ -130,7 +137,7 @@ class SQLiteManagement:
         with self.manager.session(name) as table:
             with table._read_transaction() as connection:
                 return {'version': self.revision(table, connection),
-                        'count': connection.execute('SELECT row_count FROM metadata').fetchone()[0]}
+                        'count': connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]}
 
     def batch_edit(self, name, payload):
         records = payload.get('records')
@@ -218,7 +225,7 @@ class SQLiteManagement:
             def apply(connection):
                 if payload.get('version') != self.revision(table, connection):
                     raise APIError(409, '表数据已变化，请重新确认；没有删除数据')
-                return connection.execute('DELETE FROM data').rowcount
+                return connection.execute(f'DELETE FROM {table._data_sql}').rowcount
             return {'deleted': table._write(apply)}
 
     def export(self, name, query):
@@ -291,7 +298,7 @@ class SQLiteManagement:
                 if mode == 'replace':
                     if payload.get('version') != self.revision(table, connection):
                         raise APIError(409, '表数据已变化，请重新确认覆盖')
-                    connection.execute('DELETE FROM data')
+                    connection.execute(f'DELETE FROM {table._data_sql}')
                 if mode != 'merge':
                     return table._insert(connection, rows)
                 for row in rows:
@@ -333,7 +340,7 @@ class SQLiteManagement:
                 definition.to_json(root / 'def')
                 with SQLiteDatabase(root / 'data', schema_directory=root / 'def') as database:
                     self.parse_import(database[name], {'format': 'json', 'text': json.dumps(item)})
-            existing = (self.manager.schema_dir / (name + '.json')).exists()
+            existing = self.table_exists(name)
             if existing:
                 current = self.manager.definition(name)
                 layout = lambda schema: [(col.eng_name, col.data_type, col.primary_key) for col in schema.columns]
@@ -347,7 +354,7 @@ class SQLiteManagement:
             tables = []
             for document in documents:
                 name = document['table']
-                exists = (self.manager.schema_dir / (name + '.json')).exists()
+                exists = self.table_exists(name)
                 snapshot = self.snapshot(name) if exists else {'version': None, 'count': 0}
                 tables.append({'name': name, 'incoming': len(document['rows']), 'exists': exists, **snapshot})
             return {'tables': tables}
@@ -356,7 +363,7 @@ class SQLiteManagement:
         versions = payload['versions']
         for document in documents:
             name = document['table']
-            exists = (self.manager.schema_dir / (name + '.json')).exists()
+            exists = self.table_exists(name)
             current = self.snapshot(name)['version'] if exists else None
             if name not in versions or versions[name] != current:
                 raise APIError(409, f'{name} 已变化，请重新预览；本次尚未写入')
@@ -529,7 +536,7 @@ class SQLiteManagement:
             if action == 'schema':
                 with self.manager.session(name) as table, table._read_transaction() as connection:
                     definition = table.definition.to_mapping()
-                    count = connection.execute('SELECT row_count FROM metadata').fetchone()[0]
+                    count = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
                 return {'definition': definition, 'version': fingerprint(definition), 'row_count': count}
         operations = {('POST', 'rows'): self.manager.insert, ('PUT', 'rows'): self.batch_edit,
                       ('PUT', 'cell-edits'): self.cell_edits,

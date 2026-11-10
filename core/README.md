@@ -500,12 +500,16 @@ with SQLiteDatabase(r"D:\codex\rtdb\dat") as db:
     rows = table.select({"group": 3}, order_by="id DESC", limit=20)
 ```
 
-Each logical table is stored in `<directory>/<table>.sqlite3`. Schema-defined
+Definitions may use the legacy one-table shape (`head` + `columns`) or a
+grouped document with `database` + `tables`. In the grouped shape, all logical
+tables in one JSON file share `<directory>/<database>.sqlite3`; each table has
+its own physical `rtdb_data_<table>` and `rtdb_metadata_<table>` tables, so
+their fingerprints, row counts and indexes remain independent. Schema-defined
 scalar fields use native SQLite `INTEGER`, `REAL` and `TEXT` columns; list,
 object and JSON fields use MessagePack BLOBs. Primary keys and every declared
 column have SQLite indexes. A metadata row stores the schema fingerprint and
-row count, maintained by insert/delete triggers. A schema change is
-rejected when an existing database file has a different fingerprint.
+row count, maintained by insert/delete triggers. A schema change is rejected
+when the corresponding logical table has a different fingerprint.
 
 Every thread obtains its own SQLite connection. Each process must open its own
 `SQLiteDatabase`; connections are never inherited by spawned workers. The

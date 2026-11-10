@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import re
 import sqlite3
 import tempfile
@@ -54,11 +55,12 @@ class DefinitionImporter:
         self.manager = manager
 
     def _existing(self, name):
-        if not (self.manager.schema_dir / (name + '.json')).exists():
+        try:
+            definition = self.manager.definition(name)
+        except APIError:
             if (self.manager.data_dir / (name + '.sqlite3')).exists():
                 raise APIError(409, f'{name} 存在无 JSON 定义的数据库，请先恢复对应定义')
             return None, [], None
-        definition = self.manager.definition(name)
         with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as db:
             table = db[name]
             with table._read_transaction() as connection:
@@ -250,12 +252,82 @@ class DefinitionImporter:
                 json_path=str(schema_path), python_path=str(schema_path.with_suffix('.py')))
             plans.append(dict(summary=summary, version=version, old=old.to_mapping() if old else None,
                               definition=desired, token_definition=token_definition, ddl=ddl, encoded=encoded,
+                              retained=retained,
                               source=source))
         # Bind the token to the source and database revision, allowing the user
         # to confirm different keys/types after preview (including duplicate keys).
         token = fingerprint({'input': payload.get('content', text), 'encoding': encoding, 'format': format, 'mode': mode, 'keys': keys,
                              'plans': [(plan['token_definition'], plan['version']) for plan in plans]})
         return plans, encoding, token
+
+    def _group_database_name(self, payload, plans):
+        value = payload.get('database_name') or payload.get('source_name') or ''
+        value = Path(str(value)).stem if value else ''
+        try:
+            return self.manager.name(value)
+        except APIError:
+            return plans[0]['summary']['name']
+
+    def _apply_group(self, plans, payload, staging):
+        """Create one SQLite/JSON/Python bundle for a multi-table import."""
+        if any(plan['old'] is not None for plan in plans):
+            raise APIError(409, '多表导入暂不覆盖已有分散数据库，请先将目标表整理到同一数据库文件')
+        database_name = self._group_database_name(payload, plans)
+        target_db = self.manager.data_dir / (database_name + '.sqlite3')
+        target_json = self.manager.schema_dir / (database_name + '.json')
+        target_python = self.manager.schema_dir / (database_name + '.py')
+        if any(path.exists() for path in (target_db, target_json, target_python)):
+            if payload.get('confirm') != database_name:
+                raise APIError(409, f'多表数据库 {database_name} 已存在，请在确认字段输入 {database_name}')
+            raise APIError(409, '多表导入覆盖已有数据库前，请先备份并删除原文件')
+        document = {
+            'database': {'eng_name': database_name, 'chn_name': payload.get('database_chn_name') or database_name},
+            'tables': [plan['definition'] for plan in plans],
+        }
+        group_root = Path(staging) / 'group'
+        group_def = group_root / 'def'
+        group_data = group_root / 'data'
+        group_def.mkdir(parents=True)
+        atomic_json(group_def / (database_name + '.json'), document)
+        with SQLiteDatabase(group_data, schema_directory=group_def) as database:
+            for plan in plans:
+                table = database[plan['summary']['name']]
+                if plan['retained']:
+                    table.insert_many(plan['retained'])
+            for name in (plan['summary']['name'] for plan in plans):
+                connection = database[name]._connection()
+                connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        source_db = group_data / (database_name + '.sqlite3')
+        if not source_db.is_file():
+            raise APIError(500, '多表 SQLite 文件未生成')
+        target_db.parent.mkdir(parents=True, exist_ok=True)
+        target_json.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(source_db, target_db)
+        atomic_json(target_json, document)
+        atomic_text(target_python, python_definition(document))
+        return database_name
+
+    def _apply_grouped_existing(self, plan):
+        """Apply one-table E/dbdef changes while preserving grouped siblings."""
+        name = plan['summary']['name']
+        old = plan['old']
+        with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as database:
+            table = database[name]
+            with table._read_transaction() as connection:
+                current_rows = table._select(connection)
+            if fingerprint({'definition': old, 'rows': current_rows}) != plan['version']:
+                raise APIError(409, f'{name} 数据已变化，请重新预览')
+        self.manager.save_schema(name, {'definition': plan['definition'],
+                                        'version': fingerprint(old)}, _already_locked=True)
+        with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as database:
+            table = database[name]
+            def replace(connection):
+                connection.execute(f'DELETE FROM {table._data_sql}')
+                if plan['retained']:
+                    table._insert(connection, plan['retained'])
+                return len(plan['retained'])
+            replace_count = table._write(replace)
+        return replace_count
 
     def _apply(self, plan):
         path = self.manager.data_dir / (plan['summary']['name'] + '.sqlite3')
@@ -338,6 +410,16 @@ class DefinitionImporter:
         with manager._gate, _locked(manager._schema_lock), tempfile.TemporaryDirectory(prefix='rtdb-definition-') as folder:
             manager._recover()
             plans, encoding, token = self._prepare(payload, Path(folder))
+            # Multi-table input always uses the grouped SQLite/JSON/Python
+            # representation; when no source/database name is supplied,
+            # _group_database_name() falls back to the first table name.
+            grouped = len(plans) > 1
+            if grouped:
+                database_name = self._group_database_name(payload, plans)
+                for plan in plans:
+                    plan['summary']['database_file'] = database_name + '.sqlite3'
+                    plan['summary']['json_path'] = str(manager.schema_dir / (database_name + '.json'))
+                    plan['summary']['python_path'] = str(manager.schema_dir / (database_name + '.py'))
             warnings = [f'{plan["summary"]["name"]}：{warning}' for plan in plans for warning in plan['summary']['warnings']]
             if preview:
                 return dict(tables=[plan['summary'] for plan in plans], encoding=encoding, token=token, warnings=warnings)
@@ -348,6 +430,65 @@ class DefinitionImporter:
                 return dict(ok=ok, results=results, pending=pending, warnings=warnings,
                             duplicates=sum(item.get('duplicates', 0) for item in results if item['ok']),
                             skipped=sum(item.get('skipped', 0) for item in results if item['ok']))
+            if grouped:
+                grouped_sources = set()
+                grouped_existing = True
+                for plan in plans:
+                    if plan['old'] is None:
+                        grouped_existing = False
+                        break
+                    try:
+                        source = manager.definition_source(plan['summary']['name'])
+                        raw_document = json.loads(source.read_text(encoding='utf-8-sig'))
+                    except Exception:
+                        grouped_existing = False
+                        break
+                    if not (isinstance(raw_document, dict) and isinstance(raw_document.get('tables'), list)):
+                        grouped_existing = False
+                        break
+                    grouped_sources.add(source)
+                if grouped_existing and len(grouped_sources) == 1:
+                    for plan in plans:
+                        try:
+                            self._apply_grouped_existing(plan)
+                            summary = plan['summary']
+                            results.append(dict(name=summary['name'], ok=True, rows=summary['after'],
+                                                **{key: summary[key] for key in ('incoming', 'inserted', 'updated', 'duplicates', 'skipped', 'warnings')}))
+                        except Exception as error:
+                            manager._recover()
+                            results.append(dict(name=plan['summary']['name'], ok=False, error=str(error)))
+                            return outcome(False, [p['summary']['name'] for p in plans[len(results):]])
+                    return outcome(True, [])
+                try:
+                    database_name = self._apply_group(plans, payload, Path(folder))
+                    for plan in plans:
+                        summary = plan['summary']
+                        results.append(dict(name=summary['name'], ok=True, rows=summary['after'],
+                                            database_name=database_name,
+                                            **{key: summary[key] for key in ('incoming', 'inserted', 'updated', 'duplicates', 'skipped', 'warnings')}))
+                    return outcome(True, [])
+                except Exception as error:
+                    manager._recover()
+                    results.append(dict(name=plans[0]['summary']['name'], ok=False, error=str(error)))
+                    return outcome(False, [p['summary']['name'] for p in plans])
+            if plans:
+                plan = plans[0]
+                try:
+                    source = manager.definition_source(plan['summary']['name'])
+                    raw_document = json.loads(source.read_text(encoding='utf-8-sig'))
+                except Exception:
+                    raw_document = None
+                if isinstance(raw_document, dict) and isinstance(raw_document.get('tables'), list):
+                    try:
+                        self._apply_grouped_existing(plan)
+                        summary = plan['summary']
+                        results.append(dict(name=summary['name'], ok=True, rows=summary['after'],
+                                            **{key: summary[key] for key in ('incoming', 'inserted', 'updated', 'duplicates', 'skipped', 'warnings')}))
+                        return outcome(True, [])
+                    except Exception as error:
+                        manager._recover()
+                        results.append(dict(name=plan['summary']['name'], ok=False, error=str(error)))
+                        return outcome(False, [])
             for plan in plans:
                 try:
                     self._apply(plan)
