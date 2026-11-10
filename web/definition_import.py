@@ -15,6 +15,7 @@ from core import SQLiteDatabase, TableDefinition, SchemaError
 from core.definition_files import decode_upload, parse_modules, dbdef_definitions, infer_type, python_definition, normalize_definition_labels
 from core.file_mapped_db import _locked
 from core.sqlite_db import _INT, _FLOAT, _TEXT, _BOOL, _OBJECT
+from core.sqlite_schema import ensure_embedded_schema, write_embedded_definition
 from .errors import APIError
 from .sqlite_service import atomic_json, atomic_text, fingerprint, validate_populated_schema
 
@@ -59,7 +60,7 @@ class DefinitionImporter:
             definition = self.manager.definition(name)
         except APIError:
             if (self.manager.data_dir / (name + '.sqlite3')).exists():
-                raise APIError(409, f'{name} 存在无 JSON 定义的数据库，请先恢复对应定义')
+                raise APIError(409, f'{name} 存在缺少可用内置结构定义的数据库，请先加载 JSON 定义完成迁移')
             return None, [], None
         with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as db:
             table = db[name]
@@ -223,7 +224,7 @@ class DefinitionImporter:
                 if retained:
                     table.insert_many(retained)
                 connection = table._connection()
-                ddl = [row[0] for row in connection.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT IN ('metadata', 'sqlite_sequence') ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END")]
+                ddl = [row[0] for row in connection.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT IN ('metadata', 'sqlite_sequence') AND name NOT LIKE 'rtdb_schema_%' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END")]
                 encoded = connection.execute('SELECT ' + ','.join(table._fields.values()) + ' FROM data ORDER BY _pos').fetchall()
             old_columns = {col.eng_name: col for col in old.columns} if old else {}
             new_columns = {col.eng_name: col for col in definition.columns}
@@ -360,6 +361,8 @@ class DefinitionImporter:
             connection.execute('PRAGMA synchronous=FULL')
             connection.execute('BEGIN IMMEDIATE')
             try:
+                ensure_embedded_schema(connection, name)
+                embedded_definition = TableDefinition.from_mapping(definition, manager.schema_dir, name)
                 if plan['old']:
                     actual = connection.execute('SELECT fingerprint FROM metadata').fetchone()[0]
                     if actual != fingerprint(plan['old']):
@@ -397,6 +400,7 @@ class DefinitionImporter:
                 fields = ','.join(f'c{i}' for i in range(len(definition['columns'])))
                 placeholders = ','.join('?' for _ in definition['columns'])
                 connection.executemany(f'INSERT INTO data ({fields}) VALUES ({placeholders})', plan['encoded'])
+                write_embedded_definition(connection, embedded_definition, name)
                 connection.commit()
             except BaseException:
                 connection.rollback()

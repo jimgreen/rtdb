@@ -1,7 +1,8 @@
 """SQLite management operations. Each request owns and closes its connections.
 
 The public row API uses logical names and primary keys, never grid positions.
-Schema changes use a recovery journal bridging SQLite metadata and JSON files.
+SQLite embedded schema tables are authoritative at runtime. Schema changes use
+a recovery journal and regenerate JSON/Python export files when available.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from core import SQLiteDatabase, TableDefinition, SchemaError, SchemaRegistry, load_database_definition
 from core.file_mapped_db import _locked
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT
+from core.sqlite_schema import find_embedded_table, load_embedded_database, remove_embedded_definition, write_embedded_definition
 from core.definition_files import python_definition, normalize_definition_labels
 from .audit import OperationAuditLog, error_summary, result_summary, status_for_exception
 from .errors import APIError
@@ -353,24 +355,45 @@ class SQLiteManager:
     def name(value):
         if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', value):
             raise APIError(400, '表名必须是英文标识符')
-        if value.lower() in ('data', 'metadata') or value.lower().startswith('sqlite_'):
+        if value.lower() in ('data', 'metadata') or value.lower().startswith(('sqlite_', 'rtdb_')):
             raise APIError(400, '该表名由 SQLite 存储内核保留')
         return value
 
     def definition(self, name):
+        name = self.name(name)
+        embedded = find_embedded_table(self.data_dir, name)
+        if embedded is not None:
+            return embedded[0]
         try:
-            return SchemaRegistry(self.schema_dir).load(self.name(name))
+            return SchemaRegistry(self.schema_dir).load(name)
         except SchemaError as error:
             raise APIError(404, f'表不存在：{name}') from error
 
     def definition_source(self, name):
+        name = self.name(name)
+        embedded = find_embedded_table(self.data_dir, name)
+        if embedded is not None:
+            return self.schema_dir / (embedded[1].path.stem + '.json')
         try:
-            return SchemaRegistry(self.schema_dir).source_path(self.name(name))
+            return SchemaRegistry(self.schema_dir).source_path(name)
         except SchemaError as error:
             raise APIError(404, f'表不存在：{name}') from error
 
+    def definition_context(self, name):
+        """Return the runtime definition context, preferring SQLite metadata."""
+        name = self.name(name)
+        embedded = find_embedded_table(self.data_dir, name)
+        if embedded is not None:
+            _definition, document = embedded
+            return (self.schema_dir / (document.path.stem + '.json'),
+                    document.to_mapping(), document, document.is_grouped)
+        return _definition_context(self.schema_dir, name)
+
     def database_path(self, name, *, fallback=None):
         """Resolve the SQLite file that owns a logical table."""
+        embedded = find_embedded_table(self.data_dir, self.name(name))
+        if embedded is not None:
+            return embedded[1].path
         try:
             source = self.definition_source(name)
             return self.data_dir / (source.stem + '.sqlite3')
@@ -488,16 +511,28 @@ class SQLiteManager:
         python_path = self.schema_dir / (name + '.py')
         item = dict(name=name, filename=path.name, path=str(path), size_bytes=path.stat().st_size,
                     modified_at=_file_mtime(path), definition_exists=schema_path.is_file(),
+                    embedded_definition_exists=False,
+                    definition_source=None,
                     python_exists=python_path.is_file(), rtdb=False, selectable=False,
                     row_count=None, stored_fingerprint=None, definition_match=False, tables=[],
                     status='未检查', error=None)
         try:
-            document = load_database_definition(schema_path) if schema_path.is_file() else None
+            # The embedded registry is authoritative even when an old/stale
+            # JSON sidecar is still present. JSON remains a compatibility
+            # source only for files created before embedded schema support.
+            document = load_embedded_database(path)
+            if document is not None:
+                item['embedded_definition_exists'] = True
+                item['definition_source'] = 'SQLite 内置结构'
+            elif schema_path.is_file():
+                document = load_database_definition(schema_path)
+                item['definition_source'] = 'JSON 兼容定义'
         except (OSError, SchemaError, json.JSONDecodeError) as error:
-            item.update(status='JSON 定义无效', error=str(error))
+            item.update(status='SQLite 内置结构无效' if item['embedded_definition_exists']
+                        else '定义文件无效', error=str(error))
             return item
         if document is None:
-            item.update(status='缺少 JSON 定义', error=f'缺少 {schema_path.name}')
+            item.update(status='缺少内置结构定义', error=f'缺少 {path.name} 内置结构定义（旧文件可通过同名 JSON 首次加载迁移）')
             return item
         shared = document.is_grouped
         definitions = {table.eng_name: table for table in document.tables}
@@ -537,9 +572,10 @@ class SQLiteManager:
             item.update(status='无法读取', error=str(error))
             return item
         if not item['definition_match']:
-            item.update(status='结构指纹不匹配', error='SQLite metadata 与 JSON 定义不一致')
+            source = item['definition_source'] or '结构定义'
+            item.update(status='结构指纹不匹配', error=f'SQLite metadata 与 {source} 不一致')
             return item
-        item.update(status='可用', selectable=True)
+        item.update(status='可用' if item['embedded_definition_exists'] else '可用（JSON 兼容，首次打开后内置化）', selectable=True)
         return item
 
     def database_files(self):
@@ -681,6 +717,7 @@ class SQLiteManager:
                     (stage / sidecar_name).write_bytes(sidecars[sidecar_name])
             schema_path = self.schema_dir / (name + '.json')
             json_content = json_items[0][1] if json_items else None
+            embedded_source = False
             if json_content is not None:
                 try:
                     raw_document = json.loads(json_content.decode('utf-8-sig'))
@@ -690,13 +727,23 @@ class SQLiteManager:
                 except (UnicodeDecodeError, json.JSONDecodeError, OSError, SchemaError) as error:
                     raise APIError(422, f'{name}.json 定义无效：{error}') from error
             else:
-                if not schema_path.is_file():
-                    raise APIError(422, f'服务端缺少 {name}.json，请同时上传同名 JSON 定义')
-                try:
-                    raw_document = _read_definition_json(schema_path)
-                    database_document = load_database_definition(schema_path)
-                except (OSError, UnicodeDecodeError, json.JSONDecodeError, SchemaError) as error:
-                    raise APIError(422, f'{name}.json 定义无效：{error}') from error
+                # A self-describing SQLite upload remains valid even if the
+                # server still has an old or damaged JSON sidecar. Fall back
+                # to that sidecar only for legacy files without embedded
+                # metadata.
+                embedded_document = load_embedded_database(stage_db)
+                if embedded_document is not None:
+                    database_document = embedded_document
+                    raw_document = embedded_document.to_mapping()
+                    embedded_source = True
+                elif schema_path.is_file():
+                    try:
+                        raw_document = _read_definition_json(schema_path)
+                        database_document = load_database_definition(schema_path)
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError, SchemaError) as error:
+                        raise APIError(422, f'{name}.json 定义无效：{error}') from error
+                else:
+                    raise APIError(422, f'服务端和上传文件都缺少 {name} 的结构定义')
             definitions = list(database_document.tables)
             if not definitions:
                 raise APIError(422, 'JSON 定义至少需要一张表')
@@ -761,8 +808,6 @@ class SQLiteManager:
                 paths = [target_db, *(self.data_dir / (database_name + suffix) for suffix in _DATABASE_SIDE_FILES)]
                 if json_content is not None:
                     paths.extend([target_json, target_python])
-                else:
-                    paths.append(target_python)
                 moved = []
                 try:
                     for path in paths:
@@ -777,7 +822,7 @@ class SQLiteManager:
                             os.replace(source, self.data_dir / source.name)
                     if json_content is not None:
                         atomic_json(target_json, output_document)
-                    atomic_text(target_python, python_definition(output_document))
+                        atomic_text(target_python, python_definition(output_document))
                 except BaseException:
                     for path in paths:
                         if path.exists() and path not in {item[0] for item in moved}:
@@ -790,7 +835,8 @@ class SQLiteManager:
                     shutil.rmtree(backup, ignore_errors=True)
             return {'ok': True, 'updated': True, 'name': name, 'filename': database_name,
                     'row_count': total_count, 'tables': table_results, 'bytes': len(database_bytes), 'replaced': replaced,
-                    'definition_updated': json_content is not None, 'python_updated': True}
+                    'definition_updated': json_content is not None, 'python_updated': json_content is not None,
+                    'embedded_definition_used': embedded_source}
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
@@ -814,17 +860,40 @@ class SQLiteManager:
 
     def tables(self):
         result = []
+        known_database_files = set()
         with self.session() as db:
-            for name in sorted(db.schema_registry.names()):
+            names = set(db._embedded_tables())
+            try:
+                names.update(db.schema_registry.names())
+            except SchemaError:
+                # A malformed optional JSON file must not hide valid embedded
+                # definitions or database files from the table index.
+                pass
+            for name in sorted(names):
                 definition = self.definition(name)
-                item = dict(name=name, definition=definition.to_mapping(), schema_version=fingerprint(definition.to_mapping()))
+                database_path = self.database_path(name)
+                item = dict(name=name, definition=definition.to_mapping(), schema_version=fingerprint(definition.to_mapping()),
+                            database_file=database_path.name, database_name=database_path.stem,
+                            orphan=False, selectable=True)
+                known_database_files.add(database_path.name)
                 try:
                     table = db[name]
                     item.update(row_count=len(table), bytes=table.path.stat().st_size,
                                 database_file=table.path.name, database_name=table.path.stem, error=None)
+                    known_database_files.add(table.path.name)
                 except (SchemaError, sqlite3.Error) as exc:
                     item.update(row_count=None, bytes=0, error=str(exc))
                 result.append(item)
+        for path in sorted(self.data_dir.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
+            if not _DATABASE_FILE_RE.fullmatch(path.name) or path.name in known_database_files:
+                continue
+            name = path.stem
+            definition = {'head': {'chn_name': '缺少内置结构定义', 'eng_name': name}, 'columns': []}
+            result.append(dict(name=name, definition=definition, schema_version=None,
+                               row_count=None, bytes=path.stat().st_size, database_file=path.name,
+                               database_name=name, error=f'缺少 {name}.sqlite3 内置结构定义',
+                               orphan=True, selectable=False))
+        result.sort(key=lambda item: item['name'].lower())
         return {'tables': result}
 
     @staticmethod
@@ -1172,11 +1241,17 @@ class SQLiteManager:
                 database_name = self.name(database_name)
                 grouped_schema = self.schema_dir / (database_name + '.json')
                 grouped_db = self.data_dir / (database_name + '.sqlite3')
-                if not grouped_schema.is_file() or not grouped_db.is_file():
+                if not grouped_db.is_file():
                     raise APIError(404, f'目标数据库文件不存在：{database_name}.sqlite3')
-                raw_document = _read_definition_json(grouped_schema)
+                if grouped_schema.is_file():
+                    raw_document = _read_definition_json(grouped_schema)
+                else:
+                    embedded_document = load_embedded_database(grouped_db)
+                    if embedded_document is None:
+                        raise APIError(404, f'目标数据库缺少内置结构定义：{database_name}.sqlite3')
+                    raw_document = embedded_document.to_mapping()
                 if not (isinstance(raw_document, dict) and isinstance(raw_document.get('tables'), list)):
-                    raise APIError(409, '只有多表 JSON 定义可以追加表结构')
+                    raise APIError(409, '只有多表数据库文件可以追加表结构')
                 if any(isinstance(item, dict) and isinstance(item.get('head'), dict)
                        and item['head'].get('eng_name') == new_name for item in raw_document['tables']):
                     raise APIError(409, f'表名已存在：{new_name}')
@@ -1194,7 +1269,7 @@ class SQLiteManager:
                 return dict(name=new_name, definition=desired.to_mapping(),
                             schema_version=fingerprint(desired.to_mapping()))
             try:
-                old_schema_path, old_document, old_database, old_grouped = _definition_context(self.schema_dir, old_name)
+                old_schema_path, old_document, old_database, old_grouped = self.definition_context(old_name)
                 exists = True
             except APIError:
                 old_schema_path, old_document, old_database, old_grouped = (
@@ -1207,8 +1282,11 @@ class SQLiteManager:
             except SchemaError:
                 target_source = self.schema_dir / (new_name + '.json')
                 target_exists = False
-            if creating and (target_exists or (self.data_dir / (new_name + '.sqlite3')).exists()):
+            embedded_target_exists = find_embedded_table(self.data_dir, new_name) is not None
+            if creating and (target_exists or embedded_target_exists):
                 raise APIError(409, '表名已存在')
+            if creating and (self.data_dir / (new_name + '.sqlite3')).exists():
+                raise APIError(409, f'数据库文件已存在但缺少可用的内置结构定义：{new_name}.sqlite3，请先加载 JSON 定义或恢复结构')
             if not creating and not exists:
                 raise APIError(404, '表不存在')
             if not creating and new_name != old_name and (target_exists or any(
@@ -1265,8 +1343,12 @@ class SQLiteManager:
                                                     lambda value, column: _encode_schema_value(value, column, packer),
                                                     **rebuild_kwargs)
                             c.execute(f'UPDATE {table._metadata_sql} SET fingerprint=? WHERE version=1', (fingerprint(desired_mapping),))
-                            if grouped and new_name != old_name:
-                                _rename_shared_table(c, old_name, new_name)
+                            if new_name != old_name:
+                                if grouped:
+                                    _rename_shared_table(c, old_name, new_name)
+                                remove_embedded_definition(c, old_name)
+                            embedded_database_name = table.path.stem if grouped or new_name == old_name else new_name
+                            write_embedded_definition(c, desired, embedded_database_name)
                         table._write(migrate)
                 if new_name != old_name:
                     if not grouped:
@@ -1297,37 +1379,41 @@ class SQLiteManager:
                 if table._connection().execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
                     raise APIError(409, '数据库仍被其他进程使用')
             source = table.path
-            schema_path, raw_document, parsed_document, grouped = _definition_context(self.schema_dir, name)
+            schema_path, raw_document, parsed_document, grouped = self.definition_context(name)
             archive = self.data_dir / '.web-archive' / (name + '-' + uuid.uuid4().hex)
             archive.mkdir(parents=True)
             if not grouped:
                 # Move the closed DB first; a live external Windows handle fails
                 # here before removing its definition. Keep the empty table recoverable.
                 os.replace(source, archive / source.name)
+                moved = [source]
                 try:
-                    os.replace(schema_path, archive / schema_path.name)
-                    python_path = schema_path.with_suffix('.py')
-                    if python_path.exists():
-                        os.replace(python_path, archive / python_path.name)
+                    for sidecar in (schema_path, schema_path.with_suffix('.py')):
+                        if sidecar.exists():
+                            os.replace(sidecar, archive / sidecar.name)
+                            moved.append(sidecar)
                 except BaseException:
-                    archived_json = archive / schema_path.name
-                    if archived_json.exists():
-                        os.replace(archived_json, schema_path)
+                    for sidecar in reversed(moved[1:]):
+                        archived = archive / sidecar.name
+                        if archived.exists():
+                            os.replace(archived, sidecar)
                     os.replace(archive / source.name, source)
                     raise
                 return {'deleted': True, 'archive': str(archive)}
 
             if len(parsed_document.tables) == 1:
                 os.replace(source, archive / source.name)
+                moved = [source]
                 try:
-                    os.replace(schema_path, archive / schema_path.name)
-                    python_path = schema_path.with_suffix('.py')
-                    if python_path.exists():
-                        os.replace(python_path, archive / python_path.name)
+                    for sidecar in (schema_path, schema_path.with_suffix('.py')):
+                        if sidecar.exists():
+                            os.replace(sidecar, archive / sidecar.name)
+                            moved.append(sidecar)
                 except BaseException:
-                    archived_json = archive / schema_path.name
-                    if archived_json.exists():
-                        os.replace(archived_json, schema_path)
+                    for sidecar in reversed(moved[1:]):
+                        archived = archive / sidecar.name
+                        if archived.exists():
+                            os.replace(archived, sidecar)
                     os.replace(archive / source.name, source)
                     raise
                 return {'deleted': True, 'archive': str(archive)}
@@ -1344,6 +1430,7 @@ class SQLiteManager:
                     def remove(c):
                         c.execute(f'DROP TABLE {table._data_sql}')
                         c.execute(f'DROP TABLE {table._metadata_sql}')
+                        remove_embedded_definition(c, name)
                     table._write(remove)
                 atomic_json(schema_path, new_document)
                 atomic_text(schema_path.with_suffix('.py'), python_definition(new_document))

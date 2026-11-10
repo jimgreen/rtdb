@@ -504,12 +504,17 @@ Definitions may use the legacy one-table shape (`head` + `columns`) or a
 grouped document with `database` + `tables`. In the grouped shape, all logical
 tables in one JSON file share `<directory>/<database>.sqlite3`; each table has
 its own physical `rtdb_data_<table>` and `rtdb_metadata_<table>` tables, so
-their fingerprints, row counts and indexes remain independent. Schema-defined
-scalar fields use native SQLite `INTEGER`, `REAL` and `TEXT` columns; list,
-object and JSON fields use MessagePack BLOBs. Primary keys and every declared
-column have SQLite indexes. A metadata row stores the schema fingerprint and
-row count, maintained by insert/delete triggers. A schema change is rejected
-when the corresponding logical table has a different fingerprint.
+their fingerprints, row counts and indexes remain independent. The SQLite file
+also stores the database, table, column, display and default-value definitions
+in `rtdb_schema_database`, `rtdb_schema_tables` and `rtdb_schema_columns`.
+Those embedded tables are authoritative when the database is opened; JSON and
+Python files are import/export or legacy migration formats and may be removed
+after a file has been initialized. Schema-defined scalar fields use native
+SQLite `INTEGER`, `REAL` and `TEXT` columns; list, object and JSON fields use
+MessagePack BLOBs. Primary keys and every declared column have SQLite indexes.
+A metadata row stores the schema fingerprint and row count, maintained by
+insert/delete triggers. A schema change is rejected when the corresponding
+logical table has a different fingerprint.
 
 Every thread obtains its own SQLite connection. Each process must open its own
 `SQLiteDatabase`; connections are never inherited by spawned workers. The

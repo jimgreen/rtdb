@@ -253,7 +253,8 @@ function formatBytes(value) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
 function databaseFileDefinitionText(file) {
-  return `${file.definition_exists ? "JSON ✓" : "JSON ×"} / ${file.python_exists ? "Python ✓" : "Python ×"}`;
+  const embedded = file.embedded_definition_exists ? "SQLite 内置 ✓" : "SQLite 内置 ×";
+  return `${embedded} / ${file.definition_exists ? "JSON ✓" : "JSON ×"} / ${file.python_exists ? "Python ✓" : "Python ×"}`;
 }
 function renderDatabaseFiles() {
   const target = el("database-file-list");
@@ -509,21 +510,23 @@ function bottomTab(name) {
 function filteredTables() {
   const query = el("table-filter").value.trim().toLowerCase();
   return state.tables.filter((item) => (!el("nonempty").checked || item.row_count > 0) &&
-    [item.name, chineseName(item.definition.head)].some((name) => el("exact-match").checked ? !query || name.toLowerCase() === query : name.toLowerCase().includes(query)));
+    [item.name, chineseName(item.definition?.head || { eng_name: item.name, chn_name: "" })].some((name) => el("exact-match").checked ? !query || name.toLowerCase() === query : name.toLowerCase().includes(query)));
 }
 function renderTables() {
   const target = el("table-list"); target.replaceChildren(); const visible = filteredTables();
   el("table-count").textContent = `${visible.length} / ${state.tables.length} 表`;
   if (!visible.length) target.append(node("p", state.tables.length ? "没有匹配的表" : "暂无表，点击“新建”开始", "empty"));
   for (const item of visible) {
-    const entry = node("div", null, `table-entry${item.name === state.table ? " active" : ""}`);
-    const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = state.checkedTables.has(item.name);
+    const unavailable = item.orphan || item.selectable === false;
+    const entry = node("div", null, `table-entry${item.name === state.table ? " active" : ""}${unavailable ? " orphan" : ""}`);
+    const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = state.checkedTables.has(item.name); checkbox.disabled = unavailable;
     checkbox.setAttribute("aria-label", `选择表 ${item.name}`);
     checkbox.onchange = () => checkbox.checked ? state.checkedTables.add(item.name) : state.checkedTables.delete(item.name);
     const button = action("", () => run(async () => { if (await discardSchema() && await discardCellEdits()) await selectTable(item.name); }), "table-item");
+    button.disabled = unavailable;
     const label = node("span", null, "table-name");
-    label.append(node("span", chineseName(item.definition.head), "table-name-chn"), node("small", item.name, "table-name-eng"));
-    button.append(label, node("span", item.error ? "异常" : item.row_count.toLocaleString(), "count"));
+    label.append(node("span", chineseName(item.definition?.head || { eng_name: item.name, chn_name: "" }), "table-name-chn"), node("small", item.name, "table-name-eng"));
+    button.append(label, node("span", item.error ? "异常" : item.row_count == null ? "—" : item.row_count.toLocaleString(), "count"));
     button.title = item.error || item.name; entry.append(checkbox, button); target.append(entry);
   }
 }
@@ -542,6 +545,8 @@ function renderCurrentDatabaseFile() {
   target.setAttribute("aria-label", filename ? `当前数据库文件：${filename}` : "未选择数据库");
 }
 async function selectTable(name) {
+  const item = state.tables.find((entry) => entry.name === name);
+  if (item?.orphan || item?.selectable === false) throw new Error(item.error || `表 ${name} 缺少可用的 SQLite 结构定义`);
   const result = await request(tablePath("schema", name));
   state.table = name; state.definition = result.definition; state.version = result.version; state.tableTotal = result.row_count; state.schemaDirty = false;
   renderCurrentDatabaseFile();
@@ -559,11 +564,13 @@ async function refresh() {
   if (!await discardSchema()) return;
   if (!await discardCellEdits()) return;
   await refreshTables();
-  if (state.table && state.tables.some((item) => item.name === state.table)) {
+  if (state.table && state.tables.some((item) => item.name === state.table && !item.orphan && item.selectable !== false)) {
     const result = await request(tablePath("schema")); state.definition = result.definition; state.version = result.version; state.tableTotal = result.row_count;
     state.schemaDirty = false; renderSchema(state.definition); renderFields(); await queryRows();
-  } else if (state.tables.length) await selectTable(state.tables[0].name);
-  else resetSelection();
+  } else {
+    const firstSelectable = state.tables.find((item) => !item.orphan && item.selectable !== false);
+    if (firstSelectable) await selectTable(firstSelectable.name); else resetSelection();
+  }
 }
 function resetSelection() {
   state.table = null; state.definition = null; state.version = null; state.records = []; state.total = 0; state.tableTotal = 0;
@@ -2114,8 +2121,8 @@ window.addEventListener("blur", finishCellSelection);
 window.addEventListener("blur", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); });
 window.addEventListener("resize", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); });
 for (const id of ["table-filter", "exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
-el("select-tables").onclick = () => { filteredTables().forEach((item) => state.checkedTables.add(item.name)); renderTables(); };
-el("invert-tables").onclick = () => { filteredTables().forEach((item) => state.checkedTables.has(item.name) ? state.checkedTables.delete(item.name) : state.checkedTables.add(item.name)); renderTables(); };
+el("select-tables").onclick = () => { filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.add(item.name)); renderTables(); };
+el("invert-tables").onclick = () => { filteredTables().filter((item) => !item.orphan && item.selectable !== false).forEach((item) => state.checkedTables.has(item.name) ? state.checkedTables.delete(item.name) : state.checkedTables.add(item.name)); renderTables(); };
 el("clear-tables").onclick = () => { state.checkedTables.clear(); renderTables(); };
 for (const [id, mode] of [["all-fields", "all"], ["no-fields", "none"], ["invert-fields", "invert"]]) el(id).onclick = () => {
   state.fields = new Set(state.resultColumns.filter((column) => column.primary_key || mode === "all" || mode === "invert" && !state.fields.has(column.eng_name)).map((column) => column.eng_name)); renderFields(); renderGrid();

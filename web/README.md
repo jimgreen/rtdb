@@ -2,8 +2,9 @@
 
 `web/sqlite_server.py` 提供 SQLite HTTP 服务，`web/sqlite_static/` 提供中文 HTML 界面。
 SQLite 管理终端的交互参考 Qt `tools/rtdbmng`，包括表索引、字段树、SQL 增删改查、排序、分页和日志区域。
-管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：既兼容一张逻辑表一个 `.sqlite3` 文件，
-也支持一个 grouped JSON/Python 定义文件与一个 `.sqlite3` 文件包含多张逻辑表。当前不直接管理任意第三方 SQLite 文件或跨表 JOIN。
+管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：一个 `.sqlite3` 文件可以包含多张逻辑表，
+并在文件内的 `rtdb_schema_database`、`rtdb_schema_tables`、`rtdb_schema_columns` 中保存数据库、表和列定义。
+JSON/Python 文件作为导入、导出和旧文件首次迁移格式，运行时不再依赖；当前不直接管理任意第三方 SQLite 文件或跨表 JOIN。
 
 从仓库根目录启动：
 
@@ -42,7 +43,7 @@ python -m web.server --engine sqlite --port 8878
 - 导入 CSV/JSON 采用一次事务，失败不留下部分记录；导出包含上一次成功 SQL 查询的全部结果及排序，最多 100,000 行，CSV 遵循显示字段选择。
 - 清空表、删除表和 SQL 写入需要输入表名确认；SQL 写入使用执行时最新内容，不带行版本检查。
 - 日志页读取服务端持久化审计日志，记录结构、数据和系统操作的成功/失败、HTTP 状态、耗时、结果摘要和错误信息；新日志按本地日期写入数据目录的 `rtdb-operation-logs/YYYY-MM-DD.jsonl`，旧版单文件日志继续兼容读取。页面支持指定日期、关键词、类别、状态过滤和分页；导出当前查询页。日志保留天数可在页面设置，`0` 表示永久保留；设置大于 0 后，服务启动及每天首次写入时自动清理过期日期文件，也可立即执行清理。
-- 双击顶部“RTDB 管理终端”标题打开数据库文件管理窗口。服务端文件页按文件名、表名列表、记录数、定义文件和校验状态浏览 `.sqlite3` 文件，可打开有效文件或新建默认表文件；上传本地文件页支持同名 `.sqlite3` 与可选 `.json` 定义，单个 grouped JSON 会逐表校验 `rtdb_metadata_<table>`、结构指纹、记录数和 `quick_check` 后原子更新数据库，并生成包含全部表类的 Python 定义。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
+- 双击顶部“RTDB 管理终端”标题打开数据库文件管理窗口。服务端文件页按文件名、表名列表、记录数、定义文件和校验状态浏览 `.sqlite3` 文件，可打开有效文件或新建默认表文件；上传本地文件页支持同名 `.sqlite3` 与可选 `.json` 定义。带 SQLite 内置结构的文件无需 JSON 即可加载、校验和上传；没有内置结构的旧文件才使用同名 JSON 首次迁移。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
 
 表定义统一为：
 
@@ -69,7 +70,7 @@ python -m web.server --engine sqlite --port 8878
 }
 ```
 
-`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义。SQLite 内部为每张表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。加载包含多张模块的 dbdef/E 文件时，默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；API 未提供源文件名时使用第一张表的英文名，也可通过 `database_name` 指定数据库文件名。
+`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义。SQLite 内部除上述三张结构表外，为每张逻辑表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。加载包含多张模块的 dbdef/E 文件时，默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；API 未提供源文件名时使用第一张表的英文名，也可通过 `database_name` 指定数据库文件名。删除 JSON/Python 后，SQLite 文件仍可独立打开、编辑和继续进行结构操作；结构修改时会按需重新生成外部定义文件。
 
 文件映射、Redis、SQLite 三个版本都不再接受 `max_elements`、`data_length`。
 SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参数控制物理布局，详见
@@ -130,7 +131,7 @@ SQLite 保持 WAL + synchronous=FULL。每次请求创建并关闭自己的连�
 有数据时允许修改中文名/显示信息，以及增删非主键字段；新增字段的原有记录值为 NULL，删除字段会删除对应数据。
 已有字段类型、主键（包括增删主键字段）和保留字段的相对顺序不可改；新字段可插入任意位置。
 表单锁定已有字段英文名以保留字段身份，新增字段可选择类型。空表可以调整类型、主键和顺序。
-结构保存通过单个 SQLite 事务迁移，保留记录位置、计数和自增序列，重新建立索引；同步更新 JSON/Python 定义。
+结构保存通过单个 SQLite 事务迁移，保留记录位置、计数和自增序列，重新建立索引；先更新 SQLite 内置结构，再按需同步更新 JSON/Python 导出定义。
 结构操作前须关闭其他程序持有的表对象，完成后重新打开；这是结构变更的要求，日常数据写入无需如此。
 结构发布使用事务、临时文件 fsync/replace 及恢复日志；失败后按 SQLite 指纹恢复定义。
 删除空表会把数据库和定义移入 `.web-archive`；一个 schema 目录应只绑定同一数据目录。

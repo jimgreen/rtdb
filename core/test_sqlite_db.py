@@ -6,7 +6,6 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from core.sqlite_db import SQLiteDatabase, SQLiteBusyError, SQLiteWriteProcess
-from core.table_schema import SchemaError
 from benchmarks.benchmark_redis_vs_file import _definition, _row
 
 
@@ -159,8 +158,9 @@ class SQLiteBackendTests(unittest.TestCase):
         payload['head']['chn_name'] = '改名后的记录'
         path.write_text(json.dumps(payload), encoding='utf-8')
         with SQLiteDatabase(self.root) as other:
-            with self.assertRaises(SchemaError):
-                other['records']
+            # The SQLite file is self-describing after first initialization;
+            # a stale JSON export must not change the runtime schema.
+            self.assertEqual(other['records'].schema.chn_name, '基准记录')
         self.assertEqual(len(self.table), 0)
         self.table.append({**_row(1), 'name': 'x' * 333})
         self.assertEqual(self.table.kv.get(1)['name'], 'x' * 333)

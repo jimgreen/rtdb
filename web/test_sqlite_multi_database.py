@@ -2,12 +2,14 @@ import base64
 import copy
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
 from web.sqlite_service import SQLiteManager, fingerprint
 from web.management import SQLiteManagement
 from web.definition_import import DefinitionImporter
+from web.errors import APIError
 from core import SQLiteDatabase
 
 
@@ -80,6 +82,37 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         with SQLiteDatabase(self.data, schema_directory=self.schema) as db:
             self.assertEqual(db['buses'].get_by_pk(1)['name'], 'N1-new')
 
+        (self.schema / 'ems.json').unlink()
+        tables = self.manager.tables()['tables']
+        self.assertEqual({item['name'] for item in tables}, {'buses', 'lines'})
+        self.assertTrue(all(item['orphan'] is False for item in tables))
+        self.assertEqual(self.api.rows('buses', {})['records'][0]['row']['name'], 'N1-new')
+        desired = copy.deepcopy(self.manager.definition('buses').to_mapping())
+        desired['head']['chn_name'] = '内置定义'
+        result = self.manager.save_schema('buses', {
+            'definition': desired,
+            'version': fingerprint(self.manager.definition('buses').to_mapping()),
+        })
+        self.assertEqual(result['name'], 'buses')
+        self.assertTrue((self.schema / 'ems.json').is_file())
+
+    def test_legacy_sqlite_file_is_visible_and_collision_is_explicit(self):
+        path = self.data / 'devices.sqlite3'
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute('CREATE TABLE data (id INTEGER)')
+            connection.execute('INSERT INTO data VALUES (1)')
+        finally:
+            connection.close()
+        item = next(item for item in self.manager.tables()['tables'] if item['name'] == 'devices')
+        self.assertTrue(item['orphan'])
+        self.assertFalse(item['selectable'])
+        self.assertIn('缺少 devices.sqlite3 内置结构定义', item['error'])
+        with self.assertRaises(APIError) as context:
+            self.manager.save_schema('devices', {'definition': table_definition('devices', '设备表', 'id')}, creating=True)
+        self.assertEqual(context.exception.status, 409)
+        self.assertIn('数据库文件已存在但缺少可用的内置结构定义', context.exception.message)
+
     def test_database_file_snapshot_and_grouped_upload_validation(self):
         with self.manager.session() as db:
             db['nodes'].insert_one({'id': 1, 'name': 'N1'})
@@ -92,6 +125,55 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
             files.append({'name': path.name, 'content': base64.b64encode(path.read_bytes()).decode('ascii')})
         result = self.manager.upload_database_file({'files': files, 'confirm': 'ems'})
         self.assertEqual({item['name'] for item in result['tables']}, {'nodes', 'lines'})
+
+    def test_embedded_database_file_can_be_uploaded_without_json(self):
+        with self.manager.session() as db:
+            db['nodes'].insert_one({'id': 1, 'name': 'N1'})
+            db['lines'].insert_one({'line_id': 7, 'name': 'L7'})
+        (self.schema / 'ems.json').unlink()
+        snapshot = self.manager.database_files()['files'][0]
+        self.assertTrue(snapshot['selectable'])
+        self.assertTrue(snapshot['embedded_definition_exists'])
+        result = self.manager.upload_database_file({
+            'files': [{'name': 'ems.sqlite3', 'content': base64.b64encode(
+                (self.data / 'ems.sqlite3').read_bytes()).decode('ascii')}],
+            'confirm': 'ems',
+        })
+        self.assertTrue(result['embedded_definition_used'])
+        self.assertFalse(result['definition_updated'])
+        self.assertFalse((self.schema / 'ems.json').exists())
+        self.assertEqual(self.api.rows('nodes', {})['records'][0]['row']['name'], 'N1')
+
+    def test_embedded_upload_ignores_stale_server_json(self):
+        with self.manager.session() as db:
+            db['nodes'].insert_one({'id': 1, 'name': 'N1'})
+        (self.schema / 'ems.json').write_text('{ invalid json', encoding='utf-8')
+        result = self.manager.upload_database_file({
+            'files': [{'name': 'ems.sqlite3', 'content': base64.b64encode(
+                (self.data / 'ems.sqlite3').read_bytes()).decode('ascii')}],
+            'confirm': 'ems',
+        })
+        self.assertTrue(result['embedded_definition_used'])
+        self.assertFalse(result['definition_updated'])
+        self.assertEqual(self.api.rows('nodes', {})['records'][0]['row']['name'], 'N1')
+
+    def test_embedded_definition_is_authoritative_when_json_is_stale(self):
+        with self.manager.session() as db:
+            db['nodes'].insert_one({'id': 1, 'name': 'N1'})
+        (self.schema / 'ems.json').write_text('{ invalid json', encoding='utf-8')
+        snapshot = next(item for item in self.manager.database_files()['files'] if item['name'] == 'ems')
+        self.assertTrue(snapshot['selectable'])
+        self.assertEqual(snapshot['definition_source'], 'SQLite 内置结构')
+        self.assertEqual(self.api.rows('nodes', {})['records'][0]['row']['name'], 'N1')
+
+    def test_embedded_only_table_can_be_deleted_without_json_sidecars(self):
+        with self.manager.session() as db:
+            db['nodes']
+        (self.schema / 'ems.json').unlink()
+        version = fingerprint(self.manager.definition('nodes').to_mapping())
+        result = self.manager.drop('nodes', {'confirm': 'nodes', 'version': version})
+        self.assertTrue(result['deleted'])
+        self.assertFalse((self.data / 'ems.sqlite3').exists())
 
     def test_multi_table_e_import_creates_one_bundle(self):
         (self.schema / 'ems.json').unlink()
@@ -145,6 +227,7 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         self.manager.create_database_file({'name': 'ems', 'chn_name': 'EMS 数据库', 'tables': [
             table_definition('nodes', '节点表', 'id'), table_definition('lines', '线路表', 'line_id')
         ]})
+        self.schema.joinpath('ems.json').unlink()
         self.manager.save_schema('extra', {'creating': True, 'database_file': 'ems.sqlite3', 'definition':
             table_definition('extra', '扩展表', 'id')}, creating=True)
         loaded = json.loads(self.schema.joinpath('ems.json').read_text(encoding='utf-8'))

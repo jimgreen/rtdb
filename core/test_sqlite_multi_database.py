@@ -49,6 +49,10 @@ class SQLiteMultiDatabaseTests(unittest.TestCase):
             with SQLiteDatabase(root / 'sqlite_dat', schema_directory=schema) as db:
                 self.assertEqual(db['nodes'].get_by_pk(1)['name'], 'N1')
                 self.assertEqual(db['lines'].get_by_pk(7)['name'], 'L7')
+            (schema / 'ems.json').unlink()
+            with SQLiteDatabase(root / 'sqlite_dat', schema_directory=schema) as db:
+                self.assertEqual(db['nodes'].get_by_pk(1)['name'], 'N1')
+                self.assertEqual(db['lines'].get_by_pk(7)['name'], 'L7')
 
 
 if __name__ == '__main__':

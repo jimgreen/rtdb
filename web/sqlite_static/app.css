@@ -63,6 +63,9 @@ html.resizing-y, html.resizing-y * { cursor: row-resize !important; user-select:
 .table-list-collapsed #table-list { overflow: hidden; }
 .table-entry { display: flex; align-items: center; gap: 8px; padding: 3px 5px; border-radius: 6px; }
 .table-entry.active { background: #eaf1fd; box-shadow: inset 3px 0 #3976d6; }
+.table-entry.orphan { background: #fff9ec; }
+.table-entry.orphan .table-item { color: #8b6a2c; }
+.table-entry.orphan .count { color: #9a741d; background: #fff0c2; }
 .table-item { display: flex; justify-content: space-between; align-items: center; gap: 7px; width: 100%; min-width: 0; text-align: left; background: transparent; color: #3b516e; padding: 7px 4px; font-weight: 500; white-space: nowrap; }
 .table-item > .table-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; }
 .table-item .table-name-chn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

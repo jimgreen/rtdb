@@ -1,11 +1,12 @@
 """SQLite-backed relation, list, key-value and SQL interfaces.
 
-One legacy table per .sqlite3 file or a grouped JSON definition containing
-multiple logical tables per .sqlite3 file, WAL + synchronous=FULL, a connection
-per thread, and native scalar columns/indexes. Grouped files use independent
-physical data and metadata tables for each logical table. SQLite serializes
-writers across processes. Transactions return only after COMMIT; reads do not
-cache rows.
+Each SQLite file carries its RTDB table and column definitions in embedded
+schema tables. JSON/Python files are import/export and legacy migration
+formats, not runtime dependencies. Files can contain multiple logical tables;
+WAL + synchronous=FULL, a connection per thread, and native scalar
+columns/indexes are used. Grouped files use independent physical data and
+metadata tables for each logical table. SQLite serializes writers across
+processes. Transactions return only after COMMIT; reads do not cache rows.
 Structured fields optionally use MessagePack BLOBs, never pickle or row JSON.
 """
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .file_mapped_db import (
     _parse_order_by, _sort_rows, _unquote_identifier, _validate_identifier,
 )
 from .table_schema import SchemaError, SchemaRegistry
+from .sqlite_schema import ensure_embedded_schema, load_embedded_database, write_embedded_definition
 
 __all__ = ['SQLiteDatabase', 'SQLiteTable', 'SQLiteTableKeyValue',
            'SQLiteTableReadPipeline', 'SQLiteTableWriteBatch', 'SQLiteStorageError',
@@ -62,7 +64,8 @@ _OBJECT = {'list', 'array', 'dict', 'object', 'json'}
 
 
 class SQLiteTable(MutableSequence):
-    def __init__(self, database, definition, *, database_path=None, shared=False):
+    def __init__(self, database, definition, *, database_path=None, shared=False,
+                 database_label=None):
         self.database = database
         self.definition = self.schema = definition
         self.name = definition.eng_name
@@ -70,6 +73,7 @@ class SQLiteTable(MutableSequence):
         self.primary_keys = definition.primary_keys
         self.path = Path(database_path or (database.directory / (self.name + '.sqlite3'))).resolve()
         self.shared = bool(shared)
+        self.database_label = database_label
         self._data_name = 'data' if not self.shared else f'rtdb_data_{self.name}'
         self._metadata_name = 'metadata' if not self.shared else f'rtdb_metadata_{self.name}'
         self._data_sql = _quote_sql_name(self._data_name)
@@ -94,12 +98,15 @@ class SQLiteTable(MutableSequence):
         fingerprint = hashlib.sha256(json.dumps(definition.to_mapping(), sort_keys=True,
                                                 ensure_ascii=False).encode()).hexdigest()
         def initialize(c):
+            ensure_database_name = self.path.stem
+            ensure_embedded_schema(c, ensure_database_name, self.database_label)
             c.execute(f'CREATE TABLE IF NOT EXISTS {self._metadata_sql} (version INTEGER PRIMARY KEY CHECK(version=1), '
                       'fingerprint TEXT NOT NULL, row_count INTEGER NOT NULL)')
             old = c.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
             if old:
                 if old[0] != fingerprint:
                     raise SchemaError(f'SQLite {self.name}: schema differs from stored definition')
+                write_embedded_definition(c, definition, ensure_database_name)
                 return
             parts = ['_pos INTEGER PRIMARY KEY AUTOINCREMENT']
             for field, column in self._fields.items():
@@ -122,9 +129,11 @@ class SQLiteTable(MutableSequence):
                       f'UPDATE {self._metadata_sql} SET row_count=row_count+1; END')
             c.execute(f'CREATE TRIGGER {_quote_sql_name(trigger_prefix + "count_delete")} AFTER DELETE ON {self._data_sql} BEGIN '
                       f'UPDATE {self._metadata_sql} SET row_count=row_count-1; END')
+            write_embedded_definition(c, definition, ensure_database_name)
         try:
             self._write(initialize)
             self._schema_fingerprint = fingerprint
+            self.database._embedded_cache = None
         except BaseException:
             self.close()
             raise
@@ -1206,6 +1215,7 @@ class SQLiteDatabase:
         self.mmap_size = int(mmap_size)
         self._pid, self._closed = os.getpid(), False
         self._tables, self._lock = {}, threading.RLock()
+        self._embedded_cache = None
 
     def _check_open(self):
         if os.getpid() != self._pid:
@@ -1213,19 +1223,42 @@ class SQLiteDatabase:
         if self._closed:
             raise SQLiteStorageError('database is closed')
 
+    def _embedded_tables(self):
+        if self._embedded_cache is not None:
+            return self._embedded_cache
+        found = {}
+        for path in sorted(self.directory.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
+            document = load_embedded_database(path)
+            if document is None:
+                continue
+            for definition in document.tables:
+                found[definition.eng_name] = (definition, document)
+        self._embedded_cache = found
+        return found
+
     def table(self, name):
         self._check_open()
         name = _validate_identifier(name, label='table name')
         with self._lock:
             if name not in self._tables:
-                definition = self.schema_registry.load(name)
-                database_name = self.schema_registry.database_name(name)
-                shared = database_name != name or len(self.schema_registry.database_definition(name).tables) > 1
+                embedded = self._embedded_tables().get(name)
+                if embedded is not None:
+                    definition, document = embedded
+                    database_name = document.path.stem
+                    database_label = document.chn_name
+                    shared = document.is_grouped
+                else:
+                    definition = self.schema_registry.load(name)
+                    document = self.schema_registry.database_definition(name)
+                    database_name = document.eng_name
+                    database_label = document.chn_name
+                    shared = database_name != name or len(document.tables) > 1
                 self._tables[name] = SQLiteTable(
                     self,
                     definition,
                     database_path=self.directory / (database_name + '.sqlite3'),
                     shared=shared,
+                    database_label=database_label,
                 )
             return self._tables[name]
     __getitem__ = table
@@ -1247,6 +1280,7 @@ class SQLiteDatabase:
                 table.close()
             self._tables.clear()
             self.schema_registry.clear()
+            self._embedded_cache = None
 
     def close(self):
         if os.getpid() != self._pid:
