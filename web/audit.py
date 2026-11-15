@@ -4,15 +4,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import threading
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from core.file_mapped_db import _locked
+from core.file_mapped_db import _locked, StorageError
 
 
 _RESULT_KEYS = {
+    "completed_tables",
     "ok", "name", "mode", "format", "filename", "mime", "count", "total", "table_total",
     "rowcount", "inserted", "updated", "deleted", "imported", "incoming", "before", "after",
     "added", "removed", "changed", "rows", "pending", "tables", "results", "primary_keys",
@@ -227,6 +229,13 @@ class OperationAuditLog:
         return paths
 
     def available_dates(self):
+        from .audit_index import AuditIndex
+        try:
+            return AuditIndex(self).available_dates()
+        except (OSError, sqlite3.Error, StorageError, ValueError, UnicodeError):
+            return self._available_dates_files()
+
+    def _available_dates_files(self):
         values = set()
         for path in self.log_dir.glob("*.jsonl"):
             match = _DATE_FILE.match(path.name)
@@ -276,6 +285,16 @@ class OperationAuditLog:
             raise ValueError("日志页码和分页大小必须是整数") from error
         if page < 1 or not 1 <= page_size <= _MAX_PAGE_SIZE:
             raise ValueError(f"日志页码必须大于 0，分页大小必须在 1–{_MAX_PAGE_SIZE} 之间")
+        from .audit_index import AuditIndex
+        try:
+            return AuditIndex(self).query(selected_date=selected_date, page=page, page_size=page_size,
+                category=category, status=status, keyword=keyword, table=table, operation=operation)
+        except (OSError, sqlite3.Error, StorageError, ValueError, UnicodeError):
+            # The index is optional. Disk/cache errors must never hide source history.
+            return self._query_files(selected_date=selected_date, page=page, page_size=page_size,
+                category=category, status=status, keyword=keyword, table=table, operation=operation)
+
+    def _query_files(self, *, selected_date, page, page_size, category, status, keyword, table, operation):
         start, end = (page - 1) * page_size, page * page_size
         records, total = [], 0
         for path in self._log_paths(selected_date):
@@ -300,7 +319,7 @@ class OperationAuditLog:
                 total += 1
         return {"logs": records, "count": len(records), "total": total, "page": page,
                 "page_size": page_size, "pages": max(1, (total + page_size - 1) // page_size),
-                "date": selected_date.isoformat() if selected_date else "", "dates": self.available_dates()}
+                "date": selected_date.isoformat() if selected_date else "", "dates": self._available_dates_files()}
 
     def _count_lines(self, path):
         try:
@@ -363,7 +382,7 @@ class OperationAuditLog:
                 "dates": self.available_dates()}
 
     def append(self, *, category, operation, status, http_status, method, path,
-               table=None, duration_ms=0, result=None, error=None):
+               table=None, duration_ms=0, result=None, error=None, database=None):
         self._maybe_cleanup()
         record = {
             "id": uuid.uuid4().hex,
@@ -375,21 +394,51 @@ class OperationAuditLog:
             "method": method,
             "path": path,
             "table": table,
+            "database": database,
             "duration_ms": round(float(duration_ms), 2),
             "result": result_summary(result) if result is not None else None,
             "error": _safe(error),
         }
-        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
+        return self.write_event(record)
+
+    def write_event(self, record, *, recovery=False):
+        return record if self.write_events([record], recovery=recovery) else None
+
+    def write_events(self, records, *, recovery=False):
+        """One fsync per date per batch; replay scans each date only once."""
         try:
-            target = self.path
-            with self._lock, _locked(target.with_name(target.name + ".lock")):
-                with target.open("a", encoding="utf-8", newline="") as stream:
-                    stream.write(line)
-                    stream.flush()
-                    os.fsync(stream.fileno())
+            self._maybe_cleanup()
+            groups = {}
+            for record in records:
+                day = date.fromisoformat(record['timestamp'][:10]).isoformat()
+                line = (json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode('utf-8')
+                groups.setdefault(day, []).append((record['id'], line))
+            for day, entries in groups.items():
+                target = self.log_dir / (day + '.jsonl')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with self._lock, _locked(target.with_name(target.name + ".lock")):
+                    wanted = {ident for ident, _ in entries}
+                    seen = set()
+                    if recovery and target.exists():
+                        with target.open('r', encoding='utf-8', errors='replace') as source:
+                            for previous in source:
+                                try:
+                                    ident = json.loads(previous).get('id')
+                                    if ident in wanted: seen.add(ident)
+                                except (ValueError, AttributeError): pass
+                    lines = []
+                    for ident, line in entries:
+                        if ident not in seen: lines.append(line); seen.add(ident)
+                    if not lines: continue
+                    with target.open('a+b') as stream:
+                        stream.seek(0, 2)
+                        if stream.tell():
+                            stream.seek(-1, 2)
+                            if stream.read(1) != b'\n': stream.write(b'\n')
+                        stream.write(b''.join(lines)); stream.flush(); os.fsync(stream.fileno())
         except Exception:
-            return None
-        return record
+            return False
+        return True
 
     def read(self, limit=None):
         """Compatibility reader returning newest records first."""

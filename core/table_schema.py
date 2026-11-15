@@ -133,6 +133,7 @@ class TableDefinition:
     head: TableHead
     columns: tuple[ColumnDefinition, ...]
     path: Path
+    indexes: Optional[tuple[tuple[str, ...], ...]] = None
     _column_names: tuple[str, ...] = field(init=False, repr=False, compare=False)
     _primary_keys: tuple[str, ...] = field(init=False, repr=False, compare=False)
 
@@ -144,6 +145,12 @@ class TableDefinition:
             raise SchemaError(f"table {self.eng_name!r} contains duplicate column names")
         if not any(column.primary_key for column in self.columns):
             raise SchemaError(f"table {self.eng_name!r} must have at least one primary key")
+        if self.indexes is not None:
+            if len(self.indexes)>64:raise SchemaError('最多允许 64 个辅助索引')
+            if len(set(self.indexes))!=len(self.indexes):raise SchemaError('索引字段组合不能重复')
+            for fields in self.indexes:
+                if not fields or len(fields)>8 or len(set(fields))!=len(fields) or any(name not in names for name in fields):
+                    raise SchemaError('索引必须包含 1 至 8 个不重复且存在的字段')
         # Definitions are immutable after validation.  Cache these hot-path
         # projections once instead of allocating a tuple on every CRUD call.
         object.__setattr__(self, "_column_names", tuple(names))
@@ -169,6 +176,10 @@ class TableDefinition:
     def primary_keys(self) -> tuple[str, ...]:
         return self._primary_keys
 
+    @property
+    def secondary_indexes(self) -> tuple[tuple[str, ...], ...]:
+        return self.indexes if self.indexes is not None else tuple((name,) for name in self.column_names if (name,)!=self.primary_keys)
+
     def column(self, name: str) -> ColumnDefinition:
         for column in self.columns:
             if column.eng_name == name:
@@ -192,7 +203,7 @@ class TableDefinition:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise SchemaError(f"invalid JSON definition {path}: {exc}") from exc
         definition = cls.from_mapping(payload, path.parent, path.stem)
-        return cls(head=definition.head, columns=definition.columns, path=path)
+        return cls(head=definition.head, columns=definition.columns, path=path, indexes=definition.indexes)
 
     @classmethod
     def from_mapping(
@@ -238,10 +249,16 @@ class TableDefinition:
                 )
             )
         root = Path(directory).expanduser().resolve()
+        indexes=payload.get('indexes')
+        if indexes is not None:
+            if not isinstance(indexes,list) or any(not isinstance(fields,list) or any(not isinstance(name,str) for name in fields) for fields in indexes):
+                raise SchemaError('indexes 必须是字段名数组的数组')
+            indexes=tuple(tuple(fields) for fields in indexes)
         return cls(
             head=head,
             columns=tuple(columns),
             path=root / f"{head.eng_name}.json",
+            indexes=indexes,
         )
 
     def apply_defaults(self, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -301,6 +318,7 @@ class TableDefinition:
 
     def to_mapping(self) -> dict[str, Any]:
         return {
+            **({'indexes':[list(fields) for fields in self.indexes]} if self.indexes is not None else {}),
             "head": {
                 "chn_name": self.chn_name,
                 "eng_name": self.eng_name,
@@ -358,11 +376,12 @@ class DatabaseDefinition:
     chn_name: str
     tables: tuple[TableDefinition, ...]
     path: Path
+    grouped: bool = False
 
     def __post_init__(self) -> None:
         if not _IDENTIFIER.fullmatch(self.eng_name):
             raise SchemaError(f"database name must be an English identifier, got {self.eng_name!r}")
-        if not self.tables:
+        if not self.tables and not self.grouped:
             raise SchemaError(f"database {self.eng_name!r} must contain at least one table")
         names = [table.eng_name for table in self.tables]
         if len(names) != len(set(names)):
@@ -374,7 +393,7 @@ class DatabaseDefinition:
 
     @property
     def is_grouped(self) -> bool:
-        return len(self.tables) > 1 or self.path.stem != self.tables[0].eng_name
+        return self.grouped or len(self.tables) > 1 or self.path.stem != self.tables[0].eng_name
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -409,13 +428,14 @@ def load_database_definition(path: Union[str, os.PathLike[str]]) -> DatabaseDefi
             head = {}
         eng_name = _clean(head.get("eng_name")) or path.stem
         chn_name = _clean(head.get("chn_name")) or eng_name
-    if not isinstance(values, list) or not values:
+    if not isinstance(values, list) or not values and not (isinstance(payload, Mapping) and 'tables' in payload):
         raise SchemaError("definition document requires a non-empty tables array")
     tables: list[TableDefinition] = []
     for value in values:
         table = TableDefinition.from_mapping(value, path.parent)
-        tables.append(TableDefinition(head=table.head, columns=table.columns, path=path))
-    return DatabaseDefinition(eng_name=eng_name, chn_name=chn_name, tables=tuple(tables), path=path)
+        tables.append(TableDefinition(head=table.head, columns=table.columns, path=path, indexes=table.indexes))
+    return DatabaseDefinition(eng_name=eng_name, chn_name=chn_name, tables=tuple(tables), path=path,
+        grouped=isinstance(payload, list) or isinstance(payload, Mapping) and 'tables' in payload)
 
 
 def _validate_table_name(name: str) -> str:
@@ -434,8 +454,9 @@ def load_table_definition(directory: Union[str, os.PathLike[str]], table_name: s
 class SchemaRegistry:
     """Discover and cache table definitions in a directory."""
 
-    def __init__(self, directory: Union[str, os.PathLike[str]]) -> None:
+    def __init__(self, directory: Union[str, os.PathLike[str]], *, database_name=None) -> None:
         self.directory = Path(directory).expanduser().resolve()
+        self.database_name_filter = _validate_table_name(database_name) if database_name else None
         self._cache: dict[str, TableDefinition] = {}
         self._database_cache: dict[Path, DatabaseDefinition] = {}
         self._source_by_table: dict[str, Path] = {}
@@ -450,6 +471,8 @@ class SchemaRegistry:
         if not self.directory.exists():
             return
         for path in sorted(self.directory.glob("*.json")):
+            if self.database_name_filter and path.stem != self.database_name_filter:
+                continue
             if path.is_file() and not path.name.startswith(".") and not path.name.endswith(".tmp"):
                 yield path
 

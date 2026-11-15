@@ -56,6 +56,8 @@ def ensure_embedded_schema(connection: sqlite3.Connection, database_name: str, d
         f'UNIQUE(table_name, eng_name), FOREIGN KEY(table_name) '
         f'REFERENCES {_quote(EMBEDDED_TABLES_TABLE)}(table_name) ON DELETE CASCADE)'
     )
+    if 'indexes_json' not in {row[1] for row in connection.execute(f'PRAGMA table_info({_quote(EMBEDDED_TABLES_TABLE)})')}:
+        connection.execute(f'ALTER TABLE {_quote(EMBEDDED_TABLES_TABLE)} ADD COLUMN indexes_json TEXT')
     connection.execute(
         f'INSERT INTO {_quote(EMBEDDED_DATABASE_TABLE)}(version, eng_name, chn_name) VALUES (1, ?, ?) '
         f'ON CONFLICT(version) DO UPDATE SET eng_name=excluded.eng_name, chn_name=excluded.chn_name',
@@ -88,6 +90,8 @@ def write_embedded_definition(connection: sqlite3.Connection, definition: TableD
         (table_name, definition.chn_name, int(ordinal), definition_fingerprint(definition)),
     )
     connection.execute(f'DELETE FROM {_quote(EMBEDDED_COLUMNS_TABLE)} WHERE table_name=?', (table_name,))
+    connection.execute(f'UPDATE {_quote(EMBEDDED_TABLES_TABLE)} SET indexes_json=? WHERE table_name=?',
+                       (json.dumps(definition.to_mapping()['indexes']) if definition.indexes is not None else None,table_name))
     values = []
     for ordinal, column in enumerate(definition.columns):
         has_default = column.default_value is not None
@@ -119,18 +123,17 @@ def _read_embedded_database(connection: sqlite3.Connection, path: Path) -> Datab
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (EMBEDDED_TABLES_TABLE,)
     ).fetchone():
         return None
+    index_column='indexes_json' if 'indexes_json' in {row[1] for row in connection.execute(f'PRAGMA table_info({_quote(EMBEDDED_TABLES_TABLE)})')} else 'NULL'
     table_rows = connection.execute(
-        f'SELECT table_name, chn_name, ordinal, fingerprint FROM {_quote(EMBEDDED_TABLES_TABLE)} '
+        f'SELECT table_name, chn_name, ordinal, fingerprint, {index_column} FROM {_quote(EMBEDDED_TABLES_TABLE)} '
         'ORDER BY ordinal, table_name'
     ).fetchall()
-    if not table_rows:
-        return None
     database_row = connection.execute(
         f'SELECT eng_name, chn_name FROM {_quote(EMBEDDED_DATABASE_TABLE)} WHERE version=1'
     ).fetchone()
     database_name, database_label = database_row if database_row else (path.stem, path.stem)
     tables = []
-    for table_name, chn_name, _ordinal, stored_fingerprint in table_rows:
+    for table_name, chn_name, _ordinal, stored_fingerprint, indexes_json in table_rows:
         column_rows = connection.execute(
             f'SELECT eng_name, chn_name, data_type, primary_key, disp_type, disp_menu, '
             f'has_default, default_json FROM {_quote(EMBEDDED_COLUMNS_TABLE)} '
@@ -155,6 +158,9 @@ def _read_embedded_database(connection: sqlite3.Connection, path: Path) -> Datab
                 **({'default_value': default_value} if bool(has_default) else {}),
             })
         mapping = {'head': {'eng_name': table_name, 'chn_name': chn_name}, 'columns': columns}
+        if indexes_json is not None:
+            try:mapping['indexes']=json.loads(indexes_json)
+            except (TypeError,ValueError) as error:raise SchemaError(f'invalid embedded indexes for {table_name}') from error
         parsed = TableDefinition.from_mapping(mapping, path.parent, table_name)
         if stored_fingerprint and stored_fingerprint != definition_fingerprint(parsed):
             raise SchemaError(f'embedded schema fingerprint mismatch for {table_name!r}')
@@ -162,6 +168,7 @@ def _read_embedded_database(connection: sqlite3.Connection, path: Path) -> Datab
     return DatabaseDefinition(
         eng_name=str(database_name or path.stem), chn_name=str(database_label or database_name or path.stem),
         tables=tuple(tables), path=path,
+        grouped=not tables or bool(connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name LIKE 'rtdb_data_%'").fetchone()),
     )
 
 
@@ -178,15 +185,20 @@ def load_embedded_database(path: str | Path) -> DatabaseDefinition | None:
         raise SchemaError(f'cannot read embedded schema {path}: {error}') from error
 
 
-def find_embedded_table(directory: str | Path, table_name: str):
+def find_embedded_table(directory: str | Path, table_name: str, database_file=None):
     """Return ``(definition, database_definition)`` for a logical table."""
 
     root = Path(directory).expanduser().resolve()
+    found = None
     for path in sorted(root.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
+        if database_file and path.name != database_file:
+            continue
         document = load_embedded_database(path)
         if document is None:
             continue
         for definition in document.tables:
             if definition.eng_name == table_name:
-                return definition, document
-    return None
+                if found is not None:
+                    raise SchemaError(f'ambiguous table {table_name!r}; specify database_file')
+                found = definition, document
+    return found

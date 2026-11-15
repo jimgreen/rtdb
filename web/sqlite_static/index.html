@@ -12,7 +12,7 @@
   <main class="layout">
     <aside id="table-sidebar" class="sidebar">
       <div class="sidebar-toolbar">
-        <div class="sidebar-toolbar-row"><h2>表索引</h2><span id="table-count" class="muted"></span><button id="new-table" class="small">＋ 新建</button></div>
+        <div class="sidebar-toolbar-row"><select id="database-select" aria-label="当前数据库" title="先选择数据库，再管理库中的表"><option value="">选择数据库…</option></select><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
         <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名" aria-label="搜索表名" title="搜索英文 / 中文表名"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short">非空</span></label></div></div>
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，右键打开操作菜单" title="右键打开表索引操作菜单"><p class="empty">正在加载…</p></div>
@@ -67,27 +67,29 @@
             <label>状态<select id="log-status" aria-label="日志状态"><option value="">全部状态</option><option value="success">成功</option><option value="failure">失败</option></select></label>
             <label>每页<select id="log-page-size" aria-label="日志每页数量"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option></select></label>
             <button id="query-logs" class="secondary small" type="button">查询</button>
+            <button id="task-history" class="secondary small" type="button">后台任务</button>
           </div>
           <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数（0=永久）<input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="日志保留天数"></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
           <div id="logs" class="logs" tabindex="0" aria-label="日志内容"></div>
           <div class="log-pager"><button id="log-prev" class="secondary small" type="button">上一页</button><span id="log-page-label">第 1 / 1 页</span><button id="log-next" class="secondary small" type="button">下一页</button></div>
         </section>
       </div>
-      <footer class="statusbar" aria-label="数据库路径与刷新状态"><span id="storage-path">正在读取服务信息…</span><span id="last-refresh">尚未刷新</span></footer>
+      <footer class="statusbar" aria-label="数据库路径与刷新状态"><span id="storage-path">正在读取服务信息…</span><button id="definition-warning" class="danger small" hidden></button><button id="audit-warning" class="danger small" hidden></button><span id="last-refresh">尚未刷新</span></footer>
     </section>
   </main>
   <dialog id="add-rows-dialog" aria-labelledby="add-rows-title"><form id="add-rows-form" method="dialog"><div class="panel-title"><h2 id="add-rows-title">新增记录</h2><button type="button" data-add-rows-cancel class="icon" aria-label="关闭新增记录">×</button></div><p class="muted">在指定位置插入新行，已设置默认值的字段会自动填入；双击修改后保存。</p><label>拟新增记录数<input id="add-row-count" type="number" min="1" max="500" step="1" value="1" required aria-label="拟新增记录数"></label><p id="add-rows-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-add-rows-cancel class="secondary">取消</button><button id="add-blank-rows" type="submit" value="add">插入新行</button></div></form></dialog>
   <dialog id="row-dialog"><form method="dialog"><div class="panel-title"><h2 id="row-dialog-title">新增记录</h2><button value="cancel" class="icon" aria-label="关闭记录编辑">×</button></div><p id="row-hint" class="muted"></p><label class="check-label"><input id="json-mode" type="checkbox">JSON 编辑</label><div id="row-fields" class="row-fields"></div><textarea id="row-editor" class="editor" spellcheck="false" aria-label="记录 JSON" hidden></textarea><p id="row-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="save-row" type="button">保存</button></div></form></dialog>
   <dialog id="import-dialog"><form method="dialog"><div class="panel-title"><h2>导入记录</h2><button value="cancel" class="icon" aria-label="关闭导入">×</button></div><p class="muted">支持 JSON / CSV，单表提交失败会整体回滚。CSV 须包含全部英文字段名。</p><label>选择文件<input id="import-file" type="file" accept=".json,.csv"></label><div class="schema-head"><label>文本编码<select id="import-encoding"><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label><label>导入方式<select id="import-mode"><option value="append">追加（主键冲突则回滚）</option><option value="merge">按主键合并（覆盖同主键）</option><option value="replace">替换整表</option></select></label></div><p id="import-preview" class="muted">尚未选择文件</p><p id="import-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="run-import" type="button">导入</button></div></form></dialog>
-  <dialog id="save-warning-dialog" aria-labelledby="save-warning-title"><form method="dialog"><h2 id="save-warning-title">保存前检查未通过</h2><p>请修正以下问题后重新保存，当前填写内容已保留。</p><ul id="save-warning-list"></ul><div class="dialog-actions"><button value="close" autofocus>返回修改</button></div></form></dialog>
+  <dialog id="save-warning-dialog" aria-labelledby="save-warning-title"><form method="dialog"><h2 id="save-warning-title">保存前检查未通过</h2><p>当前填写内容已保留。可定位错误单元格；遇到并发修改时，逐项选择要保留的值，再重新保存。</p><ul id="save-warning-list"></ul><div id="save-conflict-grid" class="grid-wrap"></div><div class="dialog-actions"><button id="apply-conflict-choices" type="button" hidden>应用选择，返回检查</button><button value="close" autofocus>返回修改</button></div></form></dialog>
   <dialog id="confirm-dialog"><form method="dialog"><div class="panel-title"><h2 id="confirm-title">确认操作</h2><button value="cancel" class="icon" aria-label="关闭确认">×</button></div><p id="confirm-text"></p><label id="confirm-label">输入名称确认<input id="confirm-input" autocomplete="off"></label><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="confirm-action" value="confirmed" class="danger">确认</button></div></form></dialog>
   <dialog id="definition-dialog"><form method="dialog">
     <div class="panel-title"><h2>加载 dbdef / E 文件</h2><button value="cancel" class="icon" aria-label="关闭定义导入">×</button></div>
     <label>选择文件<input id="definition-file" type="file" accept=".dbdef,.e"></label>
     <div class="schema-head"><label>文本编码<select id="definition-encoding"><option value="auto">自动识别</option><option value="utf-8-sig">UTF-8 / BOM</option><option value="gb18030">GB18030 / GBK</option><option value="utf-16">UTF-16（含 BOM）</option></select></label><label>E 数据导入<select id="definition-mode"><option value="merge">按主键合并</option><option value="append">追加（主键冲突时跳过并警告）</option><option value="replace">替换整表数据</option></select></label></div>
-    <label>E 新表主键<input id="definition-keys" placeholder="可选，多个字段用逗号分隔；留空优先 key / id，否则首列"></label>
-    <p class="muted">dbdef 更新结构并保留同名字段的数据；E 文件先按各行值推断字段类型，默认首字段为 KEY。重复主键仅警告：追加时跳过，合并/替换时采用最后一条。可调整 KEY 后再确认导入，生成/更新 JSON、Python 表结构。</p>
-    <div id="definition-preview" class="definition-preview">尚未预览</div><p id="definition-error" class="error-text" role="alert"></p>
+    <label hidden>E 新表主键<input id="definition-keys"></label>
+    <div id="efile-transfer" hidden><p id="efile-target" class="muted"></p><div class="button-row"><progress id="efile-progress" max="1" value="0" aria-label="E 文件已确认上传进度"></progress><button id="efile-pause" type="button" class="secondary" disabled>暂停上传</button><button id="efile-discard" type="button" class="secondary" disabled>清除临时上传</button></div></div>
+    <details class="definition-help"><summary>导入规则与限制</summary><p class="muted">dbdef 更新结构并保留同名字段的数据；E 文件上限128 MiB，每表10万条，临时上传保留24小时，可暂停续传。新表按全部数据行推断类型，默认首字段为 KEY。重复主键仅警告：追加时跳过，合并/替换采用最后一条。请逐表确认字段、校验后再提交；失败可继续。结构同时写入SQLite内置定义及JSON/Python文件。</p></details>
+    <div id="definition-preview" class="definition-preview">尚未预览</div><p id="efile-status" class="muted" role="status" aria-live="polite"></p><p id="definition-error" class="error-text" role="alert"></p>
     <div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="preview-definition" type="button" class="secondary">预览</button><button id="apply-definition" type="button" disabled>确认并生成/更新</button></div>
   </form></dialog>
   <dialog id="database-file-dialog"><form method="dialog">
@@ -101,13 +103,14 @@
       <div class="database-file-toolbar"><span id="database-file-directory" class="muted"></span><button id="refresh-database-files" class="secondary small" type="button">刷新列表</button></div>
       <div id="database-file-list" class="database-file-list"><p class="empty">正在加载…</p></div>
       <details class="database-file-create"><summary>新建服务端数据库文件</summary>
-        <div class="schema-head"><label>英文表名<input id="database-file-new-name" placeholder="例如 measurements"></label><label>中文表名<input id="database-file-new-label" placeholder="例如 测量表"></label><button id="create-database-file" type="button">新建文件</button></div>
-        <p class="muted">新建后会生成默认 id / name 字段，并自动生成同名 JSON、Python 定义；随后可在“表结构”页继续调整。</p>
+        <div class="schema-head"><label>数据库英文名<input id="database-file-new-name" placeholder="例如 station_a"></label><label>数据库中文名<input id="database-file-new-label" placeholder="例如 A站数据库"></label><label>首张表（可选）<input id="database-file-first-table" placeholder="留空先创建空库"></label><button id="create-database-file" type="button">新建数据库</button></div>
+        <p class="muted">可先创建空数据库，进入后逐张添加表；填写首张表时创建默认 id / name 字段。每个数据库对应一份 JSON、Python 定义。</p>
       </details>
     </section>
     <section id="database-file-upload" class="database-file-panel" role="tabpanel" aria-labelledby="database-file-tab-upload" hidden>
       <label>选择本地文件（数据库必选，同名 JSON 定义可选）<input id="database-file-upload-input" type="file" multiple accept=".sqlite3,.json,.sqlite3-wal,.sqlite3-shm"></label>
       <p class="muted">单个文件不超过 16 MiB。上传前会检查 RTDB metadata、结构指纹、记录数和 SQLite 完整性；覆盖服务端同名文件需要确认。</p>
+      <button id="open-chunk-upload" type="button" class="secondary">上传整库快照（大文件 / 续传）</button>
       <div id="database-file-upload-selection" class="database-file-selection">尚未选择文件</div>
       <p id="database-file-error" class="error-text" role="alert"></p>
       <div class="dialog-actions"><button id="upload-database-file" type="button" disabled>上传并更新服务端</button></div>
@@ -154,6 +157,11 @@
   <input id="restore-file" type="file" accept=".json" hidden>
   <div id="sql-history-list" class="sql-history-list" role="listbox" aria-label="SQL 历史语句" hidden></div>
   <div id="row-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表格操作" hidden>
+    <button type="button" role="menuitem" data-action="undo-edit">撤销上一步（Ctrl+Z）</button>
+    <button type="button" role="menuitem" data-action="redo-edit">重做（Ctrl+Y）</button>
+    <button type="button" role="menuitem" data-action="preview-edits">查看待保存修改</button>
+    <button type="button" role="menuitem" data-action="restore-draft">恢复本地草稿</button>
+    <hr>
     <button type="button" role="menuitem" data-action="add-row">新增记录</button>
     <button type="button" role="menuitem" data-action="copy-rows" title="复制完整行，供插入复制行使用">复制选中行</button>
     <button type="button" role="menuitem" data-action="insert-copied-rows">插入复制行</button>
@@ -179,8 +187,22 @@
     <button type="button" role="menuitem" data-chart-action="series-settings">曲线设置</button>
   </div>
   <div id="schema-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="字段操作" hidden>
+    <button type="button" role="menuitem" data-schema-action="indexes">索引设置</button>
+    <button type="button" role="menuitem" data-schema-action="preview">预览结构变更</button>
+    <button type="button" role="menuitem" data-schema-action="query-plan">查看当前查询计划</button>
     <button type="button" role="menuitem" data-schema-action="remove-column" class="danger">删除字段</button>
   </div>
+  <dialog id="schema-index-dialog" aria-labelledby="schema-index-title">
+    <h2 id="schema-index-title">索引设置</h2>
+    <p>主键唯一索引始终保留。联合索引按选择字段的先后顺序建立。</p>
+    <label>辅助索引模式 <select id="index-mode"><option value="auto">自动：每列建立索引</option><option value="custom">手动：仅建立下列索引</option></select></label>
+    <div id="index-custom"><div id="index-rows"></div><button type="button" id="add-index">添加索引</button><p>列表为空时，仅保留主键索引。</p></div>
+    <div class="dialog-actions"><button type="button" id="cancel-indexes">取消</button><button type="button" id="apply-indexes">应用到待保存结构</button></div>
+  </dialog>
+  <dialog id="schema-preview-dialog" aria-labelledby="schema-preview-title">
+    <h2 id="schema-preview-title">结构变更预览</h2><pre id="schema-preview-content"></pre><p id="schema-preview-status"></p>
+    <button type="button" id="close-schema-preview">关闭</button>
+  </dialog>
   <div id="sidebar-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表索引操作" hidden>
     <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="select-all-tables">全选</button>
     <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="invert-tables">反选</button>
@@ -192,10 +214,52 @@
     <hr data-sidebar-separator="fields">
     <hr data-sidebar-separator="files">
     <button type="button" role="menuitem" data-sidebar-action="load-definition">加载 dbdef / E</button>
+    <button type="button" role="menuitem" data-sidebar-action="csv-import">CSV 流式导入</button>
     <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
     <button type="button" role="menuitem" data-sidebar-action="restore">恢复备份</button>
+    <button type="button" role="menuitem" data-sidebar-action="receipt-maintenance">日志与回执维护</button>
+    <button type="button" role="menuitem" data-sidebar-action="storage-maintenance">存储维护</button>
+    <button type="button" role="menuitem" data-sidebar-action="database-snapshots">整库快照 / 恢复</button>
   </div>
   <div id="operation-notice" class="operation-notice" role="status" aria-live="polite" aria-atomic="true" hidden><span id="operation-message"></span><button id="dismiss-notice" type="button" aria-label="关闭操作提示">×</button></div>
+  <dialog id="edit-preview-dialog"><form method="dialog"><h2>待保存修改</h2><p id="edit-preview-caption" class="muted"></p><div id="edit-preview-grid" class="grid-wrap"></div><div class="dialog-actions"><button value="close" class="secondary">继续编辑</button><button id="save-preview-edits" type="button">保存全部修改</button></div></form></dialog>
+  <dialog id="performance-dialog"><form method="dialog"><div class="panel-title"><h2>性能统计</h2><button value="close" class="icon" aria-label="关闭性能统计">×</button></div><p class="muted">最近 80 次查询和单元格保存，单位毫秒。“保存并刷新”包含提交确认及随后表格刷新；事务合计已包含校验、写入等阶段，请勿重复相加。下一帧为浏览器回调估计，不代表屏幕实际显示延迟。</p><div id="performance-results" class="grid-wrap"></div><div class="dialog-actions"><button id="export-performance" type="button">导出统计</button><button value="close" class="secondary">关闭</button></div></form></dialog>
+  <script src="/static/performance.js"></script>
+  <dialog id="task-history-dialog"><form method="dialog"><div class="panel-title"><h2>后台任务</h2><button value="close" aria-label="关闭任务列表">×</button></div><p class="muted">最近 30 项任务。任务状态永久保存，详细结果保留 7 天。中断任务请先核查日志与数据库，不会自动重执行。</p><div id="task-history-grid" class="grid-wrap"></div></form></dialog>
+  <dialog id="task-dialog" aria-labelledby="task-caption"><h2 id="task-caption">执行操作</h2><p id="task-phase" role="status" aria-live="polite"></p><progress id="task-progress" aria-label="任务进度"></progress><p id="task-completed"></p><p id="task-warning" role="status"></p><p class="muted">提交期间不可取消；取消后已提交的表会保留。刷新页面可恢复查询任务状态。</p><div class="dialog-actions"><button id="task-cancel" type="button">取消未执行部分</button></div></dialog>
+  <script src="/static/tasks.js"></script>
+  <dialog id="receipt-maintenance-dialog" aria-labelledby="receipt-maintenance-title"><h2 id="receipt-maintenance-title">日志与回执维护</h2><p id="receipt-database" class="muted"></p><p>已同步日志的旧回执可无损压缩，仍保存在当前数据库文件内。请求编号和执行结果保留，日期日志按原保留配置管理。</p><label for="receipt-days">超过多少天自动压缩（0=关闭）</label><input id="receipt-days" type="number" min="0" max="36500" value="7"><dl id="receipt-statistics"></dl><p id="receipt-status" role="status"></p><div class="dialog-actions"><button id="receipt-config" type="button">保存配置</button><button id="receipt-archive" type="button">按配置立即压缩</button><button id="receipt-close" type="button" class="secondary">关闭</button></div></dialog>
+  <script src="/static/receipt_maintenance.js"></script>
+  <dialog id="storage-maintenance-dialog" aria-labelledby="storage-maintenance-title">
+    <h2 id="storage-maintenance-title">存储维护</h2>
+    <p class="muted">管理所有数据库共用的服务存储。仅清理预览中列出的内容；业务数据库和未确认的临时文件保留。</p>
+    <div id="storage-statistics" aria-label="存储占用统计"></div>
+    <form id="storage-policy"><div class="storage-policy-fields">
+      <label>上传暂存保留天数<input name="upload_retention_days" type="number" min="0" max="36500" required></label>
+      <label>快照保留天数<input name="snapshot_retention_days" type="number" min="0" max="36500" required></label>
+      <label>任务详情保留天数<input name="task_retention_days" type="number" min="0" max="36500" required></label>
+    </div><p class="muted">0 表示不清理。上传有效期仍为 24 小时；快照仅在确认后清理。任务防重复提交记录始终保留。</p>
+    <button id="storage-save" type="submit" class="secondary">保存配置</button></form>
+    <p id="storage-log-policy" class="muted"></p>
+    <div id="storage-candidates" class="grid-wrap" aria-label="可清理内容"></div>
+    <details id="storage-protected"><summary>受保护项目</summary><ul id="storage-protected-list"></ul></details>
+    <p id="storage-status" role="status" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="storage-refresh" type="button" class="secondary">刷新统计 / 预览</button><button id="storage-clean" type="button" disabled>确认清理</button><button id="storage-close" type="button" class="secondary">关闭</button></div>
+  </dialog>
+  <script src="/static/storage_maintenance.js"></script>
+  <dialog id="database-snapshots-dialog" aria-labelledby="database-snapshots-title"><h2 id="database-snapshots-title">整库快照 / 恢复</h2><p id="snapshot-source" class="muted"></p><p class="muted">快照包含已提交的多表数据、索引、内置定义和库内回执；未保存的页面修改、服务日期日志及任务账本不包含。快照保留在服务端，可下载到本地。</p><div class="button-row"><button id="snapshot-create" type="button">生成当前数据库快照</button><button id="snapshot-refresh" type="button" class="secondary">刷新列表</button></div><div id="snapshot-list" class="grid-wrap" aria-label="整库快照列表"></div><form id="snapshot-restore-form"><p id="snapshot-restore-caption">选择一份快照，再恢复为新数据库。</p><div class="snapshot-target"><label>新数据库英文名<input id="snapshot-target-name" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="例如 plant_copy"></label><label>中文名称<input id="snapshot-target-label" placeholder="为空时使用英文名"></label><button id="snapshot-restore" type="submit" disabled>恢复为新数据库</button></div></form><p id="snapshot-status" role="status"></p><div class="dialog-actions"><button id="snapshot-close" type="button" class="secondary">关闭</button></div></dialog>
+  <script src="/static/database_snapshots.js"></script>
+  <dialog id="chunk-upload-dialog" aria-labelledby="chunk-upload-title"><h2 id="chunk-upload-title">上传整库快照</h2><p class="muted">单文件最大2 GiB，分块上传，可暂停和续传。请选择“整库快照”下载的自包含文件；正在使用的数据库应先生成快照。校验通过后恢复为新数据库。</p><label>本地 SQLite 快照<input id="chunk-file" type="file" accept=".sqlite3"></label><details><summary>可选的完整文件校验值</summary><label>预期 SHA-256<input id="chunk-sha" maxlength="64" placeholder="已有校验值时填写，可留空"></label></details><p id="chunk-session" class="muted"></p><progress id="chunk-progress" aria-label="已确认上传进度" max="1" value="0"></progress><div class="button-row"><button id="chunk-start" type="button" disabled>上传并校验</button><button id="chunk-pause" type="button" class="secondary" disabled>暂停</button><button id="chunk-discard" type="button" class="secondary" disabled>放弃临时上传</button></div><p id="chunk-preview"></p><div class="snapshot-target"><label>新数据库英文名<input id="chunk-target" disabled placeholder="例如 station_copy"></label><label>中文名称<input id="chunk-label" disabled placeholder="为空时使用英文名"></label><button id="chunk-restore" type="button" disabled>恢复为新数据库</button></div><p id="chunk-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="chunk-close" type="button" class="secondary">关闭</button></div></dialog>
+  <script src="/static/database_uploads.js"></script>
+  <dialog id="csv-dialog" aria-labelledby="csv-title"><h2 id="csv-title">CSV 流式导入</h2><p id="csv-target" class="muted"></p><p class="muted">最大128 MiB、10万条记录；须包含全部英文字段。先校验预览，再确认导入。单表失败整体回滚。上传可暂停，临时内容保留24小时。</p><div class="schema-head"><label>CSV 文件<input id="csv-file" type="file" accept=".csv"></label><label>编码<select id="csv-encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label></div><p id="csv-detail" class="muted"></p><progress id="csv-progress" aria-label="CSV 已确认上传进度" max="1" value="0"></progress><div class="button-row"><button id="csv-start" type="button">上传并预览</button><button id="csv-pause" type="button" class="secondary">暂停</button><button id="csv-discard" type="button" class="secondary">清除临时上传</button></div><div id="csv-preview" class="grid-wrap" aria-label="CSV 样本预览"></div><div class="schema-head"><label>导入方式<select id="csv-mode"><option value="append">追加（冲突则回滚）</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label><button id="csv-apply" type="button">确认导入</button></div><p id="csv-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="csv-close" type="button" class="secondary">关闭</button></div></dialog>
+  <script src="/static/csv_imports.js"></script>
+  <script src="/static/efile_imports.js"></script>
+  <script src="/static/editing.js"></script>
+  <dialog id="draft-recovery-dialog"><form method="dialog"><h2>发现未保存草稿</h2><select id="draft-choice" aria-label="选择草稿"></select><p id="draft-recovery-caption"></p><p id="draft-recovery-warning" class="muted"></p><div class="dialog-actions"><button id="export-local-draft" type="button" class="secondary">导出草稿</button><button id="delete-local-draft" type="button" class="secondary">删除草稿</button><button value="later" class="secondary">稍后处理</button><button id="restore-local-draft" type="button">恢复草稿</button></div></form></dialog>
+  <script src="/static/draft_store.js"></script>
+  <script src="/static/drafts.js"></script>
+  <script src="/static/virtual_grid.js"></script>
+  <script src="/static/schema_tools.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

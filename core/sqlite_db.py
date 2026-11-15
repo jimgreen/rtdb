@@ -122,10 +122,8 @@ class SQLiteTable(MutableSequence):
             primary_index = f'{index_prefix}_primary_key' if index_prefix else 'primary_key'
             c.execute(f'CREATE UNIQUE INDEX {_quote_sql_name(primary_index)} ON {self._data_sql} (' +
                       ','.join(self._fields[k] for k in self.primary_keys) + ')')
-            for name, col in self._fields.items():
-                if (name,) != self.primary_keys:
-                    index_name = f'{index_prefix}_idx_{col}' if index_prefix else f'idx_{col}'
-                    c.execute(f'CREATE INDEX {_quote_sql_name(index_name)} ON {self._data_sql} ({col})')
+            from .sqlite_indexes import reconcile_indexes
+            reconcile_indexes(c,self._data_name,self.definition)
             c.execute(f'INSERT INTO {self._metadata_sql} VALUES (1,?,0)', (fingerprint,))
             trigger_prefix = f'{index_prefix}_' if index_prefix else ''
             c.execute(f'CREATE TRIGGER {_quote_sql_name(trigger_prefix + "count_insert")} AFTER INSERT ON {self._data_sql} BEGIN '
@@ -613,42 +611,48 @@ class SQLiteTableKeyValue(MutableMapping):
     __contains__ = contains
 
     def get_many(self, keys):
+        keys = list(keys)
+        if not keys:
+            return {}
+        with self.table._read_transaction() as connection:
+            return self._get_many(connection, keys)
+
+    def _get_many(self, c, keys):
+        """Batch lookup using the caller's existing read or write transaction."""
         keys = list(dict.fromkeys(self._public(k) for k in keys))
         result = {}
         if not keys:
             return result
         wheres = [self._where(k) for k in keys]
         conditions = [self.table._where_sql(w) for w in wheres]
-        with self.table._read_transaction() as c:
-            if all(q is not None and all(v is not None for v in w.values())
-                   for q,w in zip(conditions, wheres)):
-                # Use native indexed IN lookups, rather than 500 Python/SQL
-                # round trips. All chunks share this read snapshot.
-                valid = [(k, tuple(w.values())) for k,w,q in zip(keys, wheres, conditions) if q[0] != '0']
-                requested = {k: k for k in keys}
-                width = len(self.key_columns)
-                chunk_size = max(1, 900 // width)
-                key_fields = ','.join(self.table._fields[k] for k in self.key_columns)
-                projection = ','.join(self.table._fields.values())
-                for start in range(0, len(valid), chunk_size):
-                    chunk = valid[start:start+chunk_size]
-                    placeholders = ','.join('('+','.join('?' for _ in range(width))+')' for _ in chunk)
-                    csql = '('+key_fields+') IN (VALUES '+placeholders+')'
-                    args = [v for key,values in chunk for v in values]
-                    for record in c.execute('SELECT '+projection+f' FROM {self.table._data_sql} WHERE '+csql, args):
-                        row = self.table._decode(record)
-                        values = tuple(row[k] for k in self.key_columns)
-                        key = requested[values[0] if width == 1 else values]
-                        if key in result:
-                            raise ValueError('key is not unique')
-                        result[key] = row
-                return {k: result[k] for k in keys if k in result}
-            for key, where in zip(keys, wheres):
-                rows = self.table._select(c, where, limit=2)
-                if len(rows) > 1:
-                    raise ValueError('key is not unique')
-                if rows:
-                    result[key] = rows[0]
+        if all(q is not None and all(v is not None for v in w.values())
+               for q,w in zip(conditions, wheres)):
+            # Use native indexed IN lookups. All chunks share the caller's snapshot.
+            valid = [(k, tuple(w.values())) for k,w,q in zip(keys, wheres, conditions) if q[0] != '0']
+            requested = {k: k for k in keys}
+            width = len(self.key_columns)
+            chunk_size = max(1, 900 // width)
+            key_fields = ','.join(self.table._fields[k] for k in self.key_columns)
+            projection = ','.join(self.table._fields.values())
+            for start in range(0, len(valid), chunk_size):
+                chunk = valid[start:start+chunk_size]
+                placeholders = ','.join('('+','.join('?' for _ in range(width))+')' for _ in chunk)
+                csql = '('+key_fields+') IN (VALUES '+placeholders+')'
+                args = [v for key,values in chunk for v in values]
+                for record in c.execute('SELECT '+projection+f' FROM {self.table._data_sql} WHERE '+csql, args):
+                    row = self.table._decode(record)
+                    values = tuple(row[k] for k in self.key_columns)
+                    key = requested[values[0] if width == 1 else values]
+                    if key in result:
+                        raise ValueError('key is not unique')
+                    result[key] = row
+            return {k: result[k] for k in keys if k in result}
+        for key, where in zip(keys, wheres):
+            rows = self.table._select(c, where, limit=2)
+            if len(rows) > 1:
+                raise ValueError('key is not unique')
+            if rows:
+                result[key] = rows[0]
         return result
 
     def _patch(self, key, values):
@@ -1242,13 +1246,18 @@ class SQLiteWriteProcess(SQLiteWriteClient):
 
 class SQLiteDatabase:
     def __init__(self, directory=None, *, schema_directory=None, busy_timeout=5.0,
-                 transaction_retries=3, mmap_size=256 * 1024 * 1024):
+                 transaction_retries=3, mmap_size=256 * 1024 * 1024, database_file=None):
         if busy_timeout < 0 or transaction_retries < 1 or mmap_size < 0:
             raise ValueError('invalid SQLite timeout/retry/mmap configuration')
         self.directory = Path(directory or Path.cwd() / 'dat').expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.schema_directory = Path(schema_directory) if schema_directory else self.directory.parent / 'def/table'
-        self.schema_registry = SchemaRegistry(self.schema_directory)
+        if database_file is not None and (Path(database_file).name != database_file or
+                not database_file.endswith('.sqlite3')):
+            raise ValueError('database_file must be a local .sqlite3 filename')
+        self.database_file = database_file
+        self.schema_registry = SchemaRegistry(self.schema_directory,
+            database_name=Path(database_file).stem if database_file else None)
         self.busy_timeout, self.transaction_retries = float(busy_timeout), int(transaction_retries)
         self.mmap_size = int(mmap_size)
         self._pid, self._closed = os.getpid(), False
@@ -1266,10 +1275,14 @@ class SQLiteDatabase:
             return self._embedded_cache
         found = {}
         for path in sorted(self.directory.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
+            if self.database_file and path.name != self.database_file:
+                continue
             document = load_embedded_database(path)
             if document is None:
                 continue
             for definition in document.tables:
+                if definition.eng_name in found:
+                    raise SchemaError(f'ambiguous table {definition.eng_name!r}; specify database_file')
                 found[definition.eng_name] = (definition, document)
         self._embedded_cache = found
         return found
@@ -1288,9 +1301,9 @@ class SQLiteDatabase:
                 else:
                     definition = self.schema_registry.load(name)
                     document = self.schema_registry.database_definition(name)
-                    database_name = document.eng_name
+                    database_name = Path(self.database_file).stem if self.database_file else document.eng_name
                     database_label = document.chn_name
-                    shared = database_name != name or len(document.tables) > 1
+                    shared = document.is_grouped
                 self._tables[name] = SQLiteTable(
                     self,
                     definition,
@@ -1308,6 +1321,8 @@ class SQLiteDatabase:
         config = dict(directory=self.directory, schema_directory=self.schema_directory,
                       busy_timeout=self.busy_timeout, transaction_retries=self.transaction_retries,
                       mmap_size=self.mmap_size)
+        if self.database_file:
+            raise ValueError('scoped database writers must use direct transactions')
         config.update(options)
         return SQLiteWriteProcess(**config)
 

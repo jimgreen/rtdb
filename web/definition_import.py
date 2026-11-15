@@ -13,10 +13,10 @@ from pathlib import Path
 
 from core import SQLiteDatabase, TableDefinition, SchemaError
 from core.definition_files import decode_upload, parse_modules, dbdef_definitions, infer_type, python_definition, normalize_definition_labels
-from core.file_mapped_db import _locked
 from core.sqlite_db import _INT, _FLOAT, _TEXT, _BOOL, _OBJECT
 from core.sqlite_schema import ensure_embedded_schema, write_embedded_definition
 from .errors import APIError
+from .tasks import checkpoint, committing, table_completed, TaskCancelled
 from .sqlite_service import atomic_json, atomic_text, fingerprint, validate_populated_schema
 
 
@@ -59,10 +59,10 @@ class DefinitionImporter:
         try:
             definition = self.manager.definition(name)
         except APIError:
-            if (self.manager.data_dir / (name + '.sqlite3')).exists():
+            if not self.manager.database_file and (self.manager.data_dir / (name + '.sqlite3')).exists():
                 raise APIError(409, f'{name} 存在缺少可用内置结构定义的数据库，请先加载 JSON 定义完成迁移')
             return None, [], None
-        with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as db:
+        with self.manager._database() as db:
             table = db[name]
             with table._read_transaction() as connection:
                 if len(table) > self.manager.max_rows:
@@ -147,6 +147,7 @@ class DefinitionImporter:
         return definition
 
     def _prepare(self, payload, staging):
+        checkpoint('解析定义文件')
         text, encoding = decode_upload(payload)
         format = payload.get('format')
         if format not in ('dbdef', 'e'):
@@ -167,6 +168,7 @@ class DefinitionImporter:
         plans, seen_names = [], set()
         for document in documents:
             name = self.manager.name(document['head']['eng_name'] if format == 'dbdef' else document['name'])
+            checkpoint(f'校验表 {name}', len(plans), len(documents))
             if name.casefold() in seen_names:
                 raise SchemaError(f'重复表名（忽略大小写）：{name}')
             seen_names.add(name.casefold())
@@ -194,6 +196,7 @@ class DefinitionImporter:
             duplicates, skipped = 0, 0
             duplicate_examples, skipped_examples = [], []
             for number, row in enumerate(incoming, 1):
+                if number % 500 == 0: checkpoint(f'校验 {name} 的记录', number, len(incoming))
                 converted = {col.eng_name: convert(row[col.eng_name], col, from_file=True) for col in definition.columns if col.eng_name in row}
                 # A duplicate is recoverable; malformed values and missing keys are not.
                 definition.validate_rows([converted])
@@ -257,7 +260,7 @@ class DefinitionImporter:
                               source=source))
         # Bind the token to the source and database revision, allowing the user
         # to confirm different keys/types after preview (including duplicate keys).
-        token = fingerprint({'input': payload.get('content', text), 'encoding': encoding, 'format': format, 'mode': mode, 'keys': keys,
+        token = fingerprint({'database': self.manager.database_file, 'input': payload.get('content', text), 'encoding': encoding, 'format': format, 'mode': mode, 'keys': keys,
                              'plans': [(plan['token_definition'], plan['version']) for plan in plans]})
         return plans, encoding, token
 
@@ -310,25 +313,8 @@ class DefinitionImporter:
 
     def _apply_grouped_existing(self, plan):
         """Apply one-table E/dbdef changes while preserving grouped siblings."""
-        name = plan['summary']['name']
-        old = plan['old']
-        with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as database:
-            table = database[name]
-            with table._read_transaction() as connection:
-                current_rows = table._select(connection)
-            if fingerprint({'definition': old, 'rows': current_rows}) != plan['version']:
-                raise APIError(409, f'{name} 数据已变化，请重新预览')
-        self.manager.save_schema(name, {'definition': plan['definition'],
-                                        'version': fingerprint(old)}, _already_locked=True)
-        with SQLiteDatabase(self.manager.data_dir, schema_directory=self.manager.schema_dir) as database:
-            table = database[name]
-            def replace(connection):
-                connection.execute(f'DELETE FROM {table._data_sql}')
-                if plan['retained']:
-                    table._insert(connection, plan['retained'])
-                return len(plan['retained'])
-            replace_count = table._write(replace)
-        return replace_count
+        from .atomic_import import apply_plan
+        return apply_plan(self.manager, plan)
 
     def _apply(self, plan):
         path = self.manager.data_dir / (plan['summary']['name'] + '.sqlite3')
@@ -411,15 +397,16 @@ class DefinitionImporter:
 
     def run(self, payload, *, preview):
         manager = self.manager
-        with manager._gate, _locked(manager._schema_lock), tempfile.TemporaryDirectory(prefix='rtdb-definition-') as folder:
+        with manager.exclusive(), tempfile.TemporaryDirectory(prefix='rtdb-definition-') as folder:
             manager._recover()
             plans, encoding, token = self._prepare(payload, Path(folder))
+            checkpoint('文件与数据库校验完成', len(plans), len(plans))
             # Multi-table input always uses the grouped SQLite/JSON/Python
             # representation; when no source/database name is supplied,
             # _group_database_name() falls back to the first table name.
             grouped = len(plans) > 1
-            if grouped:
-                database_name = self._group_database_name(payload, plans)
+            if grouped or manager.database_file:
+                database_name = Path(manager.database_file).stem if manager.database_file else self._group_database_name(payload, plans)
                 for plan in plans:
                     plan['summary']['database_file'] = database_name + '.sqlite3'
                     plan['summary']['json_path'] = str(manager.schema_dir / (database_name + '.json'))
@@ -434,6 +421,23 @@ class DefinitionImporter:
                 return dict(ok=ok, results=results, pending=pending, warnings=warnings,
                             duplicates=sum(item.get('duplicates', 0) for item in results if item['ok']),
                             skipped=sum(item.get('skipped', 0) for item in results if item['ok']))
+            if manager.database_file:
+                for index, plan in enumerate(plans):
+                    checkpoint(f'准备提交表 {plan["summary"]["name"]}', index, len(plans))
+                    try:
+                        with committing(f'提交表 {plan["summary"]["name"]}（此阶段不可取消）'):
+                            self._apply_grouped_existing(plan)
+                            table_completed(plan['summary']['name'])
+                        summary = plan['summary']
+                        results.append(dict(name=summary['name'], ok=True, rows=summary['after'],
+                            database_file=manager.database_file,
+                            **{key: summary[key] for key in ('incoming', 'inserted', 'updated', 'duplicates', 'skipped', 'warnings')}))
+                    except TaskCancelled:
+                        raise
+                    except Exception as error:
+                        results.append(dict(name=plan['summary']['name'], ok=False, error=str(error)))
+                        return outcome(False, [p['summary']['name'] for p in plans[index + 1:]])
+                return outcome(True, [])
             if grouped:
                 grouped_sources = set()
                 grouped_existing = True

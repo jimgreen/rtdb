@@ -21,6 +21,7 @@ from .errors import APIError
 from .audit import status_for_exception
 from .sqlite_service import SQLiteManager, browser_value
 from .management import SQLiteManagement
+from .tasks import TaskRegistry
 from core import SchemaError
 from core.sqlite_db import SQLiteBusyError
 
@@ -33,18 +34,25 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     @property
     def manager(self):
-        return self.server.sqlite_manager  # type: ignore[attr-defined]
+        manager = self.server.sqlite_manager  # type: ignore[attr-defined]
+        filename = parse_qs(urlsplit(self.path).query).get('database', [None])[0]
+        return manager.for_database(filename) if filename else manager
 
     def log_message(self, format, *args):
         sys.stderr.write('%s - - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), format % args))
 
     def _send_json(self, status, payload):
+        encoding_started=time.perf_counter()
         body = json.dumps(browser_value(payload), ensure_ascii=False, allow_nan=False).encode('utf-8')
+        encoding_ms=(time.perf_counter()-encoding_started)*1000
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
+        if hasattr(self, '_server_ms'):
+            extra=''.join(f', {key[:-3]};dur={value:.3f}' for key,value in getattr(self,'_task_timings',{}).items())
+            self.send_header('Server-Timing', f'app;dur={self._server_ms:.2f}, encode;dur={encoding_ms:.3f}'+extra)
         self.end_headers()
         self.wfile.write(body)
 
@@ -182,8 +190,8 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            _, parts, _ = self._route(); payload = self._body()
-            if self._manage('POST', parts, payload=payload):
+            _, parts, query = self._route(); payload = self._body()
+            if self._manage('POST', parts, query=query, payload=payload):
                 return
             if parts == ['api', 'sqlite', 'sql']:
                 self._send_json(200, self._recorded('POST', parts, payload, lambda: self.manager.sql(payload.get('table'), payload))); return
@@ -207,8 +215,12 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         try:
-            _, parts, _ = self._route(); payload = self._body()
-            if self._manage('PUT', parts, payload=payload):
+            _, parts, query = self._route()
+            if len(parts)==5 and parts[:3]==['api','manage','database-uploads'] and parts[4]=='chunk':
+                self._upload_chunk(parts[3],query)
+                return
+            payload = self._body()
+            if self._manage('PUT', parts, query=query, payload=payload):
                 return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'schema':
                 self._send_json(200, self._recorded('PUT', parts, payload,
@@ -222,8 +234,8 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         try:
-            _, parts, _ = self._route(); payload = self._body()
-            if self._manage('DELETE', parts, payload=payload):
+            _, parts, query = self._route(); payload = self._body()
+            if self._manage('DELETE', parts, query=query, payload=payload):
                 return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'rows':
                 self._send_json(200, self._recorded('DELETE', parts, payload,
@@ -238,10 +250,117 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     def _manage(self, method, parts, *, query=None, payload=None):
         if parts[:2] != ['api', 'manage']:
             return False
-        result = self.server.management.dispatch(method, parts[2:],
+        if len(parts)==3 and parts[2]=='tasks' and method=='GET':
+            self._send_json(200,{'tasks':self.server.tasks.recent()})
+            return True
+        if len(parts) in (4, 5) and parts[2] == 'tasks':
+            filename = (query or {}).get('database', [None])[0]
+            if method == 'GET' and len(parts) == 4:
+                if 'wait' in (query or {}):
+                    try:
+                        timeout=float(query['wait'][0]);revision=int(query.get('revision',['0'])[0])
+                    except (ValueError,TypeError):raise APIError(400,'无效的任务等待参数')
+                    result=self.server.tasks.wait_change(parts[3],filename,revision,timeout)
+                else:result = self.server.tasks.get(parts[3], filename)
+            elif method == 'POST' and len(parts) == 5 and parts[4] == 'cancel':
+                result = self.server.tasks.cancel(parts[3], filename)
+            else:
+                raise APIError(400, '无效的后台任务操作')
+            self._send_json(200, result)
+            return True
+        if len(parts) >= 3 and parts[2] == 'database-snapshots':
+            from .database_snapshots import scope
+            manager = scope(self.server.sqlite_manager, (query or {}).get('database', [None])[0])
+        else:
+            manager = self.manager
+        if method == 'GET' and len(parts) == 5 and parts[2] == 'database-snapshots' and parts[4] == 'download':
+            from .storage_maintenance import fence
+            with fence(manager):
+                self._download_snapshot(manager, parts[3])
+            return True
+        management = SQLiteManagement(manager) if manager.database_file else self.server.management
+        if (query or {}).get('background') == ['1']:
+            started=time.perf_counter()
+            parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id')}
+            result = self.server.tasks.submit(management, method, parts[2:], parameters, payload,
+                request_id=(query or {}).get('request_id',[None])[0])
+            result = self.server.tasks.wait_initial(result['id'], result['database'])
+            self._server_ms=(time.perf_counter()-started)*1000
+            self._task_timings=result.get('timings',{})
+            if result.get('result_expired'):
+                self._send_json(202,{'task':result})
+                return True
+            if result['status'] == 'done':
+                self._send_json(200, result['result'])
+                return True
+            if result['status'] in ('failed', 'cancelled','interrupted'):
+                raise APIError(result['error_status'], result['error'], details=result.get('details'))
+            self._send_json(202, {'task': result})
+            return True
+        started = time.perf_counter()
+        result = management.dispatch(method, parts[2:],
             {key: values[0] for key, values in (query or {}).items()}, payload)
+        self._server_ms = (time.perf_counter() - started) * 1000
         self._send_json(200, result)
         return True
+
+    def _upload_chunk(self, ident, query):
+        from .database_uploads import CHUNK, put_chunk
+        manager=self.server.sqlite_manager;started=time.perf_counter()
+        try:
+            if self.headers.get_content_type()!='application/octet-stream':raise APIError(415,'分块请使用 application/octet-stream')
+            if 'Content-Length' not in self.headers:raise APIError(411,'分块需要 Content-Length')
+            try:length=int(self.headers['Content-Length']);offset=int(query.get('offset',[''])[0])
+            except (ValueError,TypeError):raise APIError(400,'分块长度或位置无效')
+            if not 0<length<=CHUNK:raise APIError(413,'单个上传分块不能超过1 MiB')
+            old_timeout=self.connection.gettimeout()
+            try:
+                self.connection.settimeout(30);body=self.rfile.read(length)
+            finally:self.connection.settimeout(old_timeout)
+            if len(body)!=length:raise APIError(400,'分块传输中断，未确认接收')
+            result=put_chunk(manager,ident,offset,body,self.headers.get('X-Chunk-SHA256'))
+            self._send_json(200,result)
+        except Exception as error:
+            manager.record_operation(category='structure',operation='上传分块失败',status='failure',http_status=status_for_exception(error),
+                method='PUT',path=urlsplit(self.path).path,duration_ms=(time.perf_counter()-started)*1000,error=error)
+            raise
+
+    def _download_snapshot(self, manager, ident):
+        from .database_snapshots import resolve, byte_range, CHUNK
+        started = time.perf_counter(); sent = 0; headers_sent = False
+        try:
+            path, item = resolve(manager, ident)
+            etag = '"' + item['sha256'] + '"'
+            requested = self.headers.get('Range')
+            if self.headers.get('If-Range', etag) != etag: requested = None
+            try: start, end, partial = byte_range(requested, item['bytes'])
+            except APIError as error:
+                self.send_response(416); self.send_header('Content-Range', f'bytes */{item["bytes"]}')
+                self.send_header('Content-Length', '0'); self.end_headers(); headers_sent = True
+                raise error
+            with path.open('rb') as stream:
+                stream.seek(start)
+                self.send_response(206 if partial else 200)
+                self.send_header('Content-Type', 'application/vnd.sqlite3')
+                self.send_header('Content-Disposition', f'attachment; filename="{item["filename"]}"')
+                self.send_header('Content-Length', str(end - start + 1))
+                self.send_header('Accept-Ranges', 'bytes'); self.send_header('ETag', etag)
+                self.send_header('Cache-Control', 'no-store'); self.send_header('X-Content-Type-Options', 'nosniff')
+                if partial: self.send_header('Content-Range', f'bytes {start}-{end}/{item["bytes"]}')
+                self.end_headers(); headers_sent = True
+                while sent < end - start + 1:
+                    block = stream.read(min(CHUNK, end - start + 1 - sent))
+                    if not block: raise OSError('快照文件读取提前结束')
+                    self.wfile.write(block); sent += len(block)
+            manager.record_operation(category='structure', operation='下载整库快照', status='success',
+                http_status=206 if partial else 200, method='GET', path=urlsplit(self.path).path,
+                duration_ms=(time.perf_counter()-started)*1000, result={'snapshot_id':ident,'bytes':sent,'partial':partial})
+        except Exception as error:
+            manager.record_operation(category='structure', operation='下载整库快照', status='failure',
+                http_status=status_for_exception(error), method='GET', path=urlsplit(self.path).path,
+                duration_ms=(time.perf_counter()-started)*1000, error=error)
+            if not headers_sent: raise
+            self.close_connection = True
 
     def _static(self, name):
         target = (STATIC_ROOT / name).resolve()
@@ -251,12 +370,38 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type', mimetypes.guess_type(target.name)[0] or 'application/octet-stream'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
 
 
+class SQLiteHTTPServer(ThreadingHTTPServer):
+    # A reload can request many scripts while upload connections are closing.
+    # Keep that brief burst queued instead of using socketserver's backlog of 5.
+    request_queue_size = 64
+
+    def server_close(self):
+        super().server_close()
+        if hasattr(self, 'tasks'):
+            self.tasks.close()
+        if hasattr(self, 'audit_delivery'):
+            self.audit_delivery.close()
+        if hasattr(self, 'sqlite_manager'):
+            self.sqlite_manager.close()
+
+
 def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=None, schema_dir=None):
     base = Path(root).resolve() if root else Path(__file__).resolve().parents[1]
     manager = SQLiteManager(data_dir or base / 'sqlite_dat', schema_dir or base / 'def' / 'table')
-    server = ThreadingHTTPServer((host, port), SQLiteRequestHandler)
+    try:
+        server = SQLiteHTTPServer((host, port), SQLiteRequestHandler)
+    except BaseException:
+        manager.close()
+        raise
     server.sqlite_manager = manager  # type: ignore[attr-defined]
     server.management = SQLiteManagement(manager)
+    try:
+        server.tasks = TaskRegistry(manager.data_dir/'.web-tasks', manager)
+        from .write_receipts import AuditDelivery
+        server.audit_delivery = manager.audit_delivery = AuditDelivery(manager)
+    except BaseException:
+        server.server_close()
+        raise
     return server
 
 
