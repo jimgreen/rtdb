@@ -1,9 +1,11 @@
 """SQLite integration tests use real files, connections and spawned processes."""
 import multiprocessing as mp
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 from core.sqlite_db import SQLiteDatabase, SQLiteBusyError, SQLiteWriteProcess
 from benchmarks.benchmark_redis_vs_file import _definition, _row
@@ -69,6 +71,68 @@ class SQLiteBackendTests(unittest.TestCase):
         self.assertEqual(connection.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
         plan = connection.execute('EXPLAIN QUERY PLAN SELECT * FROM data WHERE c1 = 1').fetchall()
         self.assertTrue(any('INDEX' in r[-1] for r in plan))
+
+    def test_reopen_reads_during_an_external_write_without_modifying_schema(self):
+        self.seed(3)
+        writer = self.table._connection()
+        version = writer.execute('PRAGMA data_version').fetchone()[0]
+        with SQLiteDatabase(self.root) as reader:
+            self.assertEqual(reader['records'].kv.get(1), _row(1))
+        self.assertEqual(writer.execute('PRAGMA data_version').fetchone()[0], version)
+        writer.execute('BEGIN IMMEDIATE')
+        writer.execute('UPDATE data SET c2=999 WHERE c0=1')
+        try:
+            # Opening a read handle must not require the concurrent writer's lock.
+            with SQLiteDatabase(self.root, busy_timeout=.01, transaction_retries=1) as reader:
+                mirror = reader['records']
+                self.assertEqual(mirror.kv.get(1), _row(1))
+                writer.commit()
+                self.assertEqual(mirror.kv.get(1)['value'], 999)
+                self.assertEqual(mirror.storage_config()['synchronous'], 2)
+        finally:
+            writer.rollback()
+
+    def test_open_rejects_stale_physical_fingerprint_without_overwriting_it(self):
+        self.seed(2)
+        connection = self.table._connection()
+        connection.execute("UPDATE metadata SET fingerprint='changed'")
+        with SQLiteDatabase(self.root) as reader:
+            with self.assertRaisesRegex(ValueError, 'schema differs'):
+                reader['records']
+        self.assertEqual(connection.execute('SELECT fingerprint FROM metadata').fetchone()[0], 'changed')
+
+    def test_legacy_metadata_is_embedded_once_and_preserves_records(self):
+        self.seed(3)
+        path = self.table.path
+        self.db.close()
+        with closing(sqlite3.connect(path)) as connection, connection:
+            for name in ('rtdb_schema_columns', 'rtdb_schema_tables', 'rtdb_schema_database'):
+                connection.execute(f'DROP TABLE {name}')
+        with SQLiteDatabase(self.root) as db:
+            self.assertEqual(db['records'].all(), [_row(i) for i in range(3)])
+        (self.root.parent / 'def/table/records.json').unlink()
+        with SQLiteDatabase(self.root) as db:
+            self.assertEqual(db['records'].all(), [_row(i) for i in range(3)])
+
+    def test_strict_key_changes_preserve_missing_nonunique_and_noop_semantics(self):
+        self.seed(20)
+        before = self.table.all()
+        for action in (
+            lambda: self.table.kv.update_many([(0, {'value': 8}), (100, {})]),
+            lambda: self.table.kv.delete_many([0, 100]),
+            lambda: self.table.key_value('group').update(0, {'value': 8}),
+            lambda: self.table.key_value('group').delete(0),
+        ):
+            with self.assertRaises((KeyError, ValueError)):
+                action()
+            self.assertEqual(self.table.all(), before)
+        self.assertEqual(self.table.kv.update(0, {}), 1)
+        self.assertEqual(self.table.kv.update(0, {'value': 0}), 1)
+        self.assertEqual(self.table.kv.update(100, {}, upsert=True), 1)
+        self.assertEqual(self.table.kv.get(100)['id'], 100)
+        self.assertEqual(len(self.table), 21)
+        self.assertEqual(self.table.kv.delete(100), 1)
+        self.assertEqual(self.table.all(), before)
 
     def test_float_boolean_and_structured_values_keep_types(self):
         import json

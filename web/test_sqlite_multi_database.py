@@ -44,6 +44,19 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_page_totals_and_rows_share_a_snapshot_during_external_commit(self):
+        with self.manager.session('nodes') as table:
+            table.insert_one({'id': 1, 'name': 'N1'})
+            with table._read_transaction() as connection:
+                with SQLiteDatabase(self.data, schema_directory=self.schema) as other:
+                    other['nodes'].insert_one({'id': 2, 'name': 'N2'})
+                for where in ('', 'id > 0'):
+                    rows, total = self.manager._selection(table, connection, where, 'id DESC')
+                    self.assertEqual(total, 1)
+                    self.assertEqual(rows, [{'id': 1, 'name': 'N1'}])
+        result = self.api.rows('nodes', {})
+        self.assertEqual((result['total'], len(result['records'])), (2, 2))
+
     def test_tables_crud_schema_rename_and_shared_file(self):
         with self.manager.session() as db:
             db['nodes'].insert_one({'id': 1, 'name': 'N1'})

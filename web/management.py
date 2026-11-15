@@ -78,7 +78,7 @@ class SQLiteManagement:
                         ordering = ' ORDER BY "' + order['column'].replace('"', '""') + '" ' + order['direction']
                     else:
                         ordering = ' ORDER BY ' + ','.join('"' + key + '"' for key in table.primary_keys) if editable else ''
-                    total = connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
+                    total = table_total if editable else connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
                     if exporting and total > self.manager.max_rows:
                         raise APIError(413, '导出结果超过 100,000 行，请增加 SQL 过滤条件')
                     values = connection.execute(f'SELECT * FROM {source}{ordering} LIMIT ? OFFSET ?', (limit, offset)).fetchall()

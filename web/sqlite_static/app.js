@@ -13,6 +13,14 @@ const state = { table: null, tables: [], definition: null, version: null, record
     x: { title: "", labelStep: 1 }
   }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null, sidebarContextTrigger: null, sidebarContextScope: null };
 let sqlHistoryItems = [], sqlHistoryActive = -1;
+let gridCells = new WeakMap(), gridCellEntries = [], gridRowEntries = [], gridColumnEntries = [];
+let selectionFrame = null, chartDrawFrame = null, legendSignature = null, renderedQueryStamp = null, noticeTimer;
+function scheduleGridSelection() {
+  if (selectionFrame === null) selectionFrame = requestAnimationFrame(paintGridSelection);
+}
+function scheduleChartDraw() {
+  if (chartDrawFrame === null) chartDrawFrame = requestAnimationFrame(drawChart);
+}
 const integerTypes = new Set(["int", "integer", "long"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
 const boolTypes = new Set(["bool", "boolean"]);
@@ -220,10 +228,20 @@ async function loadLogConfig() {
   renderLogDates(); renderLogSummary();
 }
 function resetLogPage() { state.logQuery.page = 1; }
-function notice() { /* Compact layout: operation feedback is kept in the persistent log tab. */ }
+function notice(message, error = false) {
+  clearTimeout(noticeTimer);
+  const target = el("operation-notice");
+  target.classList.toggle("is-error", error); target.hidden = !message;
+  target.setAttribute("role", error ? "alert" : "status");
+  el("operation-message").textContent = message || "";
+  if (message && !error) noticeTimer = setTimeout(() => { target.hidden = true; }, 4500);
+}
 async function run(work, errorTarget = null) {
-  if (state.busy) return;
+  if (state.busy) { notice("正在处理，请稍候再操作"); return; }
   state.busy = true; document.body.dataset.busy = "true";
+  el("data-grid").setAttribute("aria-busy", "true");
+  const editingControls = [...el("data-grid").querySelectorAll(".cell-editor:not(:disabled)")];
+  editingControls.forEach((control) => { control.disabled = true; });
   if (errorTarget) el(errorTarget).textContent = "";
   try { await work(); }
   catch (error) { log(error.message, true); if (errorTarget) el(errorTarget).textContent = error.message; else notice(error.message, true); }
@@ -232,6 +250,8 @@ async function run(work, errorTarget = null) {
       try { await loadAuditLogs(); } catch { /* Keep the last visible log when the log endpoint is unavailable. */ }
     }
     state.busy = false; document.body.dataset.busy = "false";
+    el("data-grid").setAttribute("aria-busy", "false");
+    editingControls.forEach((control) => { if (control.isConnected) control.disabled = false; });
   }
 }
 async function request(path, method = "GET", body) {
@@ -434,7 +454,7 @@ function updateEditActions() {
   el("save-cell-edits").textContent = drafts ? `保存修改（新增 ${drafts} 条）` : `保存改单元格（${count}）`;
   el("chart-edit-hint").textContent = [drafts ? `${drafts} 条新增记录待保存` : "", count ? `${count} 个单元格已修改` : ""].filter(Boolean).join(" · ") || "未选择修改";
 }
-function setPendingCell(record, column, raw) {
+function setPendingCell(record, column, raw, updateActions = true) {
   if (isReadOnlyKey(record, column)) return;
   const field = column.eng_name, baseline = record.baseline?.[field];
   let value;
@@ -446,17 +466,28 @@ function setPendingCell(record, column, raw) {
     record.row[field] = value;
     state.pendingEdits.set(cellKey(record, field), { record, column, raw: String(raw ?? "") });
   }
-  updateEditActions();
+  if (updateActions) updateEditActions();
 }
 function renderGridCellValue(record, column, cell) {
   const pending = pendingCell(record, column.eng_name), value = pending ? pending.raw : record.draftId ? cellText(record.row[column.eng_name]) : display(record.row[column.eng_name]);
-  cell.replaceChildren(node("span", value, "cell-value"));
+  if (state.editable && boolTypes.has(columnKind(column)) && !isReadOnlyKey(record, column)) {
+    const input = node("input"); input.type = "checkbox"; input.className = "cell-toggle";
+    input.checked = value === "true" || value === true; input.indeterminate = value === "NULL" || value === "";
+    input.setAttribute("aria-label", `${record.ref?.key.join(" / ") || `新增${record.draftId}`} ${column.eng_name}`);
+    input.onchange = () => {
+      if (state.busy) { renderGridCellValue(record, column, cell); return; }
+      setPendingCell(record, column, String(input.checked)); input.indeterminate = false;
+      cell.classList.toggle("cell-modified", Boolean(pendingCell(record, column.eng_name)));
+      cell.title = pendingCell(record, column.eng_name) ? "已修改，Ctrl+S 保存" : String(input.checked);
+      scheduleChartDraw();
+    };
+    cell.replaceChildren(input);
+  } else cell.replaceChildren(node("span", value, "cell-value"));
   cell.classList.toggle("cell-modified", Boolean(pending));
   cell.title = isReadOnlyKey(record, column) ? "KEY 主键列：可选择，不可修改，冻结在左侧" : record.draftId ? "待新增记录：双击填写，KEY 必填；保存后写入数据库" : pending ? "已修改，保存前仅保留在当前页面" : value;
 }
 function syncGridCell(record, field) {
-  const index = state.records.indexOf(record), cell = [...el("data-grid").querySelectorAll("[data-cell-row][data-cell-field]")]
-    .find((candidate) => candidate.dataset.cellRow === String(index) && candidate.dataset.cellField === field);
+  const cell = gridCells.get(record)?.get(field);
   const column = state.resultColumns.find((item) => item.eng_name === field);
   if (!cell || !column) return;
   const input = cell.querySelector(".cell-editor");
@@ -470,6 +501,7 @@ function syncGridCell(record, field) {
 function inlineCellInput(record, column, index, cell) {
   const kind = columnKind(column);
   if (isReadOnlyKey(record, column) || objectTypes.has(kind) && !record.draftId) return false;
+  if (cell.querySelector(".cell-toggle")) { cell.querySelector(".cell-toggle").focus({ preventScroll: true }); return true; }
   if (cell.querySelector(".cell-editor")) return true;
   const input = node("input"); input.className = "cell-editor"; input.dataset.rowIndex = String(index); input.dataset.field = column.eng_name;
   input.setAttribute("aria-label", `${record.draftId ? `新增${record.draftId}` : record.ref.key.join(" / ")} ${column.eng_name}`);
@@ -481,12 +513,12 @@ function inlineCellInput(record, column, index, cell) {
     const next = input.type === "checkbox" ? String(input.checked) : input.value;
     setPendingCell(record, column, next); input.setCustomValidity("");
     if (!rawMatchesBaseline(column, next, record.baseline?.[column.eng_name])) cell.classList.add("cell-modified"); else cell.classList.remove("cell-modified");
-    drawChart();
+    scheduleChartDraw();
   };
   input.oninput = change; input.onchange = change;
   input.onblur = () => renderGridCellValue(record, column, cell);
   input.onkeydown = (event) => {
-    if (!["Enter", "Escape"].includes(event.key)) return;
+    if (event.isComposing || !["Enter", "Escape", "Tab"].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
     if (event.key === "Escape") {
       input.oninput = input.onchange = null;
@@ -496,6 +528,7 @@ function inlineCellInput(record, column, index, cell) {
       updateEditActions(); drawChart();
     }
     input.blur(); cell.focus({ preventScroll: true });
+    if (event.key !== "Escape") moveGridFocus(index, Number(cell.dataset.cellColumn), event.key, event.shiftKey, false, false);
   };
   const placeholder = cell.querySelector(".cell-value");
   placeholder.classList.add("cell-editor-placeholder");
@@ -555,7 +588,8 @@ async function refreshTables() {
 }
 function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
-  const filename = state.table ? `${state.table}.sqlite3` : "";
+  const item = state.tables.find((entry) => entry.name === state.table);
+  const filename = state.table ? item?.database_file || `${state.table}.sqlite3` : "";
   const directory = state.dataDir.replace(/[\\/]+$/, "");
   const separator = state.dataDir.includes("\\") ? "\\" : "/";
   target.textContent = filename || "未选择数据库";
@@ -572,6 +606,7 @@ async function selectTable(name) {
   state.offset = 0; state.fields = new Set(state.definition.columns.map((column) => column.eng_name));
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear(); state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
   state.records = []; state.resultColumns = []; state.lastQuery = null; state.pendingEdits.clear(); updateEditActions();
+  el("data-grid").scrollTop = 0; el("data-grid").scrollLeft = 0;
   clearAddedChartSeries(); state.chartQueryKey = null;
   el("sql-editor").value = defaultSql();
   el("current-table").textContent = `${chineseName(state.definition.head)} / ${name}`;
@@ -591,6 +626,7 @@ async function refresh() {
   }
 }
 function resetSelection() {
+  renderedQueryStamp = null;
   state.table = null; state.definition = null; state.version = null; state.records = []; state.total = 0; state.tableTotal = 0;
   renderCurrentDatabaseFile();
   state.history = []; closeSqlHistory();
@@ -620,17 +656,26 @@ function renderFields() {
 }
 function updateFieldCount() { el("field-count").textContent = `${state.fields.size} / ${state.resultColumns.length}`; }
 const defaultSql = () => state.table ? `SELECT * FROM "${state.table}"` : "";
-async function queryRows({ reset = false, silent = false, sql = state.lastQuery?.sql || defaultSql(), order = state.lastQuery?.order || null } = {}) {
+async function queryRows({ reset = false, silent = false, sql = state.lastQuery?.sql || defaultSql(), order = state.lastQuery?.order || null, offset = state.offset } = {}) {
   if (!state.table) return;
   if (hasPendingData()) { if (silent) return; throw new Error("请先保存或撤销待新增记录和单元格修改"); }
-  if (reset) state.offset = 0;
-  const result = await request(tablePath("sql"), "POST", { sql, order, readonly_only: true, limit: Number(el("page-size").value), offset: state.offset });
-  if (state.offset >= result.total && state.offset > 0) {
-    state.offset = Math.max(0, Math.ceil(result.total / result.limit) - 1) * result.limit;
-    return queryRows({ silent, sql, order });
+  if (reset) offset = 0;
+  const result = await request(tablePath("sql"), "POST", { sql, order, readonly_only: true, limit: Number(el("page-size").value), offset });
+  if (offset >= result.total && offset > 0) {
+    offset = Math.max(0, Math.ceil(result.total / result.limit) - 1) * result.limit;
+    return queryRows({ silent, sql, order, offset });
   }
+  const changedPage = reset || offset !== state.offset;
+  state.offset = offset; state.pageSize = result.limit;
   const previousColumns = state.resultColumns;
   const chartQueryKey = JSON.stringify([state.table, sql, order, state.offset, result.limit]);
+  const stamp = JSON.stringify([chartQueryKey, state.version, result.columns, result.editable,
+    result.editable ? result.records.map((record) => record.ref) : result.rows]);
+  if (silent && stamp === renderedQueryStamp) {
+    state.total = result.total; state.tableTotal = result.table_total;
+    updateGridPager(); updateQueryFeedback(result, sql);
+    return;
+  }
   if (state.chartQueryKey !== chartQueryKey || !result.editable) clearAddedChartSeries();
   state.chartQueryKey = chartQueryKey;
   const changedColumns = JSON.stringify(previousColumns.map((column) => column.eng_name)) !== JSON.stringify(result.columns);
@@ -641,18 +686,25 @@ async function queryRows({ reset = false, silent = false, sql = state.lastQuery?
   if (changedColumns) state.fields = new Set(result.columns);
   state.total = result.total; state.tableTotal = result.table_total; state.editable = result.editable; updateSchemaLocks();
   state.lastQuery = { sql, order }; state.records = result.editable ? result.records : result.rows.map((row) => ({ row }));
+  renderedQueryStamp = stamp;
   state.records.forEach((record) => { record.baseline = structuredClone(record.row); });
+  if (changedPage) el("data-grid").scrollTop = 0;
   rebindAddedChartSeries();
   state.pendingEdits.clear(); updateEditActions();
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear(); state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
   resetChartCursor();
   renderFields(); renderGrid();
   if (JSON.stringify(previousColumns) !== JSON.stringify(state.resultColumns)) configureChart();
-  el("row-range").title = `${result.elapsed_ms.toFixed(1)} ms · ${sql}`;
-  el("last-refresh").textContent = `更新于 ${new Date().toLocaleTimeString()}`;
-  const item = state.tables.find((entry) => entry.name === state.table); if (item) item.row_count = result.table_total; renderTables();
+  updateQueryFeedback(result, sql);
   if (!silent) log(`查询 ${state.table}：${result.total} 条，当前页 ${state.records.length} 条；${sql}`);
   drawChart();
+}
+function updateQueryFeedback(result, sql) {
+  const elapsed = Number(result.elapsed_ms || 0).toFixed(1);
+  el("row-range").title = `${elapsed} ms · ${sql}`;
+  el("last-refresh").textContent = `更新于 ${new Date().toLocaleTimeString()} · ${elapsed} ms`;
+  const item = state.tables.find((entry) => entry.name === state.table);
+  if (item && item.row_count !== result.table_total) { item.row_count = result.table_total; renderTables(); }
 }
 function display(value) { return value == null ? "NULL" : typeof value === "object" ? JSON.stringify(value) : String(value); }
 function closeRowContextMenu(restoreFocus = false) {
@@ -786,9 +838,10 @@ function updateFrozenKeyOffsets() {
   const corner = grid?.querySelector(".row-corner");
   if (!corner || !corner.getBoundingClientRect().width) return;
   let offset = corner.getBoundingClientRect().width;
-  grid.querySelectorAll("thead .key-column").forEach((header) => {
+  const widths = [...grid.querySelectorAll("thead .key-column")].map((header) => [header, header.getBoundingClientRect().width]);
+  widths.forEach(([header, width]) => {
     grid.style.setProperty(`--key-left-${header.dataset.frozenIndex}`, `${offset}px`);
-    offset += header.getBoundingClientRect().width;
+    offset += width;
   });
 }
 const frozenKeyObserver = new ResizeObserver(updateFrozenKeyOffsets);
@@ -829,16 +882,16 @@ function selectGridCells(startRow, startColumn, endRow, endColumn, additive = fa
   for (let rowIndex = firstRow; rowIndex <= lastRow; rowIndex++) for (let columnIndex = firstColumn; columnIndex <= lastColumn; columnIndex++) {
     const column = columns[columnIndex]; if (column) state.selectedCells.add(cellSelectionKey(rowIndex, column.eng_name));
   }
-  state.cellAnchor = { row: startRow, column: startColumn }; clearGridSelection("cells"); paintGridSelection();
+  state.cellAnchor = { row: startRow, column: startColumn }; clearGridSelection("cells"); scheduleGridSelection();
 }
 function startCellSelection(event, rowIndex, columnIndex) {
-  if (event.button !== 0 || event.target.closest(".cell-editor")) return;
+  if (state.busy || event.button !== 0 || event.target.closest(".cell-editor, .cell-toggle")) return;
   event.currentTarget.focus({ preventScroll: true });
   const additive = event.ctrlKey || event.metaKey;
   const anchor = event.shiftKey && state.cellAnchor ? { ...state.cellAnchor } : { row: rowIndex, column: columnIndex };
   const base = additive ? new Set(state.selectedCells) : new Set();
   selectGridCells(anchor.row, anchor.column, rowIndex, columnIndex, additive);
-  state.cellDrag = { pointerId: event.pointerId, ...anchor, base, moved: false };
+  state.cellDrag = { pointerId: event.pointerId, ...anchor, base, moved: false, lastRow: rowIndex, lastColumn: columnIndex };
   document.documentElement.classList.add("selecting-cells"); event.preventDefault();
 }
 function updateCellSelectionFromPointer(event) {
@@ -846,6 +899,8 @@ function updateCellSelectionFromPointer(event) {
   const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-cell-row][data-cell-column]");
   if (!target) return;
   const rowIndex = Number(target.dataset.cellRow), columnIndex = Number(target.dataset.cellColumn);
+  if (rowIndex === drag.lastRow && columnIndex === drag.lastColumn) return;
+  drag.lastRow = rowIndex; drag.lastColumn = columnIndex;
   if (rowIndex !== drag.row || columnIndex !== drag.column) drag.moved = true;
   state.selectedCells = new Set(drag.base);
   selectGridCells(drag.row, drag.column, rowIndex, columnIndex, true);
@@ -853,17 +908,23 @@ function updateCellSelectionFromPointer(event) {
 function finishCellSelection(event) {
   const drag = state.cellDrag; if (!drag) return;
   state.cellDrag = null; document.documentElement.classList.remove("selecting-cells");
+  if (selectionFrame !== null) paintGridSelection();
 }
 function gridSelectionModel() {
   const columns = visibleGridColumns();
   if (!columns.length || !state.records.length) return null;
   let rows = [], columnIndexes = [];
   if (state.selectedCells.size) {
-    const cells = [...state.selectedCells].map(splitCellSelectionKey).filter(({ index, field }) => state.records[index] && columns.some((column) => column.eng_name === field));
-    if (!cells.length) return null;
-    const rowIndexes = cells.map(({ index }) => index), indexes = cells.map(({ field }) => columns.findIndex((column) => column.eng_name === field)).filter((index) => index >= 0);
-    rows = rangeIndexes(Math.min(...rowIndexes), Math.max(...rowIndexes));
-    columnIndexes = rangeIndexes(Math.min(...indexes), Math.max(...indexes));
+    const positions = new Map(columns.map((column, index) => [column.eng_name, index]));
+    let firstRow = Infinity, lastRow = -1, firstColumn = Infinity, lastColumn = -1;
+    for (const key of state.selectedCells) {
+      const { index, field } = splitCellSelectionKey(key), position = positions.get(field);
+      if (!state.records[index] || position === undefined) continue;
+      firstRow = Math.min(firstRow, index); lastRow = Math.max(lastRow, index);
+      firstColumn = Math.min(firstColumn, position); lastColumn = Math.max(lastColumn, position);
+    }
+    if (lastRow < 0) return null;
+    rows = rangeIndexes(firstRow, lastRow); columnIndexes = rangeIndexes(firstColumn, lastColumn);
   } else if (state.selected.size && state.selectedColumns.size) {
     rows = [...state.selected].filter((index) => state.records[index]).sort((left, right) => left - right);
     columnIndexes = columns.map((_column, index) => index).filter((index) => state.selectedColumns.has(columns[index].eng_name));
@@ -933,7 +994,7 @@ async function pasteClipboardText(text) {
     }
   }
   if (!changes.length) throw new Error("粘贴区域只包含 KEY 列，没有可修改的字段");
-  changes.forEach(({ record, column, raw }) => setPendingCell(record, column, raw));
+  changes.forEach(({ record, column, raw }) => setPendingCell(record, column, raw, false));
   changes.forEach(({ record, column }) => syncGridCell(record, column.eng_name));
   paintGridSelection(); drawChart(); updateEditActions();
   const message = `已粘贴 ${changes.length} 个单元格${skippedKeys ? `，跳过 ${skippedKeys} 个 KEY 单元格` : ""}，请保存改单元格`;
@@ -954,21 +1015,27 @@ function syncChartFieldsToGridSelection() {
   el("chart-fields").querySelectorAll("input").forEach((input) => { input.checked = state.chartFields.has(input.dataset.field); });
 }
 function paintGridSelection() {
+  if (selectionFrame !== null) cancelAnimationFrame(selectionFrame);
+  selectionFrame = null;
   const boxModel = (state.selectedCells.size || state.selectedColumns.size) ? gridSelectionModel() : null;
   const boxRows = new Set(boxModel?.rows || []), boxColumns = new Set(boxModel?.columnIndexes || []);
   const firstRow = boxModel?.rows[0], lastRow = boxModel ? boxModel.rows[boxModel.rows.length - 1] : undefined, firstColumn = boxModel?.columnIndexes[0], lastColumn = boxModel ? boxModel.columnIndexes[boxModel.columnIndexes.length - 1] : undefined;
-  document.querySelectorAll("#data-grid [data-grid-row]").forEach((row) => row.classList.toggle("selected", state.selected.has(Number(row.dataset.gridRow))));
-  document.querySelectorAll("#data-grid [data-grid-column]").forEach((header) => header.classList.toggle("selected-header", state.selectedColumns.has(header.dataset.gridColumn)));
-  document.querySelectorAll("#data-grid [data-cell-row][data-cell-field]").forEach((cell) => {
-    const row = Number(cell.dataset.cellRow), column = Number(cell.dataset.cellColumn), selected = state.selectedColumns.has(cell.dataset.cellField) || state.selectedCells.has(cellSelectionKey(row, cell.dataset.cellField));
-    cell.classList.toggle("cell-selected", selected);
+  gridRowEntries.forEach(({ element, index }) => element.classList.toggle("selected", state.selected.has(index)));
+  gridColumnEntries.forEach(({ element, field }) => element.classList.toggle("selected-header", state.selectedColumns.has(field)));
+  gridCellEntries.forEach((entry) => {
+    const { cell, row, column, field, key } = entry, selected = state.selectedColumns.has(field) || state.selectedCells.has(key);
+    if (entry.selected !== selected) { cell.classList.toggle("cell-selected", selected); entry.selected = selected; }
     const boxed = Boolean(boxModel && boxRows.has(row) && boxColumns.has(column)), shadows = [];
     if (boxed && row === firstRow) shadows.push("inset 0 2px #4e8fec");
     if (boxed && row === lastRow) shadows.push("inset 0 -2px #4e8fec");
     if (boxed && column === firstColumn) shadows.push("inset 2px 0 #4e8fec");
     if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
-    cell.style.boxShadow = shadows.join(", ");
+    const shadow = shadows.join(", ");
+    if (entry.shadow !== shadow) { cell.style.boxShadow = shadow; entry.shadow = shadow; }
   });
+  const model = boxModel || gridSelectionModel();
+  const count = state.selectedCells.size || (model ? model.rows.length * model.columns.length : 0);
+  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "方向键移动 · Shift 扩选 · Ctrl+S 保存";
 }
 function renderGrid() {
   finishCellSelection();
@@ -979,11 +1046,13 @@ function renderGrid() {
   state.selectedCells = new Set([...state.selectedCells].filter((key) => visible.has(splitCellSelectionKey(key).field)));
   state.columnAnchor = state.cellAnchor = null;
   closeRowContextMenu();
-  const target = el("data-grid"); target.replaceChildren();
-  if (!state.resultColumns.length) target.append(node("div", "从左侧选择表，或点击“新建”开始。", "empty"));
+  const target = el("data-grid"), scrollTop = target.scrollTop, scrollLeft = target.scrollLeft;
+  gridCells = new WeakMap(); gridCellEntries = []; gridRowEntries = []; gridColumnEntries = [];
+  if (!state.resultColumns.length) target.replaceChildren(node("div", "从左侧选择表，或点击“新建”开始。", "empty"));
   else {
     const columns = visibleGridColumns();
     const grid = node("table"), head = node("tr"), thead = node("thead");
+    grid.setAttribute("aria-label", state.table || "查询结果");
     {
       const corner = node("th", "↖", "row-corner"); corner.scope = "col"; corner.title = "选择当前页全部行和列"; corner.setAttribute("aria-label", "选择当前页全部单元格");
       corner.onclick = () => { state.selected = new Set(state.records.map((_record, index) => index)); state.selectedColumns = new Set(columns.map((column) => column.eng_name)); state.selectedCells.clear(); state.rowAnchor = state.records.length - 1; state.columnAnchor = columns.length - 1; state.cellAnchor = null; paintGridSelection(); };
@@ -991,8 +1060,11 @@ function renderGrid() {
     }
     columns.forEach((column, columnIndex) => {
       const header = node("th", null, `column-header${state.selectedColumns.has(column.eng_name) ? " selected-header" : ""}`); header.scope = "col"; header.dataset.gridColumn = column.eng_name; header.tabIndex = 0;
+      gridColumnEntries.push({ element: header, field: column.eng_name });
       const sorted = state.lastQuery?.order?.column === column.eng_name, direction = state.lastQuery?.order?.direction;
       const sorting = sorted ? direction === "ASC" ? " ↑" : " ↓" : "";
+      header.setAttribute("aria-sort", sorted ? direction === "ASC" ? "ascending" : "descending" : "none");
+      header.title = `${chineseName(column)} / ${column.eng_name} · ${displayColumnType(column)}；单击选择，双击排序`;
       header.append(node("span", (el("chinese-columns").checked ? chineseName(column) : column.eng_name) + sorting));
       if (column.primary_key) {
         markFrozenKey(header, columnIndex);
@@ -1011,21 +1083,26 @@ function renderGrid() {
     thead.append(head); grid.append(thead); const body = node("tbody");
     state.records.forEach((record, index) => {
       const row = node("tr", null, state.selected.has(index) ? "selected" : ""); row.dataset.gridRow = String(index);
+      gridRowEntries.push({ element: row, index });
+      const recordCells = new Map(); gridCells.set(record, recordCells);
       row.classList.toggle("draft-row", Boolean(record.draftId));
       row.addEventListener("contextmenu", (event) => openRowContextMenu(event, record, index));
       {
         const rowHeader = node("th", record.draftId ? `新${record.draftId}` : String(state.offset + index + 1), "row-header"); rowHeader.scope = "row"; rowHeader.dataset.gridRow = String(index); rowHeader.title = record.draftId ? "待新增记录，保存后写入数据库" : `选择第 ${state.offset + index + 1} 行：${record.ref?.key.join(" / ") || ""}`;
         rowHeader.onclick = (event) => selectGridRow(index, event); row.append(rowHeader);
+        gridRowEntries.push({ element: rowHeader, index });
       }
       columns.forEach((column, columnIndex) => {
         const cell = node("td", null, "value"); cell.dataset.cellRow = String(index); cell.dataset.cellColumn = String(columnIndex); cell.dataset.cellField = column.eng_name;
         cell.tabIndex = -1;
+        recordCells.set(column.eng_name, cell);
+        gridCellEntries.push({ cell, row: index, column: columnIndex, field: column.eng_name, key: cellSelectionKey(index, column.eng_name) });
         if (column.primary_key) markFrozenKey(cell, columnIndex);
         cell.classList.toggle("cell-selected", state.selectedCells.has(cellSelectionKey(index, column.eng_name)));
         cell.addEventListener("pointerdown", (event) => { startCellSelection(event, index, columnIndex); });
         renderGridCellValue(record, column, cell);
         if (state.editable && !isReadOnlyKey(record, column)) cell.ondblclick = (event) => {
-          if (event.target.closest(".cell-editor") || state.busy) return;
+          if (event.target.closest(".cell-editor, .cell-toggle") || state.busy) return;
           event.preventDefault();
           if (!inlineCellInput(record, column, index, cell)) run(() => openRow("edit", record));
         };
@@ -1034,19 +1111,45 @@ function renderGrid() {
       body.append(row);
     });
     if (!state.records.length) { const row = node("tr"), cell = node("td", "当前 SQL 查询没有记录。", "empty"); cell.colSpan = columns.length + 1; row.append(cell); body.append(row); }
-    grid.append(body); target.append(grid);
+    grid.append(body); target.replaceChildren(grid);
     frozenKeyObserver.observe(grid);
     grid.querySelectorAll("thead .key-column, .row-corner").forEach((header) => frozenKeyObserver.observe(header));
     updateFrozenKeyOffsets();
   }
   paintGridSelection();
+  target.scrollTop = scrollTop; target.scrollLeft = scrollLeft;
   updateEditActions();
+  updateGridPager();
+}
+function updateGridPager() {
   const pageSize = Number(el("page-size").value), pages = Math.max(1, Math.ceil(state.total / pageSize));
   el("page-number").value = String(Math.floor(state.offset / pageSize) + 1); el("page-number").max = String(pages); el("page-total").textContent = pages;
   el("prev").disabled = state.offset === 0; el("next").disabled = state.offset + pageSize >= state.total;
   const drafts = draftRecords().length;
   const savedCount = state.records.length - drafts;
   el("row-range").textContent = (savedCount ? `${state.offset + 1}–${state.offset + savedCount} / ${state.total.toLocaleString()} 条` : `当前页 0 / ${state.total.toLocaleString()} 条`) + (drafts ? ` · 新增 ${drafts} 条待保存` : "");
+}
+function moveGridFocus(row, column, key, shift = false, control = false, extend = shift) {
+  const columns = visibleGridColumns(), lastRow = state.records.length - 1, lastColumn = columns.length - 1;
+  if (lastRow < 0 || lastColumn < 0) return;
+  let nextRow = row, nextColumn = column;
+  if (key === "Home" || key === "End") {
+    nextColumn = key === "Home" ? 0 : lastColumn;
+    if (control) nextRow = key === "Home" ? 0 : lastRow;
+  } else if (key === "Tab") {
+    const position = Math.max(0, Math.min(lastRow * columns.length + lastColumn, row * columns.length + column + (shift ? -1 : 1)));
+    nextRow = Math.floor(position / columns.length); nextColumn = position % columns.length;
+  } else if (key === "Enter") nextRow += shift ? -1 : 1;
+  else if (key === "ArrowUp") nextRow--;
+  else if (key === "ArrowDown") nextRow++;
+  else if (key === "ArrowLeft") nextColumn--;
+  else if (key === "ArrowRight") nextColumn++;
+  nextRow = Math.max(0, Math.min(lastRow, nextRow)); nextColumn = Math.max(0, Math.min(lastColumn, nextColumn));
+  const anchor = extend && state.cellAnchor ? state.cellAnchor : { row: nextRow, column: nextColumn };
+  selectGridCells(anchor.row, anchor.column, nextRow, nextColumn);
+  const target = gridCells.get(state.records[nextRow])?.get(columns[nextColumn].eng_name);
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 function openAddRows(record, index) {
   requireTable();
@@ -1627,6 +1730,10 @@ function buildChartModel() {
 }
 function renderChartLegend(model) {
   const target = el("chart-legend"), focused = target.contains(document.activeElement) ? document.activeElement : null;
+  const signature = JSON.stringify([state.chartPinned, model.series.map((series) =>
+    [series.key, series.name, series.axis, series.style?.lineColor || series.color, state.chartHidden.has(series.key)])]);
+  if (signature === legendSignature && target.childElementCount === model.series.length) return;
+  legendSignature = signature;
   const focusedKey = focused?.closest(".legend-item")?.dataset.seriesKey, focusedControl = focused?.dataset.legendControl;
   const scrollLeft = target.scrollLeft, scrollTop = target.scrollTop;
   target.replaceChildren();
@@ -1716,6 +1823,8 @@ function drawChartTitle(context, width, height) {
   context.restore();
 }
 function drawChart() {
+  if (chartDrawFrame !== null) cancelAnimationFrame(chartDrawFrame);
+  chartDrawFrame = null;
   if (!el("tab-chart").classList.contains("active") || document.documentElement.classList.contains("chart-collapsed")) return;
   const canvas = el("chart"), context = canvas.getContext("2d"), model = buildChartModel();
   for (const control of [el("chart-mode").closest("label"), el("chart-x").closest("label"), el("chart-fields")]) control.hidden = state.chartPinned;
@@ -1733,7 +1842,10 @@ function drawChart() {
   if (state.chartTitle && canvas.clientHeight < chartTitleSpace() + 136) chartLayout.expand();
   const width = canvas.clientWidth, height = canvas.clientHeight, ratio = devicePixelRatio || 1;
   if (!width || !height) return;
-  canvas.width = width * ratio; canvas.height = height * ratio; context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.fillStyle = "white"; context.fillRect(0, 0, width, height); context.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
   const titleSpace = chartTitleSpace();
   const titleAtTop = state.chartTitleSettings.position.startsWith("top-");
@@ -1753,7 +1865,7 @@ function drawChart() {
   }
   context.strokeStyle = "#b8c5d5"; context.beginPath(); context.moveTo(left, top); context.lineTo(left, height - bottom); context.lineTo(width - right, height - bottom); context.lineTo(width - right, top); context.stroke();
   context.fillStyle = "#6e7f95"; context.textAlign = "center";
-  const labelStep = Math.max(1, Math.round(Number(state.chartAxisSettings.x.labelStep) || 1));
+  const labelStep = Math.max(1, Math.round(Number(state.chartAxisSettings.x.labelStep) || 1), Math.ceil(model.labels.length / Math.max(1, plotWidth / 80)));
   const ticks = [...new Set([...Array.from({ length: model.labels.length }, (_unused, index) => index).filter((index) => index % labelStep === 0), Math.max(0, model.labels.length - 1)])];
   ticks.forEach((index) => context.fillText(String(model.labels[index]).slice(0, 18), pointX(index), height - bottom + 26));
   context.textAlign = "center"; if (state.chartAxisSettings.x.title) context.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - bottom + 42);
@@ -1812,9 +1924,10 @@ function updateChartDrag(event) {
     const fraction = x === previous.x ? 1 : Math.max(0, Math.min(1, (hit.x - previous.x) / (x - previous.x)));
     const value = chartValueAt(previous.y + (y - previous.y) * fraction, hit.axis); if (!Number.isFinite(value)) continue;
     if (integerTypes.has(columnKind(hit.point.column)) && !Number.isSafeInteger(Math.round(value))) continue;
-    rememberDragChange(hit); setPendingCell(hit.point.record, hit.point.column, formatChartValue(value, hit.point.column)); syncGridCell(hit.point.record, hit.point.field);
+    rememberDragChange(hit); setPendingCell(hit.point.record, hit.point.column, formatChartValue(value, hit.point.column), false); syncGridCell(hit.point.record, hit.point.field);
   }
-  drag.previous = { x, y }; drag.moved = drag.changes.size > 0; state.chartCursor.index = nearest.index; state.chartCursor.y = y; drawChart();
+  updateEditActions();
+  drag.previous = { x, y }; drag.moved = drag.changes.size > 0; state.chartCursor.index = nearest.index; state.chartCursor.y = y; scheduleChartDraw();
 }
 function finishChartDrag(cancel = false) {
   const drag = state.chartDrag; if (!drag) return; state.chartDrag = null;
@@ -1830,12 +1943,13 @@ function chartPointerMove(event) {
   if (state.chartDrag) { updateChartDrag(event); return; }
   if (state.chartCursor.pinned) return;
   const frame = state.chartFrame; if (!frame) return; const { x, y } = chartCanvasPoint(event);
-  if (x < frame.left || x > frame.left + frame.plotWidth || y < frame.top || y > frame.top + frame.plotHeight) { if (!state.chartCursor.pinned) { state.chartCursor.index = -1; drawChart(); } return; }
+  if (x < frame.left || x > frame.left + frame.plotWidth || y < frame.top || y > frame.top + frame.plotHeight) { if (state.chartCursor.index !== -1) { state.chartCursor.index = -1; scheduleChartDraw(); } return; }
   const index = frame.labels.length <= 1 ? 0 : Math.max(0, Math.min(frame.labels.length - 1, Math.round((x - frame.left) / frame.plotWidth * (frame.labels.length - 1))));
-  state.chartCursor.index = index; state.chartCursor.y = y; drawChart();
+  if (state.chartCursor.index === index && state.chartCursor.y === y) return;
+  state.chartCursor.index = index; state.chartCursor.y = y; scheduleChartDraw();
 }
 function chartPointerDown(event) {
-  const frame = state.chartFrame; if (!frame || event.button !== 0) return;
+  const frame = state.chartFrame; if (state.busy || !frame || event.button !== 0) return;
   const { x, y } = chartCanvasPoint(event), hit = nearestChartHit(x, y);
   if (hit && state.editable && canDragChartPoint(hit.point) && Math.hypot(hit.x - x, hit.y - y) <= 12) {
     event.preventDefault(); state.chartDrag = { pointerId: event.pointerId, seriesKey: hit.seriesKey, ranges: structuredClone(frame.ranges), changes: new Map(), moved: false, previous: { x, y } }; el("chart").setPointerCapture(event.pointerId); return;
@@ -2157,6 +2271,32 @@ el("data-grid").addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() !== "c") return;
   event.preventDefault(); event.stopPropagation(); void run(copySelectedCells);
 });
+el("data-grid").addEventListener("keydown", (event) => {
+  if (state.busy || event.isComposing || event.altKey || event.target.matches("input, select, textarea")) return;
+  const control = event.ctrlKey || event.metaKey;
+  if (control && event.key.toLowerCase() === "a") {
+    event.preventDefault(); selectGridCells(0, 0, state.records.length - 1, visibleGridColumns().length - 1); return;
+  }
+  if (control && !["Home", "End"].includes(event.key)) return;
+  if (event.key === "Escape") { clearGridSelection(); paintGridSelection(); return; }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Tab"].includes(event.key)) return;
+  const cell = event.target.closest("[data-cell-row][data-cell-column]");
+  const row = cell ? Number(cell.dataset.cellRow) : state.cellAnchor?.row || 0;
+  const column = cell ? Number(cell.dataset.cellColumn) : state.cellAnchor?.column || 0;
+  if (event.key === "Tab" && ((event.shiftKey && row === 0 && column === 0) ||
+      (!event.shiftKey && row === state.records.length - 1 && column === visibleGridColumns().length - 1))) return;
+  event.preventDefault();
+  moveGridFocus(row, column, event.key, event.shiftKey, control, event.shiftKey && !["Tab", "Enter"].includes(event.key));
+});
+el("dismiss-notice").onclick = () => { clearTimeout(noticeTimer); el("operation-notice").hidden = true; };
+document.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s" || event.altKey || event.isComposing || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  if (state.busy) return;
+  if (el("tab-schema").classList.contains("active")) { if (state.schemaDirty) run(saveSchema); else notice("表结构没有待保存修改"); }
+  else if (hasPendingData()) { document.activeElement?.blur(); run(saveCellEdits); }
+  else notice("没有待保存修改");
+});
 el("data-grid").addEventListener("paste", (event) => {
   if (event.target.closest(".cell-editor")) return;
   const text = event.clipboardData?.getData("text/plain");
@@ -2210,12 +2350,22 @@ window.addEventListener("resize", () => { closeRowContextMenu(); closeChartConte
 for (const id of ["table-filter", "exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
 el("refresh").onclick = () => run(refresh);
 el("query").onclick = () => run(executeSql);
-el("page-size").onchange = () => run(() => queryRows({ reset: true }));
+el("page-size").onchange = () => {
+  if (state.busy) { el("page-size").value = String(state.pageSize || 100); return; }
+  run(async () => {
+    try { await queryRows({ reset: true }); }
+    catch (error) { el("page-size").value = String(state.pageSize || 100); throw error; }
+  });
+};
 el("chinese-columns").onchange = () => { renderGrid(); drawChart(); };
-el("prev").onclick = () => run(async () => { state.offset = Math.max(0, state.offset - Number(el("page-size").value)); await queryRows(); });
-el("next").onclick = () => run(async () => { state.offset += Number(el("page-size").value); await queryRows(); });
+el("prev").onclick = () => run(() => queryRows({ offset: Math.max(0, state.offset - Number(el("page-size").value)) }));
+el("next").onclick = () => run(() => queryRows({ offset: state.offset + Number(el("page-size").value) }));
 el("go-page").onclick = () => run(async () => { const page = Number(el("page-number").value), size = Number(el("page-size").value);
-  if (!Number.isInteger(page) || page < 1 || page > Math.max(1, Math.ceil(state.total / size))) throw new Error("页码超出范围"); state.offset = (page - 1) * size; await queryRows(); });
+  try {
+    if (!Number.isInteger(page) || page < 1 || page > Math.max(1, Math.ceil(state.total / size))) throw new Error("页码超出范围");
+    await queryRows({ offset: (page - 1) * size });
+  } finally { updateGridPager(); }
+});
 el("save-cell-edits").onclick = () => run(saveCellEdits);
 el("discard-cell-edits").onclick = () => run(discardCellEdits);
 el("add-rows-form").onsubmit = (event) => {
@@ -2320,7 +2470,7 @@ el("chart").addEventListener("keydown", (event) => {
   event.preventDefault(); const last = state.chartFrame.labels.length - 1, current = state.chartCursor.index < 0 ? 0 : state.chartCursor.index;
   state.chartCursor.index = event.key === "Home" ? 0 : event.key === "End" ? last : Math.max(0, Math.min(last, current + (event.key === "ArrowLeft" ? -1 : 1))); state.chartCursor.pinned = true; drawChart();
 });
-el("save-chart").onclick = () => run(() => { if (el("chart").hidden) throw new Error("没有可导出的曲线"); const anchor = node("a"); anchor.href = el("chart").toDataURL("image/png"); anchor.download = `${state.table}-chart.png`; anchor.click(); });
+el("save-chart").onclick = () => run(() => { drawChart(); if (el("chart").hidden) throw new Error("没有可导出的曲线"); const anchor = node("a"); anchor.href = el("chart").toDataURL("image/png"); anchor.download = `${state.table}-chart.png`; anchor.click(); });
 el("query-logs").onclick = () => run(async () => {
   state.logQuery = { ...state.logQuery, date: el("log-date").value, keyword: el("log-keyword").value.trim(),
     category: el("log-category").value, status: el("log-status").value,

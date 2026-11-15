@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from core import SQLiteDatabase, SchemaRegistry, load_database_definition
+from core.sqlite_schema import load_embedded_database
 
 
 def definition(name, label, key):
@@ -49,6 +50,7 @@ class SQLiteMultiDatabaseTests(unittest.TestCase):
             with SQLiteDatabase(root / 'sqlite_dat', schema_directory=schema) as db:
                 self.assertEqual(db['nodes'].get_by_pk(1)['name'], 'N1')
                 self.assertEqual(db['lines'].get_by_pk(7)['name'], 'L7')
+                self.assertEqual(load_embedded_database(db['nodes'].path).chn_name, 'EMS 数据库')
             (schema / 'ems.json').unlink()
             with SQLiteDatabase(root / 'sqlite_dat', schema_directory=schema) as db:
                 self.assertEqual(db['nodes'].get_by_pk(1)['name'], 'N1')

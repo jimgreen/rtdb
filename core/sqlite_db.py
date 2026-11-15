@@ -32,7 +32,10 @@ from .file_mapped_db import (
     _parse_order_by, _sort_rows, _unquote_identifier, _validate_identifier,
 )
 from .table_schema import SchemaError, SchemaRegistry
-from .sqlite_schema import ensure_embedded_schema, load_embedded_database, write_embedded_definition
+from .sqlite_schema import (
+    EMBEDDED_TABLES, EMBEDDED_TABLES_TABLE, ensure_embedded_schema,
+    load_embedded_database, write_embedded_definition,
+)
 
 __all__ = ['SQLiteDatabase', 'SQLiteTable', 'SQLiteTableKeyValue',
            'SQLiteTableReadPipeline', 'SQLiteTableWriteBatch', 'SQLiteStorageError',
@@ -106,7 +109,7 @@ class SQLiteTable(MutableSequence):
             if old:
                 if old[0] != fingerprint:
                     raise SchemaError(f'SQLite {self.name}: schema differs from stored definition')
-                write_embedded_definition(c, definition, ensure_database_name)
+                write_embedded_definition(c, definition, ensure_database_name, self.database_label)
                 return
             parts = ['_pos INTEGER PRIMARY KEY AUTOINCREMENT']
             for field, column in self._fields.items():
@@ -129,14 +132,39 @@ class SQLiteTable(MutableSequence):
                       f'UPDATE {self._metadata_sql} SET row_count=row_count+1; END')
             c.execute(f'CREATE TRIGGER {_quote_sql_name(trigger_prefix + "count_delete")} AFTER DELETE ON {self._data_sql} BEGIN '
                       f'UPDATE {self._metadata_sql} SET row_count=row_count-1; END')
-            write_embedded_definition(c, definition, ensure_database_name)
+            write_embedded_definition(c, definition, ensure_database_name, self.database_label)
         try:
-            self._write(initialize)
+            if not self._open_existing(fingerprint):
+                self._write(initialize)
+                self.database._embedded_cache = None
             self._schema_fingerprint = fingerprint
-            self.database._embedded_cache = None
         except BaseException:
             self.close()
             raise
+
+    def _open_existing(self, fingerprint):
+        """Check initialized tables in one read snapshot, without taking a writer lock."""
+        with self._read_transaction() as c:
+            required = (*EMBEDDED_TABLES, self._metadata_name, self._data_name)
+            found = {row[0] for row in c.execute(
+                'SELECT name FROM sqlite_master WHERE type=\'table\' AND name IN (' +
+                ','.join('?' for _ in required) + ')', required)}
+            if not set(required) <= found:
+                return False  # New table or first-time migration of legacy metadata.
+            stored = c.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
+            if stored is None:
+                return False
+            if stored[0] != fingerprint:
+                raise SchemaError(f'SQLite {self.name}: schema differs from stored definition')
+            embedded = c.execute(
+                f'SELECT fingerprint FROM {_quote_sql_name(EMBEDDED_TABLES_TABLE)} WHERE table_name=?',
+                (self.name,),
+            ).fetchone()
+            if embedded is None:
+                return False
+            if embedded[0] != fingerprint:
+                raise SchemaError(f'SQLite {self.name}: embedded schema changed; reopen the database')
+            return True
 
     def _connection(self):
         self.database._check_open()
@@ -370,7 +398,11 @@ class SQLiteTable(MutableSequence):
         if condition is None:
             raise ValueError('batch conditions require scalar equalities')
         sql, args = condition
-        if strict:
+        # The primary-key index already guarantees uniqueness. Check the DML
+        # rowcount in this transaction instead of probing each key twice.
+        primary = (strict and limit is None and isinstance(where, Mapping)
+                   and set(where) == set(self.primary_keys))
+        if strict and not primary:
             count = c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
             if count > 1:
                 raise ValueError('key is not unique')
@@ -382,12 +414,18 @@ class SQLiteTable(MutableSequence):
             sql = f' _pos IN (SELECT _pos FROM {self._data_sql} WHERE '+sql+' ORDER BY _pos LIMIT ?)'
             args = [*args, limit]
         if kind == 'delete':
-            return c.execute(f'DELETE FROM {self._data_sql} WHERE '+sql, args).rowcount
-        if not patch:
-            return c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
-        assignments = ','.join(self._fields[f]+'=?' for f in patch)
-        return c.execute(f'UPDATE {self._data_sql} SET '+assignments+' WHERE '+sql,
-                         [*(self._encode(f, v) for f,v in patch.items()), *args]).rowcount
+            count = c.execute(f'DELETE FROM {self._data_sql} WHERE '+sql, args).rowcount
+        elif not patch:
+            count = c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
+        else:
+            assignments = ','.join(self._fields[f]+'=?' for f in patch)
+            count = c.execute(f'UPDATE {self._data_sql} SET '+assignments+' WHERE '+sql,
+                              [*(self._encode(f, v) for f,v in patch.items()), *args]).rowcount
+        if primary and not count:
+            if upsert is None:
+                raise KeyError(where)
+            return self._insert(c, [upsert])
+        return count
 
     def update(self, values, where=None, *, limit=None):
         self._window(limit)

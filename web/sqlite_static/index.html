@@ -12,8 +12,8 @@
   <main class="layout">
     <aside id="table-sidebar" class="sidebar">
       <div class="sidebar-toolbar">
-        <div class="sidebar-toolbar-row"><h2>表索引</h2><button id="new-table" class="small">＋ 新建</button></div>
-        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索英文 / 中文表名" aria-label="搜索表名"><div class="filter-options"><label><input id="exact-match" type="checkbox">精确匹配</label><label><input id="nonempty" type="checkbox">仅非空表</label></div><span id="table-count" class="muted"></span></div>
+        <div class="sidebar-toolbar-row"><h2>表索引</h2><span id="table-count" class="muted"></span><button id="new-table" class="small">＋ 新建</button></div>
+        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名" aria-label="搜索表名" title="搜索英文 / 中文表名"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short">非空</span></label></div></div>
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，右键打开操作菜单" title="右键打开表索引操作菜单"><p class="empty">正在加载…</p></div>
       <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="拖拽调整或折叠表列表区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
@@ -36,7 +36,7 @@
         <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="拖拽调整或折叠查询区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
         <div id="records-panel" class="panel records-panel"><div class="panel-title"><div class="button-row"><button id="save-cell-edits" class="small" hidden>保存改单元格</button><button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button></div></div>
           <div id="data-grid" class="grid-wrap" tabindex="0" aria-label="查询结果表格，右键或 Shift+F10 打开操作菜单"><div class="empty"><strong>从左侧选择一张表</strong><p>查看实时记录，或新建表结构开始录入。</p></div></div>
-          <div class="pager"><span id="row-range" class="muted">0 条记录</span><div class="button-row"><button id="prev" class="secondary small">上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <span id="page-total">1</span> 页</label><button id="go-page" class="secondary small">跳转</button><button id="next" class="secondary small">下一页</button></div></div>
+          <div class="pager"><span id="row-range" class="muted">0 条记录</span><span id="selection-summary" class="selection-summary muted" title="方向键移动；Shift+方向键扩选；Ctrl+A 全选当前页；双击编辑；Enter/Tab 确认并移动；Ctrl+S 保存"></span><div class="button-row"><button id="prev" class="secondary small">上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <span id="page-total">1</span> 页</label><button id="go-page" class="secondary small">跳转</button><button id="next" class="secondary small">下一页</button></div></div>
         </div>
       </section>
       <section id="tab-schema" class="tab-panel" role="tabpanel" aria-labelledby="nav-schema">
@@ -195,6 +195,7 @@
     <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
     <button type="button" role="menuitem" data-sidebar-action="restore">恢复备份</button>
   </div>
+  <div id="operation-notice" class="operation-notice" role="status" aria-live="polite" aria-atomic="true" hidden><span id="operation-message"></span><button id="dismiss-notice" type="button" aria-label="关闭操作提示">×</button></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

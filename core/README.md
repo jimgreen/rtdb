@@ -528,6 +528,16 @@ connections see committed changes without reopening the database; a read
 transaction keeps one consistent snapshot for `get_many()` and the read
 pipeline.
 
+Opening an initialized table checks both embedded and physical schema
+fingerprints in a read transaction. It does not rewrite definitions or take
+the writer lock, so new readers can open a table while another connection
+has uncommitted writes. Table creation and legacy metadata migration still
+use a durable write transaction. Database labels are preserved on open.
+Primary-key updates and deletes use the affected-row count to detect missing
+keys; other key views still check uniqueness. A missing key in a key-value
+`update_many`/`delete_many` batch rolls back the entire batch, including earlier
+changes. Conditional updates keep their existing matched-row count semantics.
+
 The fixed table's list reordering and arbitrary Python predicates use an
 atomic snapshot replacement, while scalar equality CRUD uses native indexes.
 Use `insert_many`, `update_many_where`, key-value `update_many` and

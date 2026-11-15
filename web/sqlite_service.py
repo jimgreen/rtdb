@@ -590,10 +590,17 @@ class SQLiteManager:
         # SQLite still coordinates independently opened external processes.
         with self._gate, _locked(self._schema_lock):
             self._recover()
-            if name is not None:
-                self.definition(name)
             with SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir) as db:
-                yield db if name is None else db[name]
+                if name is None:
+                    yield db
+                else:
+                    name = self.name(name)
+                    if name not in db._embedded_tables():
+                        try:
+                            db.schema_registry.load(name)
+                        except SchemaError as error:
+                            raise APIError(404, f'表不存在：{name}') from error
+                    yield db[name]
 
     def info(self):
         return dict(engine='sqlite', sqlite_version=sqlite3.sqlite_version,
@@ -1136,7 +1143,8 @@ class SQLiteManager:
         result = []
         known_database_files = set()
         with self.session() as db:
-            names = set(db._embedded_tables())
+            embedded = db._embedded_tables()
+            names = set(embedded)
             try:
                 names.update(db.schema_registry.names())
             except SchemaError:
@@ -1144,8 +1152,13 @@ class SQLiteManager:
                 # definitions or database files from the table index.
                 pass
             for name in sorted(names):
-                definition = self.definition(name)
-                database_path = self.database_path(name)
+                if name in embedded:
+                    definition, document = embedded[name]
+                    database_path = document.path
+                else:
+                    definition = db.schema_registry.load(name)
+                    document = db.schema_registry.database_definition(name)
+                    database_path = self.data_dir / (document.eng_name + '.sqlite3')
                 item = dict(name=name, definition=definition.to_mapping(), schema_version=fingerprint(definition.to_mapping()),
                             database_file=database_path.name, database_name=database_path.stem,
                             orphan=False, selectable=True)
@@ -1230,10 +1243,15 @@ class SQLiteManager:
         # Wrapping prevents trailing comments from removing the outer window.
         if not order:
             order = ','.join('"' + key + '"' for key in table.primary_keys)
-        source = f'SELECT * FROM {view}{clause} ORDER BY {order}'
+        source = f'SELECT * FROM {view}{clause}'
+        # Both totals and page rows share the caller's snapshot. Counting must
+        # not sort the entire result; unfiltered counts use the trigger-maintained total.
+        total = None if where else connection.execute(
+            f'SELECT row_count FROM {table._metadata_sql} WHERE version=1').fetchone()[0]
         with self._reader(table, connection):
-            total = connection.execute(f'SELECT COUNT(*) FROM ({source}\n)').fetchone()[0]
-            records = connection.execute(f'SELECT * FROM ({source}\n) LIMIT ? OFFSET ?', (limit, offset)).fetchall()
+            if total is None:
+                total = connection.execute(f'SELECT COUNT(*) FROM ({source}\n)').fetchone()[0]
+            records = connection.execute(f'SELECT * FROM ({source} ORDER BY {order}\n) LIMIT ? OFFSET ?', (limit, offset)).fetchall()
         return [table._decode(row) for row in records], total
 
     def rows(self, name, *, where='', order='', limit=100, offset=0):
