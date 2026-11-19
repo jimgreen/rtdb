@@ -149,6 +149,12 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 
 `GET /api/manage/databases` 返回数据库目录（文件名、中文名、表数和异常信息），仅读取定义，不对每个库执行完整扫描。选择数据库是浏览器自身状态，不改变服务端全局当前库。所有表级接口及定义导入、备份恢复带 `?database=plant_a.sqlite3`，例如 `GET /api/manage/tables?database=plant_a.sqlite3`。文件名限定在服务配置的数据目录内；未指定数据库而存在同名表时拒绝歧义访问。审计操作路径同时记录数据库参数。
 
+Web 默认同时支持项目根目录下的相对路径 `../workspace`，对应本机 `D:\codex\workspace`。在“选择 / 新建数据库”窗口打开“数据位置”，通过树形目录的箭头展开 / 折叠各级文件夹；点击目录名称立即切换并刷新文件列表，无需额外打开按钮。支持按目录名称或相对路径搜索，显示匹配项及其父目录；展开状态在当前浏览器标签中保留，折叠分支不渲染子项。目录包括工作区根目录及没有 `.sqlite3` 文件的空目录，例如 `qinling/sqldb/agc`、`qinling/sqldb/pas`；每项显示该目录直接包含的数据库数量，空目录可新建或上传数据库。直接访问原文件，不复制到 `sqlite_dat`。默认数据目录也在树形列表中提供。切换目录会检查未保存编辑；目录身份保存在当前浏览器标签的 URL 中，各目录的数据库、后台任务、上传会话、查询缓存和草稿互相隔离。
+
+启动参数 `--workspace-dir ../workspace` 相对于 `--root`（默认仓库根目录）解析，和启动命令所在目录无关，也支持绝对根目录。API `GET /api/manage/workspaces` 列出工作区根目录（`path: "."`）及各级子目录，数据库数量可为零；其他 API 添加 `workspace=qinling/sqldb/model`，如 `GET /api/manage/tables?workspace=qinling/sqldb/model&database=devices.sqlite3`，根目录使用 `workspace=.`。工作目录参数仅接受工作区内的相对路径，禁止越界路径；目录扫描跳过隐藏目录、链接目录和运行日志。工作区目录中的 `.rtdb-schema` 保存外部定义与锁，`.web-tasks`、日志、上传与快照沿用原有管理机制。SQLite 内置定义仍是权威结构来源。
+
+可收藏直达链接：`http://127.0.0.1:8877/?workspace=qinling/sqldb/model&database=devices.sqlite3`。数据库文件名与目录在 URL 中分别指定，不同目录可以使用相同文件名。验证命令：`python -m unittest web.test_workspace`。
+
 `POST /api/manage/database-files/create` 可传 `{"name":"plant_a","chn_name":"A站","tables":[]}` 创建空库。Python 调用可用 `SQLiteDatabase(data_dir, schema_directory=schema_dir, database_file="plant_a.sqlite3")` 定位同名表；此限定库实例当前使用直接事务，不支持 `write_process()`。
 
 网页查询发送 `compact: true`：可编辑结果只返回 `records`，避免 `rows` 重复传输；只读结果只返回 `rows`。自动刷新附带上次的 `result_version`（请求字段 `if_version`），无变化返回 `unchanged: true`；可编辑结果再附带 `known_records` 时，变化响应只带新增/改变的记录与完整 `record_order`，客户端据此合并及移除已删除记录。无变化时保留现有表格 DOM。原有未开启 compact 的 API 和导出格式保持不变。

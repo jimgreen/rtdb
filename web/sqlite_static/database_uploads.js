@@ -1,6 +1,6 @@
 // A local file is read one slice at a time. Only the resumable identity is persisted.
 const databaseUploads={
-  key:'rtdb-snapshot-upload-v1',session:null,active:false,paused:false,controller:null,
+  key:workspaceStorageKey('rtdb-snapshot-upload-v1'),session:null,active:false,paused:false,controller:null,
   init(){
     el('open-chunk-upload').onclick=()=>run(()=>this.open());
     el('chunk-start').onclick=()=>this.start();
@@ -88,7 +88,7 @@ const databaseUploads={
         for(let attempt=0;attempt<3;attempt++){
           if(this.paused)return;this.controller=new AbortController();
           try{
-            const response=await fetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
+            const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
             const result=await response.json();if(!response.ok){const error=Error(result.error||'上传分块失败');error.status=response.status;throw error;}
             answer=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}

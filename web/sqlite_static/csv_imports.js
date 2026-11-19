@@ -1,6 +1,6 @@
 // CSV data remains in the selected File and server staging, never in localStorage.
 const csvImports={
-  key:'rtdb-csv-upload-v1',session:null,target:null,active:false,paused:false,controller:null,
+  key:workspaceStorageKey('rtdb-csv-upload-v1'),session:null,target:null,active:false,paused:false,controller:null,
   init(){
     el('csv-start').onclick=()=>this.start();el('csv-pause').onclick=()=>this.pause();
     el('csv-apply').onclick=()=>this.apply();el('csv-discard').onclick=()=>this.discard();
@@ -84,7 +84,7 @@ const csvImports={
         for(let attempt=0;attempt<3;attempt++){
           if(this.paused)return;this.controller=new AbortController();
           try{
-            const response=await fetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
+            const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
             const result=await response.json();if(!response.ok){const error=Error(result.error||'上传失败');error.status=response.status;throw error;}
             this.session=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}

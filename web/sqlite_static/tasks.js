@@ -1,6 +1,6 @@
 // Keep only task identities across reloads, never operation bodies or file contents.
 const backgroundTasks = {
-  storageKey: 'rtdb-active-task-v1', active: false,
+  storageKey: workspaceStorageKey('rtdb-active-task-v1'), active: false,
   pending() { try{return !!sessionStorage.getItem(this.storageKey);}catch{return this.active;} },
   supports(path, method, body) {
     const route=path.split('?')[0];
@@ -35,7 +35,7 @@ const backgroundTasks = {
     cancel.onclick=async()=>{
       cancel.disabled=true;
       try {
-        const response=await fetch(endpoint('cancel'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}), data=await response.json();
+        const response=await workspaceFetch(endpoint('cancel'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}), data=await response.json();
         if(!response.ok)throw Error(data.error||'取消请求失败');
         current=data;warning.textContent='已申请取消，正在等待安全边界；最终结果以服务端状态为准。';
       } catch(error) { warning.textContent=error.message; }
@@ -56,7 +56,7 @@ const backgroundTasks = {
         }
         try {
           const target=endpoint();
-          const response=await fetch(target+(target.includes('?')?'&':'?')+'wait=2&revision='+Number(current.revision||0)), data=await response.json();
+          const response=await workspaceFetch(target+(target.includes('?')?'&':'?')+'wait=2&revision='+Number(current.revision||0)), data=await response.json();
           if(!response.ok){const error=Error(data.error||'任务查询失败');error.status=response.status;throw error;}
           current=data;retries=0;
         } catch(error) {
@@ -76,7 +76,7 @@ const backgroundTasks = {
     notice(`后台任务已完成${task.database?'：'+task.database:''}。${result.ok===false?'部分项目失败，请查看日志。':'可选择数据库查看最新结果。'}`,result.ok===false);
   },
   async history() {
-    const response=await fetch('/api/manage/tasks'), data=await response.json();
+    const response=await workspaceFetch('/api/manage/tasks'), data=await response.json();
     if(!response.ok)throw Error(data.error||'任务列表加载失败');
     const host=el('task-history-grid');host.replaceChildren();
     const table=node('table'), head=node('tr');

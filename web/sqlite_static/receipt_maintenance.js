@@ -16,7 +16,7 @@ const receiptMaintenance={
   },
   async refresh(initial=false){
     clearTimeout(this.timer);
-    const response=await fetch('/api/manage/receipt-maintenance?database='+encodeURIComponent(this.database));
+    const response=await workspaceFetch('/api/manage/receipt-maintenance?database='+encodeURIComponent(this.database));
     const result=await response.json();if(!response.ok)throw Error(result.error||'读取维护状态失败');
     if(initial)el('receipt-days').value=result.days;
     const list=el('receipt-statistics');list.replaceChildren();

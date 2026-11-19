@@ -33,8 +33,13 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     server_version = 'RTDBSQLiteWeb/1.0'
 
     @property
+    def context(self):
+        relative = parse_qs(urlsplit(self.path).query).get('workspace', [''])[0]
+        return self.server.workspaces.get(relative)
+
+    @property
     def manager(self):
-        manager = self.server.sqlite_manager  # type: ignore[attr-defined]
+        manager = self.context.sqlite_manager
         filename = parse_qs(urlsplit(self.path).query).get('database', [None])[0]
         return manager.for_database(filename) if filename else manager
 
@@ -116,7 +121,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 return 'data', '修改单条数据', table
             if method == 'DELETE' and action == 'table':
                 return 'structure', '删除表结构', table
-            category, operation, _ = self.server.management.operation_descriptor(
+            category, operation, _ = self.context.management.operation_descriptor(
                 method, ['tables', table, action], payload)
             return category, operation, table
         return 'system', f'{method} 操作', None
@@ -250,8 +255,11 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     def _manage(self, method, parts, *, query=None, payload=None):
         if parts[:2] != ['api', 'manage']:
             return False
+        if parts == ['api', 'manage', 'workspaces'] and method == 'GET':
+            self._send_json(200, self.server.workspaces.listing())
+            return True
         if len(parts)==3 and parts[2]=='tasks' and method=='GET':
-            self._send_json(200,{'tasks':self.server.tasks.recent()})
+            self._send_json(200,{'tasks':self.context.tasks.recent()})
             return True
         if len(parts) in (4, 5) and parts[2] == 'tasks':
             filename = (query or {}).get('database', [None])[0]
@@ -260,17 +268,17 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                     try:
                         timeout=float(query['wait'][0]);revision=int(query.get('revision',['0'])[0])
                     except (ValueError,TypeError):raise APIError(400,'无效的任务等待参数')
-                    result=self.server.tasks.wait_change(parts[3],filename,revision,timeout)
-                else:result = self.server.tasks.get(parts[3], filename)
+                    result=self.context.tasks.wait_change(parts[3],filename,revision,timeout)
+                else:result = self.context.tasks.get(parts[3], filename)
             elif method == 'POST' and len(parts) == 5 and parts[4] == 'cancel':
-                result = self.server.tasks.cancel(parts[3], filename)
+                result = self.context.tasks.cancel(parts[3], filename)
             else:
                 raise APIError(400, '无效的后台任务操作')
             self._send_json(200, result)
             return True
         if len(parts) >= 3 and parts[2] == 'database-snapshots':
             from .database_snapshots import scope
-            manager = scope(self.server.sqlite_manager, (query or {}).get('database', [None])[0])
+            manager = scope(self.context.sqlite_manager, (query or {}).get('database', [None])[0])
         else:
             manager = self.manager
         if method == 'GET' and len(parts) == 5 and parts[2] == 'database-snapshots' and parts[4] == 'download':
@@ -278,13 +286,13 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             with fence(manager):
                 self._download_snapshot(manager, parts[3])
             return True
-        management = SQLiteManagement(manager) if manager.database_file else self.server.management
+        management = SQLiteManagement(manager) if manager.database_file else self.context.management
         if (query or {}).get('background') == ['1']:
             started=time.perf_counter()
-            parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id')}
-            result = self.server.tasks.submit(management, method, parts[2:], parameters, payload,
+            parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id','workspace')}
+            result = self.context.tasks.submit(management, method, parts[2:], parameters, payload,
                 request_id=(query or {}).get('request_id',[None])[0])
-            result = self.server.tasks.wait_initial(result['id'], result['database'])
+            result = self.context.tasks.wait_initial(result['id'], result['database'])
             self._server_ms=(time.perf_counter()-started)*1000
             self._task_timings=result.get('timings',{})
             if result.get('result_expired'):
@@ -306,7 +314,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def _upload_chunk(self, ident, query):
         from .database_uploads import CHUNK, put_chunk
-        manager=self.server.sqlite_manager;started=time.perf_counter()
+        manager=self.context.sqlite_manager;started=time.perf_counter()
         try:
             if self.headers.get_content_type()!='application/octet-stream':raise APIError(415,'分块请使用 application/octet-stream')
             if 'Content-Length' not in self.headers:raise APIError(411,'分块需要 Content-Length')
@@ -377,6 +385,8 @@ class SQLiteHTTPServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if hasattr(self, 'workspaces'):
+            self.workspaces.close()
         if hasattr(self, 'tasks'):
             self.tasks.close()
         if hasattr(self, 'audit_delivery'):
@@ -385,7 +395,7 @@ class SQLiteHTTPServer(ThreadingHTTPServer):
             self.sqlite_manager.close()
 
 
-def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=None, schema_dir=None):
+def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=None, schema_dir=None, workspace_dir=None):
     base = Path(root).resolve() if root else Path(__file__).resolve().parents[1]
     manager = SQLiteManager(data_dir or base / 'sqlite_dat', schema_dir or base / 'def' / 'table')
     try:
@@ -399,6 +409,9 @@ def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=Non
         server.tasks = TaskRegistry(manager.data_dir/'.web-tasks', manager)
         from .write_receipts import AuditDelivery
         server.audit_delivery = manager.audit_delivery = AuditDelivery(manager)
+        from .workspace import WorkspaceCatalog
+        workspace_path = Path(workspace_dir) if workspace_dir is not None else Path('../workspace')
+        server.workspaces = WorkspaceCatalog(base / workspace_path, server)
     except BaseException:
         server.server_close()
         raise
@@ -409,8 +422,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='RTDB SQLite WEB management service')
     parser.add_argument('--host', default='127.0.0.1'); parser.add_argument('--port', type=int, default=8878)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1]); parser.add_argument('--data-dir', type=Path); parser.add_argument('--schema-dir', type=Path)
+    parser.add_argument('--workspace-dir', type=Path, default=Path('../workspace'), help='workspace root, relative to --root')
     args = parser.parse_args(argv)
-    server = create_sqlite_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir)
+    server = create_sqlite_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, workspace_dir=args.workspace_dir)
     print(f'RTDB SQLite web service listening on http://{args.host}:{args.port}')
     try: server.serve_forever()
     except KeyboardInterrupt: pass

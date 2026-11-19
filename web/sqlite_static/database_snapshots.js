@@ -37,7 +37,7 @@ const databaseSnapshots = {
     finally{controls.forEach((control,index)=>control.disabled=previous[index]);el('snapshot-restore').disabled=!this.selected;}
   },
   async refresh(){
-    const response=await fetch('/api/manage/database-snapshots'),data=await response.json();
+    const response=await workspaceFetch('/api/manage/database-snapshots'),data=await response.json();
     if(!response.ok)throw Error(data.error||'读取快照失败');
     const host=el('snapshot-list');host.replaceChildren();
     if(!data.snapshots.length){host.append(node('p','尚无快照。选择数据库后生成第一份快照。','muted'));return;}
@@ -49,7 +49,7 @@ const databaseSnapshots = {
       description.title='SHA-256: '+item.sha256;
       size.textContent=`${formatBytes(item.bytes)} / ${item.table_count} 表`;
       const link=node('a','下载','secondary small');
-      link.href=`/api/manage/database-snapshots/${item.id}/download?database=${encodeURIComponent(item.database)}`;
+      link.href=workspaceUrl(`/api/manage/database-snapshots/${item.id}/download?database=${encodeURIComponent(item.database)}`);
       link.download=item.filename;link.title='下载已生成的 SQLite 快照（支持 HTTP Range）';
       const select=node('button','选为恢复源','secondary small');select.type='button';
       select.onclick=()=>{

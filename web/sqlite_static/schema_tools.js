@@ -56,7 +56,7 @@ const auditDeliveryUI={
   async poll(){
     const target=el('audit-warning');
     try{
-      const response=await fetch('/api/manage/audit-delivery');if(!response.ok)throw Error('无法读取日志同步状态');
+      const response=await workspaceFetch('/api/manage/audit-delivery');if(!response.ok)throw Error('无法读取日志同步状态');
       const state=await response.json();
       if(!state.pending_databases.length){target.hidden=true;return;}
       target.textContent=state.error?'日志同步待重试':'日志同步中';target.title=state.error||'数据已保存，日志同步中';

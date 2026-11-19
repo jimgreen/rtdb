@@ -1,6 +1,6 @@
 // E source rows stay in the File and server staging. Only the session ID is retained locally.
 const efileImports={
-  key:'rtdb-e-upload-v1',session:null,active:false,paused:false,controller:null,validation:null,
+  key:workspaceStorageKey('rtdb-e-upload-v1'),session:null,active:false,paused:false,controller:null,validation:null,
   init(){
     el('efile-pause').onclick=()=>{this.paused=true;this.controller?.abort();this.message('正在暂停…');};
     el('efile-discard').onclick=()=>run(()=>this.discard(),'definition-error');
@@ -92,7 +92,7 @@ const efileImports={
         const offset=this.session.received,{bytes,hash}=await databaseUploads.digest(file.slice(offset,Math.min(offset+size,file.size)));
         for(let attempt=0;attempt<3;attempt++){
           if(this.paused)return;this.controller=new AbortController();
-          try{const response=await fetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
+          try{const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
             const result=await response.json();if(!response.ok){const error=Error(result.error||'上传失败');error.status=response.status;throw error;}this.session=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}
         }

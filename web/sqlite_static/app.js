@@ -270,7 +270,7 @@ async function request(path, method = "GET", body, timing = null) {
   }
   const requestedAt = performance.now();
   let response;
-  try { response = await fetch(`/api/manage/${endpoint}`, { method, headers: { "Content-Type": "application/json" },
+  try { response = await workspaceFetch(`/api/manage/${endpoint}`, { method, headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body) }); }
   catch(error) { if(taskSubmission)throw Error('提交响应未确认，已保留请求编号。请刷新恢复任务查询，勿重复提交。');throw error; }
   const text = await response.text(), receivedAt = performance.now();
@@ -364,6 +364,7 @@ async function repairDatabase(actionName) {
   notice(result.warning ? `${message}；${result.warning}` : message); log(message);
 }
 async function loadDatabaseFiles() {
+  await loadWorkspaceDirectories();
   const result = await request("database-files");
   state.databaseFiles = Array.isArray(result.files) ? result.files : [];
   el("database-file-directory").textContent = `服务端数据目录：${result.data_dir || "—"}`;
@@ -2550,6 +2551,7 @@ async function openDatabaseFileDialog() {
 }
 el("app-title").ondblclick = () => run(openDatabaseFileDialog);
 el("open-database-files").onclick = () => run(openDatabaseFileDialog);
+bindWorkspacePicker();
 el("open-database-files").textContent = "选择 / 新建数据库";
 el("database-select").onchange = () => {
   const filename = el("database-select").value; el("database-select").value = state.database || "";
@@ -2697,4 +2699,7 @@ run(async () => {
   el("storage-path").textContent = info.data_dir; el("storage-path").title = `数据：${info.data_dir}\n定义：${info.schema_dir}`;
   log("管理终端已连接 SQLite"); await refreshTables(); if (state.tables.length) await selectTable(state.tables[0].name); else resetSelection();
   await backgroundTasks.resume();
+  const requestedDatabase = new URLSearchParams(location.search).get('database');
+  if (requestedDatabase) await selectDatabaseFile(requestedDatabase);
+  else if (new URLSearchParams(location.search).get('choose_database') === '1') await openDatabaseFileDialog();
 });

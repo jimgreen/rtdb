@@ -386,10 +386,11 @@ def create_server(
     data_dir: Optional[os.PathLike[str] | str] = None,
     schema_dir: Optional[os.PathLike[str] | str] = None,
     engine: str = "sqlite",
+    workspace_dir: Optional[os.PathLike[str] | str] = None,
 ) -> ThreadingHTTPServer:
     if engine == "sqlite":
         from web.sqlite_server import create_sqlite_server
-        return create_sqlite_server(host, port, root=root, data_dir=data_dir, schema_dir=schema_dir)
+        return create_sqlite_server(host, port, root=root, data_dir=data_dir, schema_dir=schema_dir, workspace_dir=workspace_dir)
     if engine != "file_mapped":
         raise ValueError("engine must be file_mapped or sqlite")
     app = RTDBWebApp(root, data_dir=data_dir, schema_dir=schema_dir)
@@ -405,9 +406,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--schema-dir", type=Path)
+    parser.add_argument("--workspace-dir", type=Path, default=Path('../workspace'), help="workspace root, relative to --root")
     parser.add_argument("--engine", choices=("file_mapped", "sqlite"), default="sqlite")
     args = parser.parse_args(argv)
-    server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, engine=args.engine)
+    server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, engine=args.engine, workspace_dir=args.workspace_dir)
     print(f"RTDB web service listening on http://{args.host}:{args.port}")
     try:
         server.serve_forever()
