@@ -1,5 +1,6 @@
 // Keep directory identity in each tab's URL, including uploads and task polling.
 const workspacePath = new URLSearchParams(location.search).get('workspace') || '';
+let workspaceScope = null;
 function workspaceUrl(value) {
   const url = new URL(value, location.href);
   if (url.origin === location.origin && url.pathname.startsWith('/api/') && workspacePath && !url.searchParams.has('workspace')) {
@@ -8,11 +9,23 @@ function workspaceUrl(value) {
   return url.href;
 }
 function workspaceFetch(value, options) { return fetch(workspaceUrl(value), options); }
-function workspaceStorageKey(key) { return workspacePath ? `${key}:workspace:${workspacePath}` : key; }
+function configureWorkspaceScope(info) {
+  workspaceScope = info.strict_root ? JSON.stringify([info.root_id, info.data_dir]) : null;
+}
+function workspaceStorageKey(key) {
+  if (workspaceScope) return `${key}:root:${workspaceScope}`;
+  return workspacePath ? `${key}:workspace:${workspacePath}` : key;
+}
 
-const workspaceTree = { nodes: new Map(), roots: [], expanded: new Set(['.']), searchCollapsed: new Set(), storageKey: null };
+const workspaceTree = {
+  nodes: new Map(), roots: [], expanded: new Set(['.']), searchCollapsed: new Set(),
+  storageKey: null, strictRoot: false, currentPath: workspacePath,
+};
 function workspaceParent(path) { return path === '.' || path === '' ? null : path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.'; }
-function workspaceLabel(path) { return path === '' ? '默认数据库目录' : path === '.' ? 'workspace（根目录）' : `workspace / ${path}`; }
+function workspaceLabel(path) {
+  if (workspaceTree.strictRoot) return path === '.' ? '根目录（.）' : path;
+  return path === '' ? '默认数据库目录' : path === '.' ? 'workspace（根目录）' : `workspace / ${path}`;
+}
 
 function bindWorkspacePicker() {
   const dialog = el('database-file-dialog');
@@ -60,11 +73,16 @@ function bindWorkspacePicker() {
 
 async function loadWorkspaceDirectories() {
   const result = await request('workspaces');
-  workspaceTree.nodes = new Map([
-    ['', { path: '', label: '默认数据库目录', children: [] }],
-    ...result.directories.map(item => [item.path, { ...item,
-      label: item.path === '.' ? 'workspace' : item.path.split('/').pop(), children: [] }]),
-  ]);
+  workspaceTree.strictRoot = result.strict_root === true;
+  workspaceTree.currentPath = workspacePath || (workspaceTree.strictRoot ? result.default_data_dir : '');
+  workspaceTree.nodes = new Map();
+  if (!workspaceTree.strictRoot) {
+    workspaceTree.nodes.set('', { path: '', label: '默认数据库目录', children: [] });
+  }
+  for (const item of result.directories) {
+    const label = item.path === '.' && !workspaceTree.strictRoot ? 'workspace' : workspaceLabel(item.path).split('/').pop();
+    workspaceTree.nodes.set(item.path, { ...item, label, children: [] });
+  }
   workspaceTree.roots = [];
   for (const item of workspaceTree.nodes.values()) {
     const parent = workspaceTree.nodes.get(workspaceParent(item.path));
@@ -72,15 +90,17 @@ async function loadWorkspaceDirectories() {
     else workspaceTree.roots.push(item);
   }
   if (!workspaceTree.storageKey) {
-    workspaceTree.storageKey = `rtdb-workspace-tree:${result.workspace_root}`;
+    workspaceTree.storageKey = `rtdb-workspace-tree:${result.root_id || result.workspace_root}`;
     try {
       const saved = JSON.parse(sessionStorage.getItem(workspaceTree.storageKey));
       if (Array.isArray(saved)) workspaceTree.expanded = new Set(saved);
     } catch { /* Expansion remains usable without browser storage. */ }
-    for (let parent = workspaceParent(workspacePath); parent !== null; parent = workspaceParent(parent)) workspaceTree.expanded.add(parent);
+    for (let parent = workspaceParent(workspaceTree.currentPath); parent !== null; parent = workspaceParent(parent)) workspaceTree.expanded.add(parent);
   }
-  el('workspace-current').textContent = workspaceLabel(workspacePath);
-  el('workspace-current').title = `工作区根目录：${result.workspace_root}\n默认数据目录：${result.default_data_dir}`;
+  el('workspace-current').textContent = workspaceLabel(workspaceTree.currentPath);
+  el('workspace-current').title = workspaceTree.strictRoot
+    ? `相对于根目录：${workspaceTree.currentPath}`
+    : `工作区根目录：${result.workspace_root}\n默认数据目录：${result.default_data_dir}`;
   renderWorkspaceTree();
 }
 
@@ -126,7 +146,7 @@ function renderWorkspaceTree() {
       const choose = document.createElement('button');
       choose.type = 'button'; choose.className = 'workspace-tree-choice'; choose.title = workspaceLabel(item.path);
       choose.setAttribute('aria-label', `选择目录 ${workspaceLabel(item.path)}`);
-      if (item.path === workspacePath) { choose.classList.add('selected'); choose.setAttribute('aria-current', 'location'); }
+      if (item.path === workspaceTree.currentPath) { choose.classList.add('selected'); choose.setAttribute('aria-current', 'location'); }
       const name = document.createElement('span'); name.textContent = item.label; name.className = 'workspace-tree-name';
       if (matches.has(item.path)) name.classList.add('match');
       choose.append(name);
@@ -146,7 +166,7 @@ function renderWorkspaceTree() {
 }
 
 async function openWorkspaceDirectory(selected) {
-  if (selected === workspacePath) {
+  if (selected === workspaceTree.currentPath) {
     await loadDatabaseFiles(); el('workspace-picker').hidePopover(); return;
   }
   if (backgroundTasks.pending() || databaseUploads.active || csvImports.active || efileImports.active) {

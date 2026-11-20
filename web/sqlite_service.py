@@ -437,12 +437,13 @@ def _archive_sqlite_bundle(data_dir, path, label):
 class SQLiteManager:
     max_rows = 100000
 
-    def __init__(self, data_dir, schema_dir, *, demo=False):
+    def __init__(self, data_dir, schema_dir, *, demo=False, strict_paths=False):
         self.data_dir = Path(data_dir).resolve()
         self.schema_dir = Path(schema_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.schema_dir.mkdir(parents=True, exist_ok=True)
         self.demo = demo
+        self.strict_paths = strict_paths
         self.database_file = None
         self.audit_log = OperationAuditLog(self.data_dir)
         self._journal = self.schema_dir / '.sqlite-web-pending.json'
@@ -571,6 +572,13 @@ class SQLiteManager:
         if not self._journal.exists():
             return
         pending = json.loads(self._journal.read_text(encoding='utf-8'))
+        if self.strict_paths:
+            for key, directory, suffix in (('database_path', self.data_dir, '.sqlite3'),
+                                           ('schema_path', self.schema_dir, '.json')):
+                if key in pending:
+                    target = Path(pending[key])
+                    if target.parent != directory or target.suffix != suffix or target.resolve() != target:
+                        raise APIError(409, '恢复记录中的文件路径不属于当前数据或定义目录')
         if pending.get('kind') == 'snapshot-restore':
             from .database_snapshots import recover_definition
             recover_definition(self, pending)

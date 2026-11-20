@@ -1,6 +1,6 @@
 // E source rows stay in the File and server staging. Only the session ID is retained locally.
 const efileImports={
-  key:workspaceStorageKey('rtdb-e-upload-v1'),session:null,active:false,paused:false,controller:null,validation:null,
+  get key() { return workspaceStorageKey('rtdb-e-upload-v1'); },session:null,active:false,paused:false,controller:null,validation:null,
   init(){
     el('efile-pause').onclick=()=>{this.paused=true;this.controller?.abort();this.message('正在暂停…');};
     el('efile-discard').onclick=()=>run(()=>this.discard(),'definition-error');

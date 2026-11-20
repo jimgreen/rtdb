@@ -10,11 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import re
 import sqlite3
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .errors import APIError
@@ -28,14 +30,72 @@ from core.sqlite_db import SQLiteBusyError
 STATIC_ROOT = Path(__file__).resolve().parent / 'sqlite_static'
 MAX_BODY = 32 * 1024 * 1024
 
+_FILE_PATH_FIELDS = {
+    'workspace_root', 'default_data_dir', 'data_dir', 'schema_dir',
+    'database_path', 'schema_path', 'audit_log', 'audit_log_legacy',
+    'audit_log_config', 'legacy_path', 'json_path', 'python_path',
+    'path', 'archive', 'backup',
+}
+_METADATA_CONTAINERS = {
+    'file', 'files', 'databases', 'tables', 'summary', 'task', 'tasks', 'result',
+    'results', 'logs', 'details', 'delivery', 'failures', 'protected',
+}
+_DIAGNOSTIC_FIELDS = {'error', 'reason', 'export_warning'}
+
+
+def _relative_file_path(value, root):
+    path = Path(value)
+    if not path.is_absolute():
+        windows_path = PureWindowsPath(value)
+        if windows_path.anchor or '..' in windows_path.parts:
+            return None
+        return value
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    return relative.as_posix() if '..' not in relative.parts else None
+
+
+def _relative_metadata(payload, root):
+    """Format server metadata without visiting database rows or definitions."""
+    root_forms = (str(root), root.as_posix(), root.as_uri())
+    prefixes = {form.rstrip('/\\') for form in root_forms} - {''}
+    root_prefix = re.compile(
+        r'(?:' + '|'.join(re.escape(prefix) for prefix in prefixes) + r')[/\\]',
+        re.IGNORECASE if os.name == 'nt' else 0,
+    )
+
+    def format_item(value):
+        if isinstance(value, list):
+            return [format_item(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        formatted = {}
+        for key, item in value.items():
+            if key in _FILE_PATH_FIELDS and isinstance(item, str):
+                # Task and audit "path" values identify HTTP routes.
+                if key != 'path' or 'method' not in value:
+                    item = _relative_file_path(item, root)
+            elif key in _DIAGNOSTIC_FIELDS and isinstance(item, str):
+                item = root_prefix.sub('', item)
+            elif key in _METADATA_CONTAINERS:
+                item = format_item(item)
+            formatted[key] = item
+        return formatted
+
+    return format_item(payload)
+
 
 class SQLiteRequestHandler(BaseHTTPRequestHandler):
     server_version = 'RTDBSQLiteWeb/1.0'
 
     @property
     def context(self):
-        relative = parse_qs(urlsplit(self.path).query).get('workspace', [''])[0]
-        return self.server.workspaces.get(relative)
+        if self._request_context is None:
+            relative = parse_qs(urlsplit(self.path).query).get('workspace', [''])[0]
+            self._request_context = self.server.workspaces.get(relative)
+        return self._request_context
 
     @property
     def manager(self):
@@ -48,6 +108,11 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status, payload):
         encoding_started=time.perf_counter()
+        workspace = getattr(self.server, 'workspaces', None)
+        if getattr(workspace, 'strict_root', False):
+            payload = _relative_metadata(payload, workspace.root)
+            if isinstance(payload, dict) and ('workspace_root' in payload or payload.get('engine') == 'sqlite'):
+                payload.update(strict_root=True, root_id=workspace.root_id)
         body = json.dumps(browser_value(payload), ensure_ascii=False, allow_nan=False).encode('utf-8')
         encoding_ms=(time.perf_counter()-encoding_started)*1000
         self.send_response(status)
@@ -71,9 +136,14 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         elif isinstance(exc, (ValueError, TypeError, OverflowError, sqlite3.Error)):
             self._send_json(400, {'error': str(exc)})
         else:
-            self._send_json(500, {'error': 'internal server error', 'details': str(exc)})
+            if getattr(self.server.workspaces, 'strict_root', False):
+                self.log_error('Unhandled RTDB error: %s', exc)
+                self._send_json(500, {'error': '服务器处理失败，请查看服务日志'})
+            else:
+                self._send_json(500, {'error': 'internal server error', 'details': str(exc)})
 
     def _route(self):
+        self._request_context = None
         # Keep the default local administration service off unrelated origins.
         host = self.headers.get('Host', '')
         if self.server.server_address[0] in ('127.0.0.1', '::1'):
@@ -396,8 +466,15 @@ class SQLiteHTTPServer(ThreadingHTTPServer):
 
 
 def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=None, schema_dir=None, workspace_dir=None):
+    from .workspace import WorkspaceCatalog
+
     base = Path(root).resolve() if root else Path(__file__).resolve().parents[1]
-    manager = SQLiteManager(data_dir or base / 'sqlite_dat', schema_dir or base / 'def' / 'table')
+    workspace_path = Path(workspace_dir) if workspace_dir is not None else Path('../workspace')
+    catalog = WorkspaceCatalog(base / workspace_path, strict_root=workspace_dir is not None)
+    if catalog.strict_root:
+        data_dir, schema_dir = catalog.storage_paths(data_dir, schema_dir)
+    manager = SQLiteManager(data_dir or base / 'sqlite_dat', schema_dir or base / 'def' / 'table',
+                            strict_paths=catalog.strict_root)
     try:
         server = SQLiteHTTPServer((host, port), SQLiteRequestHandler)
     except BaseException:
@@ -405,13 +482,12 @@ def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=Non
         raise
     server.sqlite_manager = manager  # type: ignore[attr-defined]
     server.management = SQLiteManagement(manager)
+    server.workspaces = catalog
+    catalog.default = server
     try:
         server.tasks = TaskRegistry(manager.data_dir/'.web-tasks', manager)
         from .write_receipts import AuditDelivery
         server.audit_delivery = manager.audit_delivery = AuditDelivery(manager)
-        from .workspace import WorkspaceCatalog
-        workspace_path = Path(workspace_dir) if workspace_dir is not None else Path('../workspace')
-        server.workspaces = WorkspaceCatalog(base / workspace_path, server)
     except BaseException:
         server.server_close()
         raise
@@ -422,7 +498,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='RTDB SQLite WEB management service')
     parser.add_argument('--host', default='127.0.0.1'); parser.add_argument('--port', type=int, default=8878)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1]); parser.add_argument('--data-dir', type=Path); parser.add_argument('--schema-dir', type=Path)
-    parser.add_argument('--workspace-dir', type=Path, default=Path('../workspace'), help='workspace root, relative to --root')
+    parser.add_argument('--workspace-dir', type=Path, default=Path('../workspace'),
+                        help='Web file root (relative to --root); data and schema directories must stay inside it')
     args = parser.parse_args(argv)
     server = create_sqlite_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, workspace_dir=args.workspace_dir)
     print(f'RTDB SQLite web service listening on http://{args.host}:{args.port}')

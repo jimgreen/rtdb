@@ -406,7 +406,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--schema-dir", type=Path)
-    parser.add_argument("--workspace-dir", type=Path, default=Path('../workspace'), help="workspace root, relative to --root")
+    parser.add_argument("--workspace-dir", type=Path, default=Path('../workspace'),
+                        help="SQLite Web file root (relative to --root); data and schema directories must stay inside it")
     parser.add_argument("--engine", choices=("file_mapped", "sqlite"), default="sqlite")
     args = parser.parse_args(argv)
     server = create_server(args.host, args.port, root=args.root, data_dir=args.data_dir, schema_dir=args.schema_dir, engine=args.engine, workspace_dir=args.workspace_dir)

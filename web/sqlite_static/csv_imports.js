@@ -1,6 +1,6 @@
 // CSV data remains in the selected File and server staging, never in localStorage.
 const csvImports={
-  key:workspaceStorageKey('rtdb-csv-upload-v1'),session:null,target:null,active:false,paused:false,controller:null,
+  get key() { return workspaceStorageKey('rtdb-csv-upload-v1'); },session:null,target:null,active:false,paused:false,controller:null,
   init(){
     el('csv-start').onclick=()=>this.start();el('csv-pause').onclick=()=>this.pause();
     el('csv-apply').onclick=()=>this.apply();el('csv-discard').onclick=()=>this.discard();

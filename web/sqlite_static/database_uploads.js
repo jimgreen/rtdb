@@ -1,6 +1,6 @@
 // A local file is read one slice at a time. Only the resumable identity is persisted.
 const databaseUploads={
-  key:workspaceStorageKey('rtdb-snapshot-upload-v1'),session:null,active:false,paused:false,controller:null,
+  get key() { return workspaceStorageKey('rtdb-snapshot-upload-v1'); },session:null,active:false,paused:false,controller:null,
   init(){
     el('open-chunk-upload').onclick=()=>run(()=>this.open());
     el('chunk-start').onclick=()=>this.start();

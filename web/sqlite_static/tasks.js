@@ -1,6 +1,6 @@
 // Keep only task identities across reloads, never operation bodies or file contents.
 const backgroundTasks = {
-  storageKey: workspaceStorageKey('rtdb-active-task-v1'), active: false,
+  get storageKey() { return workspaceStorageKey('rtdb-active-task-v1'); }, active: false,
   pending() { try{return !!sessionStorage.getItem(this.storageKey);}catch{return this.active;} },
   supports(path, method, body) {
     const route=path.split('?')[0];

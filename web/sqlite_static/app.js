@@ -649,7 +649,7 @@ function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
   const item = state.tables.find((entry) => entry.name === state.table);
   const filename = state.database || (state.table ? item?.database_file || `${state.table}.sqlite3` : "");
-  const directory = state.dataDir.replace(/[\\/]+$/, "");
+  const directory = state.dataDir === "." ? "" : state.dataDir.replace(/[\\/]+$/, "");
   const separator = state.dataDir.includes("\\") ? "\\" : "/";
   target.textContent = filename || "未选择数据库";
   target.title = filename ? `当前数据库：${directory ? directory + separator : ""}${filename}` : "请先选择或新建数据库";
@@ -2693,7 +2693,8 @@ virtualGrid.init();
 schemaTools.init();
 run(async () => {
   const info = await request("info"); el("connection").textContent = `SQLite ${info.sqlite_version} · WAL / FULL`;
-  state.historyScope = `${info.data_dir}\n${info.schema_dir}`;
+  configureWorkspaceScope(info);
+  state.historyScope = workspaceScope || `${info.data_dir}\n${info.schema_dir}`;
   await localDrafts.init();
   state.dataDir = info.data_dir || "";
   el("storage-path").textContent = info.data_dir; el("storage-path").title = `数据：${info.data_dir}\n定义：${info.schema_dir}`;

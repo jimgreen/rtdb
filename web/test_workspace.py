@@ -1,6 +1,8 @@
 """Workspace directory routing uses isolated SQLite files and real HTTP."""
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
 import threading
 import unittest
@@ -19,6 +21,7 @@ class WorkspaceWebTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='rtdb-workspace-')
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
+        self.project_root = root / 'rtdb'
         self.workspace = root / 'workspace'
         for project in ('qinling', 'another'):
             data = self.workspace / project / 'sqldb' / 'model'
@@ -30,7 +33,7 @@ class WorkspaceWebTests(unittest.TestCase):
             })
             with SQLiteDatabase(data, schema_directory=schema) as db:
                 db['nodes'].insert_one({'id': 1, 'name': project})
-        self.server = create_server('127.0.0.1', 0, root=root / 'rtdb',
+        self.server = create_server('127.0.0.1', 0, root=self.project_root,
                                     workspace_dir='../workspace')
         self.thread = threading.Thread(target=self.server.serve_forever,
                                        kwargs={'poll_interval': .01}, daemon=True)
@@ -63,7 +66,11 @@ class WorkspaceWebTests(unittest.TestCase):
 
     def test_catalog_and_scoped_reads_without_copying(self):
         listing = self.call('workspaces')
-        self.assertEqual(Path(listing['workspace_root']), self.workspace)
+        self.assertTrue(listing['strict_root'])
+        self.assertEqual(listing['workspace_root'], '.')
+        self.assertEqual(listing['default_data_dir'], '.')
+        self.assertTrue(listing['root_id'])
+        self.assertNotIn(str(self.workspace), listing['root_id'])
         self.assertEqual({item['path'] for item in listing['directories']},
                          {'.', 'qinling', 'qinling/sqldb', 'qinling/sqldb/model',
                           'another', 'another/sqldb', 'another/sqldb/model'})
@@ -75,15 +82,44 @@ class WorkspaceWebTests(unittest.TestCase):
         for project in ('qinling', 'another', 'qinling'):
             workspace = project + '/sqldb/model'
             info = self.call('info', workspace=workspace)
-            self.assertEqual(Path(info['data_dir']), self.workspace / workspace)
+            self.assertEqual(info['data_dir'], workspace)
+            self.assertEqual(info['schema_dir'], workspace + '/.rtdb-schema')
             self.assertEqual(len(self.call('databases', workspace=workspace)['databases']), 1)
+            files = self.call('database-files', workspace=workspace)
+            self.assertEqual(files['data_dir'], workspace)
+            self.assertEqual(files['files'][0]['path'], workspace + '/devices.sqlite3')
             result = self.call('database-files/select', workspace=workspace, method='POST',
                                body={'filename': 'devices.sqlite3'})
             self.assertTrue(result['selected'])
+            self.assertEqual(result['file']['path'], workspace + '/devices.sqlite3')
             rows = self.call('tables/nodes/rows', workspace=workspace, database='devices.sqlite3')
             self.assertEqual(rows['records'][0]['row']['name'], project)
         self.assertEqual(self.call('databases')['databases'], [])
         self.assertFalse((self.server.sqlite_manager.data_dir / 'devices.sqlite3').exists())
+
+    def test_default_directory_does_not_include_legacy_data_outside_root(self):
+        legacy = self.project_root / 'sqlite_dat'
+        legacy.mkdir(parents=True, exist_ok=True)
+        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.sqlite3'
+        shutil.copyfile(source, legacy / 'outside.sqlite3')
+
+        self.assertEqual(self.server.sqlite_manager.data_dir, self.workspace.resolve())
+        self.assertEqual(self.call('info')['data_dir'], '.')
+        self.assertEqual(self.call('info')['schema_dir'], '.rtdb-schema')
+        self.assertEqual(self.call('database-files')['files'], [])
+        self.call('database-files/select', method='POST',
+                  body={'filename': 'outside.sqlite3'}, status=404)
+        self.assertTrue((legacy / 'outside.sqlite3').is_file())
+
+    def test_startup_rejects_storage_outside_configured_root(self):
+        for option in ('data_dir', 'schema_dir'):
+            outside = self.project_root / option
+            with self.subTest(option=option):
+                with self.assertRaises(ValueError):
+                    unexpected = create_server('127.0.0.1', 0, root=self.project_root,
+                                               workspace_dir='../workspace', **{option: outside})
+                    unexpected.server_close()
+                self.assertFalse(outside.exists())
 
     def test_empty_nested_directories_can_be_listed_opened_and_used(self):
         relative = 'qinling/sqldb/agc/空目录'
@@ -100,7 +136,7 @@ class WorkspaceWebTests(unittest.TestCase):
         self.assertTrue((target / 'empty_project.sqlite3').is_file())
         self.assertEqual(self.call('databases', workspace=relative)['databases'][0]['filename'],
                          'empty_project.sqlite3')
-        self.assertEqual(Path(self.call('info', workspace='.')['data_dir']), self.workspace)
+        self.assertEqual(self.call('info', workspace='.')['data_dir'], '.')
 
     def test_background_tasks_and_writes_are_directory_scoped(self):
         workspace = 'qinling/sqldb/model'
@@ -134,16 +170,53 @@ class WorkspaceWebTests(unittest.TestCase):
         self.call('info', workspace='missing', status=404)
         self.assertFalse((self.workspace / 'missing').exists())
 
-    def test_symlink_outside_workspace_is_not_listed_or_opened(self):
+    def link_directory(self, link, target):
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            if os.name != 'nt':
+                self.skipTest('Directory symlinks unavailable')
+            try:
+                from _winapi import CreateJunction
+                CreateJunction(str(target), str(link))
+            except (ImportError, OSError):
+                self.skipTest('Directory symlinks and junctions unavailable')
+            self.addCleanup(link.rmdir)
+        else:
+            self.addCleanup(link.unlink)
+
+    def test_linked_directory_outside_workspace_is_not_listed_or_opened(self):
         outside = Path(self.temp.name) / 'outside'
         outside.mkdir()
-        link = self.workspace / 'escape'
-        try:
-            link.symlink_to(outside, target_is_directory=True)
-        except OSError:
-            self.skipTest('Directory symlinks unavailable')
+        self.link_directory(self.workspace / 'escape', outside)
         self.call('info', workspace='escape', status=400)
         self.assertNotIn('escape', {item['path'] for item in self.call('workspaces')['directories']})
+
+    def test_linked_schema_directory_is_refused_before_initialization(self):
+        outside = Path(self.temp.name) / 'outside'
+        outside.mkdir()
+        folder = self.workspace / 'linked_schema'
+        folder.mkdir()
+        self.link_directory(folder / '.rtdb-schema', outside)
+        self.call('info', workspace='linked_schema', status=400)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_linked_database_outside_workspace_is_not_listed_or_opened(self):
+        outside = Path(self.temp.name) / 'outside.sqlite3'
+        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.sqlite3'
+        shutil.copyfile(source, outside)
+        folder = self.workspace / 'linked_database'
+        folder.mkdir()
+        link = folder / 'outside.sqlite3'
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            self.skipTest('File symlinks unavailable')
+        root_listing = self.call('workspaces')
+        item = next(item for item in root_listing['directories'] if item['path'] == 'linked_database')
+        self.assertEqual(item['files'], [])
+        self.call('database-files/select', workspace='linked_database', method='POST',
+                  body={'filename': 'outside.sqlite3'}, status=(400, 404))
 
 
 if __name__ == '__main__':
