@@ -26,9 +26,10 @@ from datetime import datetime
 from pathlib import Path
 
 from core import SQLiteDatabase, TableDefinition, SchemaError, SchemaRegistry, load_database_definition
-from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT
-from core.sqlite_schema import (ensure_embedded_schema, find_embedded_table, load_embedded_database,
-                                remove_embedded_definition, write_embedded_definition)
+from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT, _BLOB
+from core.sqlite_schema import (_read_embedded_database, ensure_embedded_schema, find_embedded_table, load_embedded_database,
+                                native_database, remove_embedded_definition, sqlite_filename, validate_native_table,
+                                write_embedded_definition)
 from core.definition_files import python_definition, normalize_definition_labels
 from .audit import OperationAuditLog, error_summary, result_summary, status_for_exception
 from .errors import APIError
@@ -38,7 +39,13 @@ from .sqlite_runtime import SQLiteRuntime
 
 
 def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    def encode_native_blob(item):
+        if isinstance(item, bytes):
+            return {'__sqlite_blob__': item.hex()}
+        raise TypeError(f'{type(item).__name__} is not JSON serializable')
+
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     default=encode_native_blob).encode()).hexdigest()
 
 
 def browser_value(value):
@@ -47,11 +54,19 @@ def browser_value(value):
         return str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, bytes):
+        return value.hex()
     if isinstance(value, dict):
         return {k: browser_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [browser_value(v) for v in value]
     return value
+
+
+def json_blob(value):
+    if isinstance(value, bytes):
+        return value.hex()
+    raise TypeError(f'{type(value).__name__} is not JSON serializable')
 
 
 def atomic_json(path, value):
@@ -169,6 +184,15 @@ _DATABASE_FILE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\.sqlite3$')
 _DATABASE_JSON_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\.json$')
 _DATABASE_SIDE_FILES = ('-wal', '-shm')
 _MAX_DATABASE_UPLOAD_BYTES = 16 * 1024 * 1024
+
+
+def is_native_database(path):
+    """Recognize explicitly registered external SQLite databases."""
+    return sqlite_filename(path.name) and native_database(path)
+
+
+def is_listed_database(path):
+    return path.is_file() and (_DATABASE_FILE_RE.fullmatch(path.name) or is_native_database(path))
 
 
 def _file_mtime(path):
@@ -445,6 +469,8 @@ class SQLiteManager:
         self.demo = demo
         self.strict_paths = strict_paths
         self.database_file = None
+        self.native = False
+        self.read_only = False
         self.audit_log = OperationAuditLog(self.data_dir)
         self._journal = self.schema_dir / '.sqlite-web-pending.json'
         self._runtime = SQLiteRuntime(self.data_dir, self.schema_dir)
@@ -468,6 +494,10 @@ class SQLiteManager:
 
     @contextmanager
     def read_scope(self):
+        if self.native:
+            with self._runtime.scope(self.database_file):
+                yield
+            return
         while True:
             with self._runtime.scope(self.database_file):
                 if not self._journal.exists():
@@ -484,20 +514,41 @@ class SQLiteManager:
             raise APIError(400, '该表名由 SQLite 存储内核保留')
         return value
 
+    def _table_name(self, value):
+        # Existing RTDB schemas still use ASCII identifiers. Accept Chinese
+        # names for lookups so external SAMP tables can be opened as stored.
+        if isinstance(value, str) and re.fullmatch(r'[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*', value):
+            if any('\u4e00' <= char <= '\u9fff' for char in value):
+                return value
+        return self.name(value)
+
     def for_database(self, filename):
-        filename = self._database_filename({'filename': filename})
+        if not sqlite_filename(filename):
+            raise APIError(400, '请选择有效的 SQLite 数据库文件')
         path = self.data_dir / filename
-        if path.resolve().parent != self.data_dir or not (path.is_file() or
+        if path.resolve() != path or not (path.is_file() or
                 (self.schema_dir / (path.stem + '.json')).is_file()):
             raise APIError(404, f'数据库文件不存在：{filename}')
+        native = is_native_database(path)
+        if not native and not _DATABASE_FILE_RE.fullmatch(filename):
+            raise APIError(404, f'找不到带内置结构的外部数据库：{filename}')
         scoped = copy.copy(self)  # Request-local identity; locks/audit remain shared.
         scoped.database_file = filename
+        scoped.native = native
         scoped._journal = self.schema_dir / ('.sqlite-web.' + path.stem + '.pending.json')
         return scoped
 
+    def require_writable(self, *, name=None, path=None):
+        if self.read_only:
+            raise APIError(403, '数据库只读')
+        # File-level replacement and legacy repair assume RTDB's physical
+        # layout. Native records and schema have their own write paths.
+        if path is not None and is_native_database(path):
+            raise APIError(403, '此操作不能覆盖或重建原生 SQLite 数据库')
+
     def _database(self, database_file=None):
         return SQLiteDatabase(self.data_dir, schema_directory=self.schema_dir,
-                              database_file=database_file or self.database_file)
+                              database_file=database_file or self.database_file, native_writable=not self.read_only)
 
     def _registry(self):
         return SchemaRegistry(self.schema_dir,
@@ -507,7 +558,8 @@ class SQLiteManager:
         return find_embedded_table(self.data_dir, name, self.database_file)
 
     def databases(self):
-        files = {p.name for p in self.data_dir.glob('*.sqlite3') if _DATABASE_FILE_RE.fullmatch(p.name)}
+        files = {p.name for p in self.data_dir.iterdir()
+                 if p.resolve() == p and is_listed_database(p)}
         files.update(p.stem + '.sqlite3' for p in self.schema_dir.glob('*.json')
                      if _DATABASE_FILE_RE.fullmatch(p.stem + '.sqlite3'))
         items = []
@@ -518,13 +570,15 @@ class SQLiteManager:
                     document = next(iter(self.for_database(filename)._registry().database_definitions()), None)
                 items.append({'filename': filename, 'label': document.chn_name if document else Path(filename).stem,
                               'table_count': len(document.tables) if document else 0,
+                              'read_only': self.read_only,
+                              'storage_format': document.storage_format if document else None,
                               'error': None if document else f'缺少 {filename} 内置结构定义'})
             except (SchemaError, sqlite3.Error, APIError) as error:
                 items.append({'filename': filename, 'label': Path(filename).stem, 'table_count': 0, 'error': str(error)})
         return {'databases': items}
 
     def definition(self, name):
-        name = self.name(name)
+        name = self._table_name(name)
         embedded = self._find(name)
         if embedded is not None:
             return embedded[0]
@@ -536,7 +590,7 @@ class SQLiteManager:
             raise APIError(404, f'表不存在：{name}') from error
 
     def definition_source(self, name):
-        name = self.name(name)
+        name = self._table_name(name)
         embedded = self._find(name)
         if embedded is not None:
             return self.schema_dir / (embedded[1].path.stem + '.json')
@@ -547,7 +601,7 @@ class SQLiteManager:
 
     def definition_context(self, name):
         """Return the runtime definition context, preferring SQLite metadata."""
-        name = self.name(name)
+        name = self._table_name(name)
         embedded = self._find(name)
         if embedded is not None:
             _definition, document = embedded
@@ -559,7 +613,7 @@ class SQLiteManager:
 
     def database_path(self, name, *, fallback=None):
         """Resolve the SQLite file that owns a logical table."""
-        embedded = self._find(self.name(name))
+        embedded = self._find(self._table_name(name))
         if embedded is not None:
             return embedded[1].path
         try:
@@ -673,21 +727,23 @@ class SQLiteManager:
         self._journal.unlink()
 
     @contextmanager
-    def session(self, name=None):
+    def session(self, name=None, *, writable=False):
         # Serializes schema changes with request connections in this service.
         # SQLite still coordinates independently opened external processes.
         if name is not None and not self.database_file:
             with self.read_scope():
-                filename = self.database_path(self.name(name)).name
-            with self.for_database(filename).session(name) as table:
+                filename = self.database_path(self._table_name(name)).name
+            with self.for_database(filename).session(name, writable=writable) as table:
                 yield table
             return
         with self.read_scope():
+            if writable:
+                self.require_writable()
             with self._database() as db:
                 if name is None:
                     yield db
                 else:
-                    name = self.name(name)
+                    name = self._table_name(name)
                     if name not in db._embedded_tables():
                         if self.database_file and load_embedded_database(self.data_dir / self.database_file) is not None:
                             raise APIError(404, f'表不存在：{name}')
@@ -708,28 +764,49 @@ class SQLiteManager:
 
     def _database_file_snapshot(self, path):
         """Inspect one server-side SQLite file without registering it first."""
-        name = path.name[:-len('.sqlite3')]
+        name = path.stem
         schema_path = self.schema_dir / (name + '.json')
         python_path = self.schema_dir / (name + '.py')
         item = dict(name=name, filename=path.name, path=str(path), size_bytes=path.stat().st_size,
                     modified_at=_file_mtime(path), definition_exists=schema_path.is_file(),
                     embedded_definition_exists=False,
                     definition_source=None,
-                    python_exists=python_path.is_file(), rtdb=False, selectable=False,
+                    python_exists=python_path.is_file(), rtdb=False, selectable=False, read_only=False,
                     row_count=None, stored_fingerprint=None, definition_match=False, tables=[],
                     status='未检查', error=None)
         try:
             # The embedded registry is authoritative even when an old/stale
             # JSON sidecar is still present. JSON remains a compatibility
             # source only for files created before embedded schema support.
-            document = load_embedded_database(path)
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as connection:
+                connection.execute('BEGIN')
+                document = _read_embedded_database(connection, path)
+                if document is not None and document.storage_format == 'native':
+                    item.update(embedded_definition_exists=True, definition_source='SQLite 内置结构',
+                                storage_format='native', read_only=self.read_only)
+                    integrity = connection.execute('PRAGMA quick_check').fetchone()[0]
+                    if integrity != 'ok':
+                        item.update(status='完整性检查失败', error=f'quick_check={integrity}')
+                        return item
+                    total = 0
+                    for definition in document.tables:
+                        validate_native_table(connection, definition)
+                        data = _sql_quote_name(definition.eng_name)
+                        count = connection.execute(f'SELECT COUNT(*) FROM {data}').fetchone()[0]
+                        total += count
+                        item['tables'].append(dict(name=definition.eng_name, row_count=count,
+                            stored_fingerprint=fingerprint(definition.to_mapping()), definition_match=True))
+                    item.update(status='可用（原生 SQLite）', selectable=True, rtdb=True,
+                                row_count=total, definition_match=True)
+                    return item
             if document is not None:
                 item['embedded_definition_exists'] = True
+                item['storage_format'] = 'rtdb'
                 item['definition_source'] = 'SQLite 内置结构'
             elif schema_path.is_file():
                 document = load_database_definition(schema_path)
                 item['definition_source'] = 'JSON 兼容定义'
-        except (OSError, SchemaError, json.JSONDecodeError) as error:
+        except (OSError, SchemaError, sqlite3.Error, json.JSONDecodeError) as error:
             item.update(status='SQLite 内置结构无效' if item['embedded_definition_exists']
                         else '定义文件无效', error=str(error))
             return item
@@ -782,8 +859,8 @@ class SQLiteManager:
 
     def database_files(self):
         files = []
-        for path in sorted(self.data_dir.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
-            if not _DATABASE_FILE_RE.fullmatch(path.name):
+        for path in sorted(self.data_dir.iterdir(), key=lambda candidate: candidate.name.lower()):
+            if path.resolve() != path or not is_listed_database(path):
                 continue
             try:
                 files.append(self._database_file_snapshot(path))
@@ -797,8 +874,8 @@ class SQLiteManager:
 
     def select_database_file(self, payload):
         filename = payload.get('filename') if isinstance(payload, dict) else None
-        if not isinstance(filename, str) or not _DATABASE_FILE_RE.fullmatch(filename):
-            raise APIError(400, '请选择有效的 .sqlite3 数据库文件')
+        scoped = self.for_database(filename)
+        filename = scoped.database_file
         path = self.data_dir / filename
         if not path.is_file():
             raise APIError(404, f'服务端文件不存在：{filename}')
@@ -826,6 +903,7 @@ class SQLiteManager:
         path = self.data_dir / filename
         if not path.is_file():
             raise APIError(404, f'服务端文件不存在：{filename}')
+        self.require_writable(path=path)
         with self.exclusive():
             self._recover()
             current = self._database_file_snapshot(path)
@@ -891,6 +969,7 @@ class SQLiteManager:
         path = self.data_dir / filename
         if not path.is_file():
             raise APIError(404, f'服务端文件不存在：{filename}')
+        self.require_writable(path=path)
         with self.exclusive():
             self._recover()
             item = self._database_file_snapshot(path)
@@ -922,6 +1001,7 @@ class SQLiteManager:
 
         filename = self._database_filename(payload)
         path = self.data_dir / filename
+        self.require_writable(path=path)
         if not path.is_file():
             raise APIError(404, f'服务端文件不存在：{filename}')
         with self.exclusive():
@@ -1187,6 +1267,7 @@ class SQLiteManager:
                 raise APIError(409, f'目标文件已存在，请输入 {name} 确认覆盖')
             with self.exclusive():
                 self._recover()
+                self.require_writable(path=target_db)
                 backup = Path(tempfile.mkdtemp(prefix='.rtdb-upload-backup-', dir=self.data_dir))
                 paths = [target_db, *(self.data_dir / (database_name + suffix) for suffix in _DATABASE_SIDE_FILES)]
                 if json_content is not None:
@@ -1284,7 +1365,8 @@ class SQLiteManager:
                 try:
                     table = db[name]
                     item.update(row_count=len(table), bytes=table.path.stat().st_size,
-                                database_file=table.path.name, database_name=table.path.stem, error=None)
+                                database_file=table.path.name, database_name=table.path.stem, error=None,
+                                read_only=table.read_only, storage_format='native' if table.native else 'rtdb')
                     known_database_files.add(table.path.name)
                 except (SchemaError, sqlite3.Error) as exc:
                     item.update(row_count=None, bytes=0, error=str(exc))
@@ -1314,6 +1396,10 @@ class SQLiteManager:
                 if not re.fullmatch(r'-?\d+', value):
                     raise APIError(422, f'{name} 必须为整数')
                 converted[name] = int(value)
+            elif kind in _BLOB and isinstance(value, str):
+                if not re.fullmatch(r'(?:[0-9a-fA-F]{2})*', value):
+                    raise APIError(422, f'{name} 必须为成对的十六进制字符')
+                converted[name] = bytes.fromhex(value)
         return table._normalise_row(converted, complete=complete)
 
     @staticmethod
@@ -1324,10 +1410,20 @@ class SQLiteManager:
 
     @staticmethod
     def _view(table, connection):
+        if table.native:
+            return f'main.{table._data_sql}'
         name = '"' + table.name + '"'
         columns = ','.join(f'{physical} AS "{logical}"' for logical, physical in table._fields.items())
         connection.execute(f'CREATE TEMP VIEW IF NOT EXISTS {name} AS SELECT {columns} FROM main.{table._data_sql}')
         return name
+
+    @staticmethod
+    def _row_count(table, connection):
+        if table.native:
+            sql = f'SELECT COUNT(*) FROM main.{table._data_sql}'
+        else:
+            sql = f'SELECT row_count FROM {table._metadata_sql} WHERE version=1'
+        return connection.execute(sql).fetchone()[0]
 
     @contextmanager
     def _reader(self, table, connection):
@@ -1369,8 +1465,7 @@ class SQLiteManager:
         source = f'SELECT * FROM {view}{clause}'
         # Both totals and page rows share the caller's snapshot. Counting must
         # not sort the entire result; unfiltered counts use the trigger-maintained total.
-        total = None if where else connection.execute(
-            f'SELECT row_count FROM {table._metadata_sql} WHERE version=1').fetchone()[0]
+        total = None if where else self._row_count(table, connection)
         with self._reader(table, connection):
             if total is None:
                 total = connection.execute(f'SELECT COUNT(*) FROM ({source}\n)').fetchone()[0]
@@ -1390,14 +1485,14 @@ class SQLiteManager:
         rows = payload.get('rows')
         if not isinstance(rows, list) or len(rows) > self.max_rows:
             raise APIError(400, 'rows 必须是记录数组，且不超过导入上限')
-        with self.session(name) as table:
+        with self.session(name, writable=True) as table:
             prepared = [self._coerce(table, row, complete=True) for row in rows]
             from .write_receipts import write
             table.definition.validate_rows(prepared)
             return write(table, lambda c: {'inserted': table._insert(c,prepared)})
 
     def edit(self, name, payload):
-        with self.session(name) as table:
+        with self.session(name, writable=True) as table:
             where = self._key(table, payload.get('key'))
             values = self._coerce(table, payload.get('values'))
             if any(k in values and values[k] != v for k, v in where.items()):
@@ -1416,7 +1511,7 @@ class SQLiteManager:
         items = payload.get('records')
         if not isinstance(items, list) or not 1 <= len(items) <= 500:
             raise APIError(400, '请选择 1–500 条记录')
-        with self.session(name) as table:
+        with self.session(name, writable=True) as table:
             def remove(c):
                 wheres, seen = [], set()
                 for item in items:
@@ -1438,16 +1533,16 @@ class SQLiteManager:
     def clear(self, name, payload):
         if payload.get('confirm') != name:
             raise APIError(400, '请输入完整表名确认清空')
-        with self.session(name) as table:
+        with self.session(name, writable=True) as table:
             def clear(c):
-                count = c.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
+                count = self._row_count(table, c)
                 if payload.get('expected_count') != count:
                     raise APIError(409, '记录数量已变化，请刷新后重试')
                 return c.execute(f'DELETE FROM {table._data_sql}').rowcount
-            return {'deleted': table._write(clear)}
+            return write_receipts.write(table, lambda c: {'deleted': clear(c)})
 
     def sql(self, name, payload):
-        self.name(name)
+        self._table_name(name)
         statement = payload.get('sql', '')
         if not isinstance(statement, str):
             raise APIError(400, 'sql 必须是字符串')
@@ -1458,12 +1553,12 @@ class SQLiteManager:
         started = time.perf_counter()
         with self.session(name) as table:
             if kind in ('SELECT', 'WITH'):
-                c = table._connection()
-                self._view(table, c)
-                with self._reader(table, c):
-                    cursor = c.execute(statement)
-                    fields = [d[0] for d in cursor.description]
-                    values = cursor.fetchmany(501)
+                with table._read_transaction() as c:
+                    self._view(table, c)
+                    with self._reader(table, c):
+                        cursor = c.execute(statement)
+                        fields = [d[0] for d in cursor.description]
+                        values = cursor.fetchmany(501)
                 # Decode object fields when directly selected; aggregates stay scalar.
                 rows = []
                 for values_row in values[:500]:
@@ -1477,6 +1572,7 @@ class SQLiteManager:
                     rows.append(row)
                 result = dict(rows=rows, columns=fields, rowcount=len(rows), truncated=len(values) > 500, readonly=True)
             elif kind in ('INSERT', 'UPDATE', 'DELETE'):
+                self.require_writable(name=name)
                 if payload.get('confirm') != name:
                     raise APIError(400, '写入 SQL 需要确认表名')
                 result = self._sql_write(table, statement)
@@ -1496,7 +1592,6 @@ class SQLiteManager:
         if re.match(r'^(?:INSERT|UPDATE)\s+OR\b', statement, re.I):
             raise APIError(400, '写入 SQL 不支持 OR 冲突策略，请使用普通 INSERT/UPDATE')
         c = table._connection()
-        view = self._view(table, c)
         changed, errors = [0], []
 
         def validate(index, value):
@@ -1511,6 +1606,8 @@ class SQLiteManager:
                     if not isinstance(value, bytes):
                         raise SchemaError(f'{name}: structured fields use the row/import API')
                     value = table._msgpack.unpackb(value, raw=False, strict_map_key=False)
+                if kind in _BLOB and value is not None and not isinstance(value, bytes):
+                    raise SchemaError(f'{name}: SQL 中请使用十六进制 BLOB 字面值')
                 result = self._coerce(table, {name: value})
                 return table._encode(name, result[name])
             except Exception as exc:
@@ -1521,6 +1618,9 @@ class SQLiteManager:
             changed[0] += 1
             return 0
 
+        if table.native:
+            return self._write_native_sql(table, statement, validate, errors)
+        view = self._view(table, c)
         c.create_function('rtdb_validate', 2, validate)
         c.create_function('rtdb_written', 0, written)
         fields = ','.join(table._fields.values())
@@ -1581,6 +1681,71 @@ class SQLiteManager:
         from .write_receipts import write
         return write(table, execute)
 
+    @staticmethod
+    def _write_native_sql(table, statement, validate, errors):
+        """Use the application's table, its declared constraints and its triggers."""
+        validation_triggers = {'rtdb_web_validate_insert', 'rtdb_web_validate_update'}
+        blocked_functions = {'load_extension', 'writefile', 'readfile'}
+
+        def execute(connection):
+            objects = list(connection.execute("SELECT name, type FROM main.sqlite_master WHERE type IN ('table','trigger')"))
+            tables = {name for name, kind in objects
+                      if kind == 'table' and not name.lower().startswith(('sqlite_', 'rtdb_'))}
+            application_triggers = {name for name, kind in objects if kind == 'trigger'}
+            deadline = time.perf_counter() + 5
+            connection.create_function('rtdb_validate_native', 2, validate)
+            validations = ','.join(f'rtdb_validate_native({i}, NEW.{table._fields[name]})'
+                                   for i, name in enumerate(table.columns))
+            # Validate values after SQLite applies the physical table's affinity
+            # and defaults, without replacing existing application triggers.
+            connection.execute(f'CREATE TEMP TRIGGER rtdb_web_validate_insert BEFORE INSERT '
+                               f'ON main.{table._data_sql} BEGIN SELECT {validations}; END')
+            connection.execute(f'CREATE TEMP TRIGGER rtdb_web_validate_update BEFORE UPDATE '
+                               f'ON main.{table._data_sql} BEGIN SELECT {validations}; END')
+
+            def authorize(action, first, second, database, source):
+                if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+                    return sqlite3.SQLITE_OK
+                if action == sqlite3.SQLITE_FUNCTION:
+                    function = (second or '').lower()
+                    if function == 'rtdb_validate_native':
+                        return sqlite3.SQLITE_OK if source in validation_triggers else sqlite3.SQLITE_DENY
+                    if function not in blocked_functions:
+                        return sqlite3.SQLITE_OK
+                if database == 'main' and first in tables:
+                    if action == sqlite3.SQLITE_READ:
+                        return sqlite3.SQLITE_OK
+                    if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE):
+                        if source in application_triggers:
+                            return sqlite3.SQLITE_OK
+                        if source is None and first == table._data_name:
+                            if action != sqlite3.SQLITE_UPDATE or second not in table.primary_keys:
+                                return sqlite3.SQLITE_OK
+                return sqlite3.SQLITE_DENY
+
+            connection.set_authorizer(authorize)
+            connection.set_progress_handler(lambda: int(time.perf_counter() > deadline or cancellation_requested()), 2000)
+            try:
+                cursor = connection.execute(statement)
+                try:
+                    if cursor.description is not None:
+                        raise APIError(400, '写入 SQL 暂不支持 RETURNING，请另行查询')
+                    return dict(rows=[], rowcount=cursor.rowcount, readonly=False)
+                finally:
+                    cursor.close()
+            except sqlite3.Error:
+                if errors:
+                    raise errors[0]
+                raise
+            finally:
+                connection.set_authorizer(None)
+                connection.set_progress_handler(None, 0)
+                for trigger in validation_triggers:
+                    connection.execute(f'DROP TRIGGER temp.{trigger}')
+                connection.create_function('rtdb_validate_native', 2, None)
+
+        return write_receipts.write(table, execute)
+
     def export(self, name, query):
         if query.get('format', 'json') not in ('json', 'csv'):
             raise APIError(400, '仅支持 JSON 或 CSV')
@@ -1591,7 +1756,8 @@ class SQLiteManager:
                 raise APIError(413, '导出结果超过 100,000 行，请增加过滤条件')
             if query.get('format', 'json') == 'json':
                 return (json.dumps({'table': name, 'definition': table.definition.to_mapping(), 'rows': rows},
-                                   ensure_ascii=False, indent=2).encode('utf-8'), 'application/json', name + '.json')
+                                   ensure_ascii=False, indent=2, default=json_blob).encode('utf-8'),
+                        'application/json', name + '.json')
             stream = io.StringIO(newline='')
             writer = csv.writer(stream)
             writer.writerow(table.columns)
@@ -1603,6 +1769,8 @@ class SQLiteManager:
                         cells.append(r'\N')
                     elif isinstance(value, (dict, list, bool)):
                         cells.append(json.dumps(value, ensure_ascii=False))
+                    elif isinstance(value, bytes):
+                        cells.append(value.hex())
                     else:
                         value = str(value)
                         cells.append('\\' + value if value.startswith('\\') else value)
@@ -1617,7 +1785,7 @@ class SQLiteManager:
             return self.insert(name, {'rows': data.get('rows') if isinstance(data, dict) else data})
         if payload.get('format') != 'csv':
             raise APIError(400, '仅支持 JSON 或 CSV')
-        with self.session(name) as table:
+        with self.session(name, writable=True) as table:
             reader = csv.DictReader(io.StringIO(payload.get('text', '').lstrip('\ufeff')))
             if not reader.fieldnames or len(reader.fieldnames) != len(set(reader.fieldnames)) or set(reader.fieldnames) - set(table.columns):
                 raise APIError(422, 'CSV 列名缺失、重复或与表结构不符')
@@ -1660,7 +1828,29 @@ class SQLiteManager:
                     connection.execute(sql.replace('"' + old_object + '"', '"' + data_name + '_' + old_object + '"', 1))
             existing._write(promote)
 
+    def _native_schema_scope(self, name, payload, *, creating=False):
+        if self.database_file:
+            return self if self.native else None
+        if creating:
+            filename = payload.get('database_file')
+            if isinstance(filename, str) and '.' not in filename:
+                filename += '.sqlite3'
+            if sqlite_filename(filename):
+                path = self.data_dir / filename
+                if path.resolve() == path and is_native_database(path):
+                    return self.for_database(filename)
+            return None
+        embedded = self._find(self._table_name(name))
+        if embedded is not None and embedded[1].storage_format == 'native':
+            return self.for_database(embedded[1].path.name)
+        return None
+
     def save_schema(self, name, payload, *, creating=False, _already_locked=False):
+        native = self._native_schema_scope(name, payload, creating=creating)
+        if native is not None:
+            from .native_schema_edits import save_native_schema
+            return save_native_schema(native, name, payload, creating=creating, already_locked=_already_locked)
+        self.require_writable(name=name)
         if creating and self.database_file:
             payload = {**payload, 'database_file': self.database_file}
         old_name = self.name(name)
@@ -1679,6 +1869,7 @@ class SQLiteManager:
                 database_name = self.name(database_name)
                 grouped_schema = self.schema_dir / (database_name + '.json')
                 grouped_db = self.data_dir / (database_name + '.sqlite3')
+                self.require_writable(path=grouped_db)
                 if not grouped_db.is_file():
                     raise APIError(404, f'目标数据库文件不存在：{database_name}.sqlite3')
                 embedded_document = load_embedded_database(grouped_db)
@@ -1815,6 +2006,11 @@ class SQLiteManager:
         return dict(name=new_name, definition=desired_mapping, schema_version=fingerprint(desired_mapping))
 
     def drop(self, name, payload):
+        native = self._native_schema_scope(name, payload)
+        if native is not None:
+            from .native_schema_edits import drop_native_schema
+            return drop_native_schema(native, name, payload)
+        self.require_writable(name=name)
         if payload.get('confirm') != name:
             raise APIError(400, '请输入表名确认删除')
         if self.database_file:

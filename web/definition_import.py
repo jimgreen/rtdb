@@ -340,6 +340,7 @@ class DefinitionImporter:
         manager = self.manager
         name, definition = plan['summary']['name'], plan['definition']
         path = manager.data_dir / (name + '.sqlite3')
+        manager.require_writable(name=name, path=path)
         schema_path = manager.schema_dir / (name + '.json')
         # BEGIN IMMEDIATE checks the preview revision after acquiring the writer lock.
         with closing(sqlite3.connect(path, timeout=10, isolation_level=None)) as connection:

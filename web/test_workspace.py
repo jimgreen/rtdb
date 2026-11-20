@@ -124,7 +124,12 @@ class WorkspaceWebTests(unittest.TestCase):
     def test_empty_nested_directories_can_be_listed_opened_and_used(self):
         relative = 'qinling/sqldb/agc/空目录'
         target = self.workspace / relative
-        target.mkdir(parents=True)
+        for parent, name in [('qinling/sqldb', 'agc'), ('qinling/sqldb/agc', '空目录')]:
+            result = self.call('workspaces/directories', method='POST',
+                               body={'parent': parent, 'name': name}, status=201)
+            self.assertEqual(result['path'], f'{parent}/{name}')
+        self.call('workspaces/directories', method='POST',
+                  body={'parent': 'qinling/sqldb/agc', 'name': '空目录'}, status=409)
         listing = self.call('workspaces')
         item = next(item for item in listing['directories'] if item['path'] == relative)
         self.assertEqual((item['database_count'], item['files']), (0, []))
@@ -137,6 +142,20 @@ class WorkspaceWebTests(unittest.TestCase):
         self.assertEqual(self.call('databases', workspace=relative)['databases'][0]['filename'],
                          'empty_project.sqlite3')
         self.assertEqual(self.call('info', workspace='.')['data_dir'], '.')
+
+    def test_new_directory_requires_an_existing_workspace_parent_and_valid_name(self):
+        route = 'workspaces/directories'
+        for name in ('', 'nested/name', 'nested\\name', '.hidden', 'NUL.txt', 'name. ', 'a:b', 'rtdb-operation-logs'):
+            with self.subTest(name=name):
+                self.call(route, method='POST', body={'parent': '.', 'name': name}, status=400)
+        for parent in ('../outside', 'D:/outside', '/outside'):
+            with self.subTest(parent=parent):
+                self.call(route, method='POST', body={'parent': parent, 'name': 'example'}, status=400)
+        self.call(route, method='POST', body={'parent': 'missing', 'name': 'example'}, status=404)
+        self.assertEqual(self.call(route, method='POST', body={'parent': '.', 'name': '根目录子目录'}, status=201),
+                         {'path': '根目录子目录'})
+        self.assertFalse((self.workspace / 'missing').exists())
+        self.assertFalse((Path(self.temp.name) / 'outside').exists())
 
     def test_background_tasks_and_writes_are_directory_scoped(self):
         workspace = 'qinling/sqldb/model'
@@ -190,6 +209,9 @@ class WorkspaceWebTests(unittest.TestCase):
         outside.mkdir()
         self.link_directory(self.workspace / 'escape', outside)
         self.call('info', workspace='escape', status=400)
+        self.call('workspaces/directories', method='POST',
+                  body={'parent': 'escape', 'name': 'outside'}, status=400)
+        self.assertEqual(list(outside.iterdir()), [])
         self.assertNotIn('escape', {item['path'] for item in self.call('workspaces')['directories']})
 
     def test_linked_schema_directory_is_refused_before_initialization(self):

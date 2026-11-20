@@ -20,7 +20,7 @@ import copy
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Union
 
@@ -37,6 +37,7 @@ __all__ = [
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TABLE_FILE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NATIVE_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 
 
 class SchemaError(ValueError):
@@ -66,8 +67,10 @@ class TableHead:
 
     chn_name: str
     eng_name: str
-    def __post_init__(self) -> None:
-        if not _IDENTIFIER.fullmatch(self.eng_name):
+    native: InitVar[bool] = False
+
+    def __post_init__(self, native: bool) -> None:
+        if not (NATIVE_IDENTIFIER if native else _IDENTIFIER).fullmatch(self.eng_name):
             raise SchemaError(f"eng_name must be an English identifier, got {self.eng_name!r}")
         if not self.chn_name.strip():
             raise SchemaError("chn_name is required")
@@ -83,9 +86,10 @@ class ColumnDefinition:
     disp_type: str
     disp_menu: str
     default_value: Any = None
+    native: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
-        if not _IDENTIFIER.fullmatch(self.eng_name):
+    def __post_init__(self, native: bool) -> None:
+        if not (NATIVE_IDENTIFIER if native else _IDENTIFIER).fullmatch(self.eng_name):
             raise SchemaError(f"eng_name must be an English identifier, got {self.eng_name!r}")
         if not self.chn_name.strip():
             raise SchemaError("chn_name is required")
@@ -134,10 +138,17 @@ class TableDefinition:
     columns: tuple[ColumnDefinition, ...]
     path: Path
     indexes: Optional[tuple[tuple[str, ...], ...]] = None
+    native_table: Optional[str] = None
     _column_names: tuple[str, ...] = field(init=False, repr=False, compare=False)
     _primary_keys: tuple[str, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self.native_table is not None and (
+            self.native_table != self.eng_name
+            or not NATIVE_IDENTIFIER.fullmatch(self.native_table)
+            or self.native_table.lower().startswith(("rtdb_schema_", "sqlite_"))
+        ):
+            raise SchemaError(f"invalid native SQLite table: {self.native_table!r}")
         if not self.columns:
             raise SchemaError(f"table {self.eng_name!r} must have at least one column")
         names = [column.eng_name for column in self.columns]
@@ -211,6 +222,8 @@ class TableDefinition:
         payload: Mapping[str, Any],
         directory: Union[str, os.PathLike[str]],
         table_name: Optional[str] = None,
+        *,
+        native_table: Optional[str] = None,
     ) -> "TableDefinition":
         """Build a validated definition from the JSON shape used by the web API."""
 
@@ -225,11 +238,15 @@ class TableDefinition:
         if "max_elements" in head_value:
             raise SchemaError("head.max_elements has been removed from the table definition")
         eng_name = _clean(head_value.get("eng_name"))
-        if table_name is not None and eng_name != _validate_table_name(table_name):
+        expected_name = table_name if native_table is not None else (
+            _validate_table_name(table_name) if table_name is not None else None
+        )
+        if expected_name is not None and eng_name != expected_name:
             raise SchemaError(f"head.eng_name {eng_name!r} does not match table name {table_name!r}")
         head = TableHead(
             chn_name=_clean(head_value.get("chn_name")),
             eng_name=eng_name,
+            native=native_table is not None,
         )
         columns: list[ColumnDefinition] = []
         for index, value in enumerate(columns_value, start=1):
@@ -246,6 +263,7 @@ class TableDefinition:
                     disp_type=_clean(value.get("disp_type")),
                     disp_menu=_clean(value.get("disp_menu", "")),
                     default_value=value.get("default_value"),
+                    native=native_table is not None,
                 )
             )
         root = Path(directory).expanduser().resolve()
@@ -259,6 +277,7 @@ class TableDefinition:
             columns=tuple(columns),
             path=root / f"{head.eng_name}.json",
             indexes=indexes,
+            native_table=native_table,
         )
 
     def apply_defaults(self, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -377,9 +396,11 @@ class DatabaseDefinition:
     tables: tuple[TableDefinition, ...]
     path: Path
     grouped: bool = False
+    storage_format: str = 'rtdb'
 
     def __post_init__(self) -> None:
-        if not _IDENTIFIER.fullmatch(self.eng_name):
+        identifier = NATIVE_IDENTIFIER if self.native_tables else _IDENTIFIER
+        if not identifier.fullmatch(self.eng_name):
             raise SchemaError(f"database name must be an English identifier, got {self.eng_name!r}")
         if not self.tables and not self.grouped:
             raise SchemaError(f"database {self.eng_name!r} must contain at least one table")
@@ -390,6 +411,10 @@ class DatabaseDefinition:
     @property
     def table_names(self) -> tuple[str, ...]:
         return tuple(table.eng_name for table in self.tables)
+
+    @property
+    def native_tables(self) -> dict[str, str]:
+        return {table.eng_name: table.native_table for table in self.tables if table.native_table is not None}
 
     @property
     def is_grouped(self) -> bool:

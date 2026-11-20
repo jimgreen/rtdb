@@ -31,7 +31,10 @@ const schemaTools={
     const result=await request(tablePath('schema-preview',state.table||desired.head.eng_name),'POST',{
       definition:desired,version:state.version,creating:!state.table,column_renames:renames});
     el('schema-preview-content').textContent=result.changes.length?result.changes.join('\n'):'没有结构变化';
-    el('schema-preview-status').textContent=result.errors.length?'不能保存：'+result.errors.join('；'):`校验通过，当前 ${result.row_count} 条记录。保存时会再次检查版本。`;
+    const success = isNativeDatabase()
+      ? `当前 ${result.row_count} 条记录。保存时会检查原表约束和结构版本。`
+      : `校验通过，当前 ${result.row_count} 条记录。保存时会再次检查版本。`;
+    el('schema-preview-status').textContent=result.errors.length?'不能保存：'+result.errors.join('；'):success;
     el('schema-preview-status').classList.toggle('is-error',!!result.errors.length);el('schema-preview-dialog').showModal();
   },
   async queryPlan(){

@@ -112,6 +112,8 @@ def receipt(manager, ident, signature):
 def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*1024*1024):
     """Never turn a committed operation into a reported failure of the data write."""
     try:
+        if manager.read_only:
+            return True
         with manager.read_scope(), closing(sqlite3.connect((manager.data_dir/manager.database_file).as_uri()+'?mode=rw',uri=True,timeout=5)) as c:
             if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(TABLE,)).fetchone():
                 return True
@@ -135,15 +137,24 @@ def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*
 
 
 def pending(manager):
+    if manager.read_only:
+        return False
     with manager.read_scope(),closing(sqlite3.connect((manager.data_dir/manager.database_file).as_uri()+'?mode=ro',uri=True,timeout=5)) as c:
         if not c.execute("SELECT 1 FROM sqlite_master WHERE name=?",(TABLE,)).fetchone():return False
         return bool(c.execute(f'SELECT 1 FROM {TABLE} WHERE delivered=0 LIMIT 1').fetchone())
 
 
+def _receipt_databases(manager):
+    from .sqlite_service import is_listed_database
+    for path in manager.data_dir.iterdir():
+        if path.resolve() == path and is_listed_database(path):
+            yield path.name
+
+
 def recover_pending(manager):
-    for path in manager.data_dir.glob('*.sqlite3'):
+    for filename in _receipt_databases(manager):
         try:
-            scoped=manager.for_database(path.name)
+            scoped=manager.for_database(filename)
             while publish(scoped,recovery=True) and pending(scoped):pass
         except Exception: pass  # Inaccessible databases remain available for the repair UI.
 
@@ -154,7 +165,7 @@ class AuditDelivery:
         self.manager=manager; self.condition=threading.Condition(); self.pending={}
         self.active=None; self.stopping=False; self.error=None
         self.retry_at={};self.errors={};self.archive_queue={};self.archive_active=None;self.archive_due={};self.archive_errors={}
-        self.pending={path.name:True for path in manager.data_dir.glob('*.sqlite3')}
+        self.pending={filename:True for filename in _receipt_databases(manager)}
         self.thread=threading.Thread(target=self._run,name='rtdb-audit-delivery',daemon=True)
         self.thread.start()
 

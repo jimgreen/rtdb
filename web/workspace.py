@@ -1,4 +1,5 @@
 """Per-directory Web contexts for databases below a configured workspace root."""
+import errno
 from hashlib import sha256
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 
 from .errors import APIError
 from .management import SQLiteManagement
-from .sqlite_service import SQLiteManager, _DATABASE_FILE_RE
+from .sqlite_service import SQLiteManager, is_listed_database
 from .tasks import TaskRegistry
 from .write_receipts import AuditDelivery
 
@@ -20,7 +21,10 @@ _RUNTIME_FILES = {
     '.web-storage.json', '.web-storage.lock', 'rtdb-operation-log.jsonl',
     'rtdb-operation-log-config.json', 'rtdb-operation-log-config.json.lock',
 }
-_SQLITE_SUFFIXES = ('.sqlite3', '.sqlite3-wal', '.sqlite3-shm', '.sqlite3-journal')
+_UNLISTED_DIRECTORIES = {'node_modules', '__pycache__', 'rtdb-operation-logs'}
+_SQLITE_SUFFIXES = ('.sqlite3', '.sqlite3-wal', '.sqlite3-shm', '.sqlite3-journal',
+                    '.sqlite', '.sqlite-wal', '.sqlite-shm', '.sqlite-journal',
+                    '.db', '.db-wal', '.db-shm', '.db-journal')
 
 
 def _is_link(info):
@@ -99,14 +103,14 @@ class WorkspaceCatalog:
             raise ValueError(error.message) from error
         return data, schema
 
-    def directory(self, relative):
+    def directory(self, relative, *, reject_links=False):
         if (not isinstance(relative, str) or not relative or '\\' in relative or ':' in relative
                 or PureWindowsPath(relative).drive or PurePosixPath(relative).is_absolute()
                 or (relative != '.' and any(part in ('', '.', '..') or part.startswith('.')
                                             for part in relative.split('/')))):
             raise APIError(400, '工作目录必须是 workspace 内的相对路径，使用 / 分隔')
         candidate = self.root / relative
-        if self.strict_root:
+        if self.strict_root or reject_links:
             self._check_path(candidate)
         path = candidate.resolve()
         if not path.is_relative_to(self.root):
@@ -114,6 +118,29 @@ class WorkspaceCatalog:
         if not path.is_dir():
             raise APIError(404, '工作目录不存在')
         return path
+
+    def create_directory(self, relative, name):
+        if (not isinstance(name, str) or not name or name != name.strip()
+                or name.startswith('.') or name.endswith('.') or not name.isprintable()
+                or any(character in '<>:"/\\|?*' for character in name)
+                or PureWindowsPath(name).is_reserved()
+                or name.lower() in _UNLISTED_DIRECTORIES or name.lower() in _RUNTIME_FILES):
+            raise APIError(400, '请输入有效的单级目录名')
+        parent = self.directory(relative, reject_links=True)
+        target = parent / name
+        try:
+            target.mkdir()
+        except FileExistsError as error:
+            raise APIError(409, '同名文件或目录已存在') from error
+        except (FileNotFoundError, NotADirectoryError) as error:
+            raise APIError(404, '父目录不存在') from error
+        except PermissionError as error:
+            raise APIError(403, '没有在此目录下创建文件夹的权限') from error
+        except OSError as error:
+            if error.errno in (errno.EINVAL, errno.ENAMETOOLONG) or getattr(error, 'winerror', None) == 206:
+                raise APIError(400, '目录名称或路径无效') from error
+            raise
+        return {'path': target.relative_to(self.root).as_posix()}
 
     def listing(self):
         directories = []
@@ -123,10 +150,10 @@ class WorkspaceCatalog:
             for base, children, files in os.walk(self.root, followlinks=False):
                 folder = Path(base)
                 children[:] = sorted(name for name in children
-                    if not name.startswith('.') and name not in ('node_modules', '__pycache__', 'rtdb-operation-logs')
+                    if not name.startswith('.') and name.lower() not in _UNLISTED_DIRECTORIES
                     and _ordinary(folder / name))
-                names = sorted(name for name in files if _DATABASE_FILE_RE.fullmatch(name)
-                               and _ordinary(folder / name))
+                names = sorted(name for name in files if _ordinary(folder / name)
+                               and is_listed_database(folder / name))
                 directories.append({'path': folder.relative_to(self.root).as_posix(),
                                     'files': names, 'database_count': len(names)})
         return {'workspace_root': str(self.root), 'directories': directories,

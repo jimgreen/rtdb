@@ -9,7 +9,7 @@ import msgpack
 
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _OBJECT
 from .errors import APIError
-from .sqlite_service import fingerprint
+from .sqlite_service import browser_value, fingerprint
 from .tasks import checkpoint, committing, current_task, TaskCancelled
 from .atomic_import import create_layout
 from . import write_receipts
@@ -20,9 +20,9 @@ MAX_BYTES=128*1024**2
 
 
 def identity(manager,payload):
-    database=payload.get('database');table=manager.name(payload.get('table'))
+    database=payload.get('database')
     if not database:raise APIError(400,'CSV 导入需要明确选择数据库和表')
-    scoped=manager.for_database(database);scoped.definition(table)
+    scoped=manager.for_database(database);table=scoped._table_name(payload.get('table'));scoped.definition(table)
     encoding=payload.get('encoding','utf-8-sig')
     if encoding=='utf-8':encoding='utf-8-sig'
     if encoding not in ('utf-8-sig','gb18030'):raise APIError(400,'CSV 编码仅支持 UTF-8 / GB18030')
@@ -33,7 +33,8 @@ def revision(table,connection):
     """Hash a stable ordered snapshot without materializing the table."""
     digest=hashlib.sha256(fingerprint(table.definition.to_mapping()).encode())
     fields=','.join(table._fields.values())
-    for number,row in enumerate(connection.execute(f'SELECT _pos,{fields} FROM {table._data_sql} ORDER BY _pos')):
+    selection = fields if table.native else '_pos,' + fields
+    for number,row in enumerate(connection.execute(f'SELECT {selection} FROM {table._data_sql} ORDER BY {table._row_order}')):
         if number%1000==0:checkpoint('核对目标表版本',number)
         value=msgpack.packb(row,use_bin_type=True)
         digest.update(len(value).to_bytes(8,'big'));digest.update(value)
@@ -64,7 +65,7 @@ def prepare(manager,value):
         with scoped.session(value['table']) as table, closing(sqlite3.connect(prepared)) as staging:
             staging.execute('PRAGMA cache_size=-2048');staging.execute('PRAGMA synchronous=FULL')
             create_layout(staging,table.definition,'rows','metadata')
-            fields=','.join(table._fields.values());markers=','.join('?' for _ in table.columns)
+            fields=','.join(f'c{i}' for i in range(len(table.columns)));markers=','.join('?' for _ in table.columns)
             sample=[];count=0
             with (folder/'payload.sqlite3').open('r',encoding=value['encoding'],errors='strict',newline='') as stream:
                 reader=csv.DictReader(stream,strict=True)
@@ -96,7 +97,8 @@ def prepare(manager,value):
                         staging.execute(f'INSERT INTO rows ({fields}) VALUES ({markers})',values)
                         if len(sample)<20:
                             sample.append({key:(cell[:160]+'…' if len(cell)>160 else cell) if isinstance(cell,str)
-                                else json.dumps(cell,ensure_ascii=False)[:160] if isinstance(cell,(dict,list)) else cell for key,cell in row.items()})
+                                else json.dumps(cell,ensure_ascii=False)[:160] if isinstance(cell,(dict,list))
+                                else browser_value(cell) for key,cell in row.items()})
                 except (ValueError,TypeError,csv.Error,sqlite3.IntegrityError) as error:
                     raise APIError(422,f'CSV 第 {reader.line_num} 行：{error}（请检查值、列数及重复 KEY）') from error
             if not count:raise APIError(422,'CSV 没有可导入记录')
@@ -149,11 +151,12 @@ def apply(manager,name,payload):
                 if mode=='replace':
                     if revision(table,connection)!=preview['version']:raise APIError(409,'预览后表数据已变化，请重新上传并确认替换')
                     connection.execute(f'DELETE FROM {table._data_sql}')
-                cursor=source.execute(f'SELECT {fields} FROM rows ORDER BY _pos');done=0
+                staging_fields=','.join(f'c{i}' for i in range(len(table.columns)))
+                cursor=source.execute(f'SELECT {staging_fields} FROM rows ORDER BY _pos');done=0
                 while batch:=cursor.fetchmany(BATCH):
                     connection.executemany(command,batch);done+=len(batch)
                     checkpoint('提交 CSV 记录',done,preview['rows'])
-                if connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]>manager.max_rows:
+                if manager._row_count(table, connection)>manager.max_rows:
                     raise APIError(413,'导入后超过100,000条记录，本次已回滚')
                 result=dict(imported=done,mode=mode,upload_id=ident,replayed=False)
                 connection.execute('INSERT INTO rtdb_web_csv_imports VALUES(?,?,?)',(ident,signature,json.dumps(result)))

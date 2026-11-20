@@ -34,6 +34,8 @@ def scope(manager, filename):
     import copy
     scoped = copy.copy(manager)
     scoped.database_file = manager._database_filename({'filename': filename})
+    from .sqlite_service import is_native_database
+    scoped.read_only = is_native_database(manager.data_dir / scoped.database_file)
     scoped._journal = manager.schema_dir / ('.sqlite-web.' + Path(scoped.database_file).stem + '.pending.json')
     return scoped
 

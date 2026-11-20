@@ -18,12 +18,13 @@ def exists(connection,name):
     return bool(connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone())
 
 
-def connect(manager):
+def connect(manager, *, readonly=False):
     if not manager.database_file:raise APIError(400,'请先选择数据库')
     path=manager.data_dir/manager.database_file
     if not path.is_file():raise APIError(404,'数据库文件不存在')
-    connection=sqlite3.connect(path.as_uri()+'?mode=rw',uri=True,timeout=5)
-    connection.execute('PRAGMA synchronous=FULL')
+    connection=sqlite3.connect(path.as_uri()+('?mode=ro' if readonly else '?mode=rw'),uri=True,timeout=5)
+    if not readonly:
+        connection.execute('PRAGMA synchronous=FULL')
     return connection
 
 
@@ -33,6 +34,7 @@ def _days(connection):
 
 
 def configure(manager,payload):
+    manager.require_writable()
     days=payload.get('days')
     if isinstance(days,bool) or not isinstance(days,int) or not 0<=days<=36500:
         raise APIError(422,'压缩天数须为 0 至 36500 的整数，0 表示关闭自动压缩')
@@ -57,6 +59,8 @@ def decode_result(connection,ident,encoded):
 def archive_batch(manager,*,batch_size=200,max_bytes=MAX_BATCH_BYTES):
     """Compress delivered, aged receipts atomically; preserve identifiers and results."""
     import hashlib
+    if manager.read_only:
+        return {'archived':0,'more':False,'days':0}
     with manager.read_scope(),closing(connect(manager)) as c,c:
         days=_days(c)
         if not days or not exists(c,TABLE):return {'archived':0,'more':False,'days':days}
@@ -79,7 +83,7 @@ def archive_batch(manager,*,batch_size=200,max_bytes=MAX_BATCH_BYTES):
 
 
 def statistics(manager):
-    with manager.read_scope(),closing(connect(manager)) as c:
+    with manager.read_scope(),closing(connect(manager,readonly=True)) as c:
         result={'days':_days(c),'pending':0,'delivered':0,'archived':0,'original_bytes':0,'compressed_bytes':0,'oldest_pending':None}
         if exists(c,TABLE):
             result['pending']=c.execute(f'SELECT COUNT(*) FROM {TABLE} WHERE delivered=0').fetchone()[0]

@@ -15,7 +15,7 @@ from .audit import status_for_exception
 from .errors import APIError
 from .tasks import checkpoint, record_timing
 from . import write_receipts
-from .sqlite_service import fingerprint, browser_value
+from .sqlite_service import fingerprint, browser_value, json_blob
 
 
 class SQLiteManagement:
@@ -38,7 +38,7 @@ class SQLiteManagement:
             with table._read_transaction() as connection:
                 rows, total = self.manager._selection(table, connection, query.get('where', ''),
                     query.get('order', ''), limit, offset)
-                table_total = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
+                table_total = self.manager._row_count(table, connection)
             records = [{'row': row, 'ref': {'key': [row[key] for key in table.primary_keys],
                                            'version': fingerprint(row)}} for row in rows]
         return dict(records=records, total=total, table_total=table_total, limit=limit, offset=offset,
@@ -117,11 +117,12 @@ class SQLiteManagement:
             self.manager._view(table, table._connection())
             timings['open_ms']=(time.perf_counter()-started)*1000
             # Only the unmodified table view has unambiguous editable row identities.
-            editable = bool(re.fullmatch(r'SELECT\s+\*\s+FROM\s+(?:"' + re.escape(name) + r'"|' + re.escape(name) + r')', statement, re.I))
+            full_table = bool(re.fullmatch(r'SELECT\s+\*\s+FROM\s+(?:"' + re.escape(name) + r'"|' + re.escape(name) + r')', statement, re.I))
+            editable = full_table and not getattr(table, 'read_only', False)
             source = f'({statement}\n)'
             query_started=time.perf_counter()
             with table._read_transaction() as connection:
-                table_total = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
+                table_total = self.manager._row_count(table, connection)
                 with self.manager._reader(table, connection):
                     columns = [item[0] for item in connection.execute(f'SELECT * FROM {source} LIMIT 0').description]
                     order = payload.get('order')
@@ -130,8 +131,8 @@ class SQLiteManagement:
                             raise APIError(400, '排序列或方向无效')
                         ordering = ' ORDER BY "' + order['column'].replace('"', '""') + '" ' + order['direction']
                     else:
-                        ordering = ' ORDER BY ' + ','.join('"' + key + '"' for key in table.primary_keys) if editable else ''
-                    total = table_total if editable else connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
+                        ordering = ' ORDER BY ' + ','.join('"' + key + '"' for key in table.primary_keys) if full_table else ''
+                    total = table_total if full_table else connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
                     if exporting and total > self.manager.max_rows:
                         raise APIError(413, '导出结果超过 100,000 行，请增加 SQL 过滤条件')
                     can_seek=editable and all(table._types[k] in _INT|_FLOAT|_TEXT|_BOOL for k in table.primary_keys) and (
@@ -210,7 +211,8 @@ class SQLiteManagement:
             document = {'table': name, 'sql': payload['sql'], 'columns': result['columns'], 'rows': result['rows']}
             if result['editable']:
                 document['definition'] = self.manager.definition(name).to_mapping()
-            return {'text': json.dumps(document, ensure_ascii=False, indent=2), 'mime': 'application/json', 'filename': name + '.json'}
+            return {'text': json.dumps(document, ensure_ascii=False, indent=2, default=json_blob),
+                    'mime': 'application/json', 'filename': name + '.json'}
         if format != 'csv':
             raise APIError(400, '仅支持 JSON / CSV')
         fields = payload.get('columns', result['columns'])
@@ -228,6 +230,8 @@ class SQLiteManagement:
                     cells.append(r'\N')
                 elif isinstance(value, (dict, list, bool)):
                     cells.append(json.dumps(value, ensure_ascii=False))
+                elif isinstance(value, bytes):
+                    cells.append(value.hex())
                 else:
                     value = str(value)
                     cells.append('\\' + value if value.startswith('\\') else value)
@@ -242,7 +246,7 @@ class SQLiteManagement:
         with self.manager.session(name) as table:
             with table._read_transaction() as connection:
                 return {'version': self.revision(table, connection),
-                        'count': connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]}
+                        'count': self.manager._row_count(table, connection)}
 
     def batch_edit(self, name, payload):
         records = payload.get('records')
@@ -473,6 +477,8 @@ class SQLiteManagement:
                 'text': json.dumps({'format': 'rtdb-web-backup-v1', 'tables': documents}, ensure_ascii=False, indent=2)}
 
     def restore_documents(self, payload):
+        if self.manager.native:
+            raise APIError(403, '整批恢复不适用于原生 SQLite 库，请逐表导入记录')
         document = json.loads(payload.get('text', '').lstrip('\ufeff'))
         if not isinstance(document, dict) or document.get('format') != 'rtdb-web-backup-v1':
             raise APIError(422, '请选择“备份所选表”生成的备份文件')
@@ -496,6 +502,8 @@ class SQLiteManagement:
             existing = self.table_exists(name)
             if existing:
                 current = self.manager.definition(name)
+                if current.native_table is not None:
+                    raise APIError(403, f'{name} 是原生 SQLite 表，整批恢复不能覆盖')
                 layout = lambda schema: [(col.eng_name, col.data_type, col.primary_key) for col in schema.columns]
                 if layout(current) != layout(definition):
                     raise APIError(409, f'{name} 的字段布局与备份不同；本次尚未写入')
@@ -655,6 +663,14 @@ class SQLiteManagement:
         return result
 
     def _dispatch(self, method, parts, query, payload):
+        if method != 'GET':
+            is_table_request = len(parts) == 3 and parts[0] == 'tables'
+            read_post = method == 'POST' and (
+                parts == ['backup'] or parts == ['database-files', 'select'] or
+                (is_table_request and parts[2] in ('sql', 'sql-export', 'query-plan'))
+            )
+            if not read_post:
+                self.manager.require_writable(name=parts[1] if is_table_request else None)
         if parts == ['storage-maintenance']:
             maintenance = self.manager.storage_maintenance
             if method == 'GET': return maintenance.preview()
@@ -759,6 +775,8 @@ class SQLiteManagement:
         if method == 'POST' and parts in (['restore-preview'], ['restore']):
             return self.restore(payload, preview=parts == ['restore-preview'])
         if method == 'POST' and parts in (['definition-preview'], ['definition-import']):
+            if self.manager.native:
+                raise APIError(403, '定义批量导入不适用于原生 SQLite 库，请在表结构页逐表编辑')
             if payload.get('upload_id'):
                 from . import efile_imports
                 return (efile_imports.validate if parts==['definition-preview'] else efile_imports.apply)(self.manager,payload)
@@ -785,7 +803,7 @@ class SQLiteManagement:
             if action == 'schema':
                 with self.manager.session(name) as table, table._read_transaction() as connection:
                     definition = table.definition.to_mapping()
-                    count = connection.execute(f'SELECT row_count FROM {table._metadata_sql}').fetchone()[0]
+                    count = self.manager._row_count(table, connection)
                 return {'definition': definition, 'version': fingerprint(definition), 'row_count': count}
         operations = {('POST', 'rows'): self.manager.insert, ('PUT', 'rows'): self.batch_edit,
                       ('PUT', 'cell-edits'): self.cell_edits,

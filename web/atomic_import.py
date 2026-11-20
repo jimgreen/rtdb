@@ -64,6 +64,7 @@ def decode_rows(connection, data_name, definition):
 def apply_plan(manager, plan):
     name=plan['summary']['name']
     path=(manager.data_dir / manager.database_file) if manager.database_file else manager.database_path(name)
+    manager.require_writable(path=path)
     schema_path=manager.schema_dir / (path.stem+'.json')
     desired=TableDefinition.from_mapping(plan['definition'],manager.schema_dir,name)
     with closing(sqlite3.connect(path,timeout=10,isolation_level=None)) as connection:

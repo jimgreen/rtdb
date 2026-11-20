@@ -22,6 +22,11 @@ def query_plan(manager, name, payload):
 
 
 def preview(manager, name, payload):
+    native = manager._native_schema_scope(name, payload, creating=bool(payload.get('creating')))
+    if native is not None:
+        from .native_schema_edits import preview_native_schema
+        return preview_native_schema(native, name, payload)
+
     from core import TableDefinition
     from core.definition_files import normalize_definition_labels
     from .sqlite_service import fingerprint, _normalise_column_renames, _schema_rows

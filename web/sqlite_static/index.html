@@ -104,28 +104,44 @@
   </form></dialog>
   <dialog id="database-file-dialog"><form method="dialog">
     <div class="panel-title"><h2>数据库文件管理</h2><button value="cancel" class="icon" aria-label="关闭数据库文件管理">×</button></div>
-    <p class="muted">服务端支持一个 SQLite 文件包含多张表；每个 JSON/Python 定义文件也可包含多张表。双击顶部标题可再次打开此窗口。</p>
-    <div class="workspace-directory-row"><span id="workspace-location-label">数据位置</span>
-      <button id="workspace-picker-trigger" type="button" class="secondary" popovertarget="workspace-picker" aria-label="选择数据目录"><span id="workspace-current">默认数据库目录</span></button>
-      <div id="workspace-picker" popover="auto">
-        <input id="workspace-search" type="search" placeholder="搜索目录名称或相对路径…" aria-label="搜索工作区目录" autocomplete="off">
-        <p id="workspace-search-status" class="muted" role="status"></p>
-        <nav id="workspace-tree" class="workspace-tree" aria-label="工作区目录树"></nav>
-      </div>
-    </div>
     <nav class="dialog-tabs" role="tablist" aria-label="数据库文件工作模式">
       <button id="database-file-tab-server" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="database-file-server" data-database-file-tab="server">服务端文件</button>
       <button id="database-file-tab-upload" class="tab" type="button" role="tab" aria-selected="false" aria-controls="database-file-upload" data-database-file-tab="upload">上传本地文件</button>
     </nav>
     <section id="database-file-server" class="database-file-panel" role="tabpanel" aria-labelledby="database-file-tab-server">
-      <div class="database-file-toolbar"><span id="database-file-directory" class="muted"></span><button id="refresh-database-files" class="secondary small" type="button">刷新列表</button></div>
-      <div id="database-file-list" class="database-file-list"><p class="empty">正在加载…</p></div>
-      <details class="database-file-create"><summary>新建服务端数据库文件</summary>
+      <code id="workspace-current" aria-label="当前数据库路径"></code>
+      <label for="workspace-path">数据库相对路径</label>
+      <div class="workspace-path-row" id="workspace-location">
+        <input id="workspace-path" type="text" placeholder="输入相对路径后按 Enter" autocomplete="off" spellcheck="false">
+        <button id="workspace-picker-trigger" type="button" class="secondary" popovertarget="workspace-picker" aria-label="浏览目录和数据库">▾</button>
+      </div>
+      <p id="workspace-path-error" class="error-text" role="alert"></p>
+      <div id="workspace-picker" popover="auto">
+        <div class="workspace-picker-toolbar">
+          <button id="workspace-parent" class="secondary small" type="button">上一级</button>
+          <button id="workspace-root" class="secondary small" type="button">工作区根目录</button>
+          <button id="workspace-use-directory" class="secondary small" type="button">使用此目录</button>
+          <button id="workspace-mkdir" class="secondary small" type="button">新建目录</button>
+          <button id="workspace-create-database" class="secondary small" type="button">新建数据库</button>
+          <button id="refresh-database-files" class="secondary small" type="button">刷新</button>
+        </div>
+        <p id="workspace-browsing-directory" class="muted" aria-live="polite"></p>
+        <div id="workspace-mkdir-fields" class="workspace-path-row" hidden>
+          <input id="workspace-mkdir-name" type="text" aria-label="新建目录名" placeholder="目录名称" autocomplete="off">
+          <button id="workspace-mkdir-confirm" class="small" type="button">创建</button>
+          <button id="workspace-mkdir-cancel" class="secondary small" type="button">取消</button>
+        </div>
+        <p id="workspace-picker-error" class="error-text" role="alert"></p>
+        <nav id="workspace-tree" class="workspace-tree" aria-label="工作区目录和数据库"></nav>
+      </div>
+      <details id="database-file-create" class="database-file-create" hidden><summary>新建服务端数据库文件</summary>
+        <p id="workspace-create-target" class="muted"></p>
         <div class="schema-head"><label>数据库英文名<input id="database-file-new-name" placeholder="例如 station_a"></label><label>数据库中文名<input id="database-file-new-label" placeholder="例如 A站数据库"></label><label>首张表（可选）<input id="database-file-first-table" placeholder="留空先创建空库"></label><button id="create-database-file" type="button">新建数据库</button></div>
         <p class="muted">可先创建空数据库，进入后逐张添加表；填写首张表时创建默认 id / name 字段。每个数据库对应一份 JSON、Python 定义。</p>
       </details>
     </section>
     <section id="database-file-upload" class="database-file-panel" role="tabpanel" aria-labelledby="database-file-tab-upload" hidden>
+      <p id="database-upload-directory" class="muted"></p>
       <label>选择本地文件（数据库必选，同名 JSON 定义可选）<input id="database-file-upload-input" type="file" multiple accept=".sqlite3,.json,.sqlite3-wal,.sqlite3-shm"></label>
       <p class="muted">单个文件不超过 16 MiB。上传前会检查 RTDB metadata、结构指纹、记录数和 SQLite 完整性；覆盖服务端同名文件需要确认。</p>
       <button id="open-chunk-upload" type="button" class="secondary">上传整库快照（大文件 / 续传）</button>

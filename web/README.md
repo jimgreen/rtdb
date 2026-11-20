@@ -148,11 +148,13 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 
 `GET /api/manage/databases` 返回数据库目录（文件名、中文名、表数和异常信息），仅读取定义，不对每个库执行完整扫描。选择数据库是浏览器自身状态，不改变服务端全局当前库。所有表级接口及定义导入、备份恢复带 `?database=plant_a.sqlite3`，例如 `GET /api/manage/tables?database=plant_a.sqlite3`。文件名限定在服务配置的数据目录内；未指定数据库而存在同名表时拒绝歧义访问。审计操作路径同时记录数据库参数。
 
-SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspace`，本机对应 `D:\codex\workspace`。文件管理的“数据位置”从根目录（`.`）开始，显示其下的相对路径。通过浮层中的树形目录展开、折叠或搜索，点击目录名称立即刷新该目录的文件列表。空目录也会显示，可用于新建或上传数据库。切换目录会检查未保存编辑，各目录的数据库、任务、上传会话和草稿互相隔离。
+SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspace`，本机对应 `D:\codex\workspace`。在“选择 / 新建数据库”中，输入数据库相对路径后按 Enter，或在浮层中展开目录并点选数据库。文件状态和“处理报警”入口在同一列表中显示。“上一级”和“工作区根目录”用于导航，“新建目录”和“新建数据库”作用于选中的目录。浏览目录不切换当前库。切换数据库会检查未保存编辑，各目录的数据库、任务、上传会话和草稿互相隔离。
 
 启动参数 `--workspace-dir` 可指定已有的绝对目录，也可用相对于 `--root` 的路径。默认数据目录为 `.`，定义目录为数据目录下的 `.rtdb-schema`。可用 `--data-dir` 和 `--schema-dir` 配置根目录内的其他位置，相对参数均从文件根目录解析。API 返回的数据和文件路径也以根目录为基准。目录请求只接受使用 `/` 分隔的相对路径，拒绝绝对路径、父级跳转、符号链接和 Windows 联接点。扫描跳过隐藏目录及运行日志。数据库、定义、任务、上传和快照均使用根目录内的目录。
 
-例如 `http://127.0.0.1:8877/?workspace=realtime/qinling/sqldb/model&database=devices.sqlite3`。数据库文件名与目录在 URL 中分别指定，不同目录可以使用相同文件名。API `GET /api/manage/workspaces` 返回根目录（`path: "."`）及各级子目录。验证命令为 `python -m unittest web.test_workspace`。
+例如 `http://127.0.0.1:8877/?workspace=realtime/qinling/sqldb/model&database=devices.sqlite3`。数据库文件名与目录在 URL 中分别指定，不同目录可以使用相同文件名。同一浏览器会记住每个文件根目录上次使用的位置和各目录最后打开的数据库。直接打开首页时自动恢复，链接中的目录和数据库优先。API `GET /api/manage/workspaces` 返回根目录（`path: "."`）及各级子目录。验证命令为 `python -m unittest web.test_workspace`。
+
+带 RTDB 内置定义的原生 SQLite 库（`storage_format=native`）可以在 Web 中查询、增删改记录，也可以新建表、修改表名和显示信息、增加或重命名字段，以及删除不受约束引用的字段和空表。结构变更使用 SQLite 的原生 DDL，物理表和内置定义在同一事务提交。已有字段的类型、默认值、主键及原有索引由原表定义。PAS、SCADA 等应用仍直接使用原表，调整它们依赖的表名和字段前应先核对应用配置。
 
 `POST /api/manage/database-files/create` 可传 `{"name":"plant_a","chn_name":"A站","tables":[]}` 创建空库。Python 调用可用 `SQLiteDatabase(data_dir, schema_directory=schema_dir, database_file="plant_a.sqlite3")` 定位同名表；此限定库实例当前使用直接事务，不支持 `write_process()`。
 

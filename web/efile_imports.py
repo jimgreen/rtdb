@@ -30,6 +30,8 @@ def identity(manager, payload):
     if not payload.get('database'):
         raise APIError(400, '请先选择或新建数据库')
     scoped = manager.for_database(payload['database'])
+    if scoped.native:
+        raise APIError(403, 'E 文件导入不适用于原生 SQLite 库')
     encoding = payload.get('encoding', 'auto')
     if encoding not in ('auto', 'utf-8-sig', 'gb18030', 'utf-16'):
         raise APIError(400, '不支持的 E 文件编码')
@@ -257,6 +259,7 @@ def build_plan(manager, staging, source, index, item, mode, overrides, current):
 def apply_table(manager,plan,prepared,ident,signature):
     from .write_receipts import record_step
     name=plan['summary']['name'];path=manager.data_dir/manager.database_file
+    manager.require_writable(path=path)
     desired=TableDefinition.from_mapping(plan['summary']['definition'],manager.schema_dir,name)
     with closing(sqlite3.connect(path,timeout=10,isolation_level=None)) as connection:
         connection.execute('PRAGMA journal_mode=WAL');connection.execute('PRAGMA synchronous=FULL')

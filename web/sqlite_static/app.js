@@ -7,7 +7,7 @@ const state = { table: null, tables: [], definition: null, version: null, record
   chartFrame: null, chartHits: [], chartCursor: { index: -1, pinned: false, y: 0 }, chartDrag: null, contextRecord: null,
   chartSeries: [], chartPinned: false, chartCleared: true, chartQueryKey: null, chartHidden: new Set(),
   chartStyles: new Map(), chartTitle: "", chartTitleSettings: null, auditRecords: [], auditLoaded: false, logQuery: { date: "", keyword: "", category: "", status: "", page: 1, pageSize: 50, total: 0, pages: 1 },
-  logConfig: null, logDates: [], databaseFiles: [], chartAxisSettings: {
+  logConfig: null, logDates: [], chartAxisSettings: {
     left: { title: "左轴", min: null, max: null, showGrid: true },
     right: { title: "右轴", min: null, max: null, showGrid: true },
     x: { title: "", labelStep: 1 }
@@ -255,7 +255,7 @@ async function run(work, errorTarget = null) {
     editingControls.forEach((control) => { if (control.isConnected) control.disabled = false; });
   }
 }
-async function request(path, method = "GET", body, timing = null) {
+async function request(path, method = "GET", body, timing = null, { allowBackground = true } = {}) {
   const scoped = /^(tables(?:\/|$)|backup$|restore|definition-|receipt-maintenance|database-snapshots)/.test(path);
   const explicitDatabase = path.startsWith('database-snapshots') ? new URLSearchParams(path.split('?')[1]||'').get('database') : null;
   const requestDatabase = explicitDatabase || state.database;
@@ -263,7 +263,7 @@ async function request(path, method = "GET", body, timing = null) {
   const suffix = scoped && requestDatabase && !explicitDatabase ? `${path.includes("?") ? "&" : "?"}database=${encodeURIComponent(requestDatabase)}` : "";
   let endpoint=path+suffix;
   let taskSubmission=null;
-  if(backgroundTasks.supports(path,method,body)) {
+  if(allowBackground && backgroundTasks.supports(path,method,body)) {
     if(backgroundTasks.pending())throw new Error('上次后台任务状态尚未确认，请先刷新页面恢复查询，勿重复提交');
     taskSubmission=await backgroundTasks.prepare(path,scoped?requestDatabase:null);
     endpoint+=`${endpoint.includes('?')?'&':'?'}background=1&request_id=${taskSubmission.id}`;
@@ -307,79 +307,55 @@ function formatBytes(value) {
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
-function databaseFileDefinitionText(file) {
-  const embedded = file.embedded_definition_exists ? "SQLite 内置 ✓" : "SQLite 内置 ×";
-  return `${embedded} / ${file.definition_exists ? "JSON ✓" : "JSON ×"} / ${file.python_exists ? "Python ✓" : "Python ×"}`;
-}
-function renderDatabaseFiles() {
-  const target = el("database-file-list");
-  target.replaceChildren();
-  if (!state.databaseFiles.length) {
-    target.append(node("p", "服务端数据目录中没有 .sqlite3 文件。可在下方新建。", "empty"));
-    return;
-  }
-  const table = node("table"), head = node("tr");
-  ["文件", "表名", "记录数", "定义文件", "状态", "操作"].forEach((label) => head.append(node("th", label)));
-  table.append(node("thead")); table.tHead.append(head);
-  const body = node("tbody");
-  for (const file of state.databaseFiles) {
-    const row = node("tr");
-    const fileTables = Array.isArray(file.tables) ? file.tables : [];
-    const names = fileTables.map((entry) => entry.name);
-    const name = state.tables.find((item) => names.includes(item.name)) || state.tables.find((item) => item.name === file.name);
-    const fileCell = node("td", `${file.filename} · ${formatBytes(file.size_bytes)}`); fileCell.title = file.path || file.filename;
-    const labels = names.length ? names.map((tableName) => {
-      const item = state.tables.find((candidate) => candidate.name === tableName);
-      return item ? `${chineseName(item.definition.head)} / ${tableName}` : tableName;
-    }) : [name ? `${chineseName(name.definition.head)} / ${file.name}` : file.name];
-    const tableCell = node("td", labels.join("、")); tableCell.title = labels.join("\n");
-    const countCell = node("td", file.row_count == null ? "—" : Number(file.row_count).toLocaleString());
-    const definitionCell = node("td", databaseFileDefinitionText(file));
-    const statusCell = node("td", file.status || "未知", `file-status ${file.selectable ? "ok" : "bad"}`); statusCell.title = file.error || file.status || "";
-    const actionCell = node("td");
-    if (file.selectable) actionCell.append(action("打开", () => run(() => selectDatabaseFile(file.filename)), "secondary small"));
-    else actionCell.append(action("处理报警", () => openDatabaseRepair(file), "secondary small"));
-    row.append(fileCell, tableCell, countCell, definitionCell, statusCell, actionCell); body.append(row);
-  }
-  table.append(body); target.append(table);
-}
-function openDatabaseRepair(file) {
-  state.databaseRepairFile = file;
-  el("database-repair-file").textContent = `${file.filename} · ${file.status || "未知状态"}`;
+function openDatabaseRepair(file, directory = workspaceTree.currentPath) {
+  state.databaseRepairFile = { ...file, directory };
+  el("database-repair-file").textContent = `${workspaceDatabasePath(directory, file.filename)} · ${file.status || "未知状态"}`;
   el("database-repair-status").textContent = file.error || "请选择一种处理方式。";
   el("database-repair-error").textContent = "";
+  el("workspace-picker").hidePopover();
   el("database-repair-dialog").showModal();
 }
 async function repairDatabase(actionName) {
   const file = state.databaseRepairFile;
   if (!file) throw new Error("未选择待处理的数据库文件");
-  if (actionName === "delete-orphan" && !await confirmAction("删除未定义数据表", `将删除 ${file.filename}。文件会先归档，确认后继续。`, file.filename)) return;
-  const result = await request(`database-files/${actionName}`, "POST", {
+  const sameDirectory = file.directory === workspaceTree.currentPath;
+  const path = workspaceDatabasePath(file.directory, file.filename);
+  if (actionName === "delete-orphan" && !await confirmAction("删除未定义数据表", `将删除 ${path}。文件会先归档，确认后继续。`, file.filename)) return;
+  // Background polling follows the active workspace in this tab.
+  const result = await request(workspaceEndpoint(`database-files/${actionName}`, file.directory), "POST", {
     filename: file.filename, ...(actionName === "delete-orphan" ? { confirm: file.filename } : {})
-  });
+  }, null, { allowBackground: sameDirectory });
   el("database-repair-dialog").close(); state.databaseRepairFile = null;
-  await refreshTables(); await loadDatabaseFiles();
-  const message = actionName === "delete-orphan" ? `已删除未定义数据表：${file.filename}（已归档）`
-    : actionName === "rebuild-embedded-definition" ? `已重新生成内置定义表：${file.filename}` : `已重建数据表：${file.filename}`;
+  if (sameDirectory) await refreshTables();
+  await loadWorkspaceDirectories();
+  await refreshWorkspaceFiles(file.directory);
+  const message = actionName === "delete-orphan" ? `已删除未定义数据表：${path}（已归档）`
+    : actionName === "rebuild-embedded-definition" ? `已重新生成内置定义表：${path}` : `已重建数据表：${path}`;
   notice(result.warning ? `${message}；${result.warning}` : message); log(message);
 }
-async function loadDatabaseFiles() {
-  await loadWorkspaceDirectories();
-  const result = await request("database-files");
-  state.databaseFiles = Array.isArray(result.files) ? result.files : [];
-  el("database-file-directory").textContent = `服务端数据目录：${result.data_dir || "—"}`;
-  el("database-file-directory").title = `定义目录：${result.schema_dir || "—"}`;
-  renderDatabaseFiles();
-}
-async function selectDatabaseFile(filename) {
+async function selectDatabaseFile(filename, directory = workspaceTree.currentPath) {
+  const changingDirectory = directory !== workspaceTree.currentPath;
+  if (changingDirectory) canSwitchWorkspace();
   if (!await discardSchema() || !await discardCellEdits()) return;
-  const result = await request("database-files/select", "POST", { filename });
+  const result = await request(workspaceEndpoint("database-files/select", directory), "POST", { filename });
+  if (changingDirectory) {
+    navigateWorkspace(directory, { database: result.filename || filename });
+    return;
+  }
   el("database-file-dialog").close();
-  state.database = filename; state.checkedTables.clear(); resetSelection(); await refreshTables();
   const names = Array.isArray(result.file?.tables) ? result.file.tables.map((item) => item.name) : [];
   const target = names.includes(state.table) ? state.table : names[0] || result.name;
-  if (target && state.tables.some((item) => item.name === target)) await selectTable(target);
+  await activateDatabase(result.filename || filename, target);
   notice(`已选择服务端数据库文件：${filename}${names.length > 1 ? `，包含 ${names.length} 张表` : ""}`);
+}
+async function activateDatabase(filename, preferredTable) {
+  state.database = filename || null;
+  state.checkedTables.clear(); state.copiedRows = null; resetSelection();
+  await refreshTables();
+  const available = state.tables.filter((item) => !item.orphan && item.selectable !== false);
+  const target = available.find((item) => item.name === preferredTable) || available[0];
+  if (target) await selectTable(target.name);
+  if (state.database || !filename) rememberWorkspaceSelection(state.database);
 }
 function setDatabaseFileTab(name) {
   document.querySelectorAll("[data-database-file-tab]").forEach((button) => {
@@ -387,6 +363,10 @@ function setDatabaseFileTab(name) {
     button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active));
     const panel = el(button.getAttribute("aria-controls")); panel.hidden = !active;
   });
+  if (name === "upload") {
+    el("workspace-picker").hidePopover();
+    el("database-upload-directory").textContent = `上传目标目录：${workspaceLabel(workspaceTree.currentPath)}`;
+  }
   el("database-file-error").textContent = "";
 }
 function fileToBase64(file) {
@@ -414,32 +394,42 @@ async function uploadDatabaseFile() {
   const database = files.find((file) => /\.sqlite3$/i.test(file.name));
   if (!database) throw new Error("必须选择 .sqlite3 数据库文件");
   const name = database.name.replace(/\.sqlite3$/i, "");
-  const existing = state.databaseFiles.some((item) => item.filename === database.name);
+  const listing = await request("database-files");
+  const existing = listing.files.some((item) => item.filename === database.name);
   if (existing && !await confirmAction("覆盖服务端数据库文件", `将覆盖服务端 ${database.name}，同时更新同名定义文件。`, name)) return;
   const encoded = [];
   for (const file of files) encoded.push({ name: file.name, content: await fileToBase64(file) });
   const result = await request("database-files/upload", "POST", { files: encoded, ...(existing ? { confirm: name } : {}) });
   el("database-file-dialog").close(); el("database-file-upload-input").value = ""; renderDatabaseUploadSelection();
   state.database = result.filename; state.checkedTables.clear(); resetSelection();
-  await refreshTables(); await loadDatabaseFiles();
+  await refreshTables();
   const target = result.tables?.[0]?.name || result.name;
   if (target && state.tables.some((item) => item.name === target)) await selectTable(target);
+  if (state.database) rememberWorkspaceSelection(state.database);
   const message = `${result.replaced ? "已覆盖并更新" : "已上传"} ${result.filename}，${result.tables?.length ?? 1} 张表，${Number(result.row_count).toLocaleString()} 条记录`;
   notice(message); log(message);
 }
 async function createDatabaseFile() {
+  const directory = workspaceTree.browsingPath;
+  const changingDirectory = directory !== workspaceTree.currentPath;
+  if (changingDirectory) canSwitchWorkspace();
   if (!await discardSchema() || !await discardCellEdits()) return;
   const name = el("database-file-new-name").value.trim(), label = el("database-file-new-label").value.trim();
   if (!name) throw new Error("数据库英文名不能为空");
   const firstTable = el("database-file-first-table").value.trim();
-  const result = await request("database-files/create", "POST", { name, chn_name: label || name, tables: firstTable ? [{
+  const result = await request(workspaceEndpoint("database-files/create", directory), "POST", { name, chn_name: label || name, tables: firstTable ? [{
     head: { eng_name: firstTable, chn_name: firstTable }, columns: [
       { eng_name: "id", chn_name: "编号", data_type: "int", primary_key: true, disp_type: "整数", disp_menu: "" },
       { eng_name: "name", chn_name: "名称", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" }
     ] }] : [] });
   el("database-file-new-name").value = ""; el("database-file-new-label").value = ""; el("database-file-first-table").value = "";
+  if (changingDirectory) {
+    navigateWorkspace(directory, { database: result.filename });
+    return;
+  }
   state.database = result.filename; state.checkedTables.clear(); resetSelection();
-  await refreshTables(); await loadDatabaseFiles(); if (firstTable) await selectTable(firstTable); else tab("data"); el("database-file-dialog").close();
+  await refreshTables(); if (firstTable) await selectTable(firstTable); else tab("data"); el("database-file-dialog").close();
+  if (state.database) rememberWorkspaceSelection(state.database);
   notice(`已新建服务端数据库文件：${result.filename}`); log(`新建数据库文件：${result.filename}`);
 }
 function download(text, filename, mime = "text/plain;charset=utf-8") {
@@ -636,11 +626,12 @@ async function refreshTables() {
   if (state.database && !state.databases.some((item) => item.filename === state.database)) { state.database = null; resetSelection(); }
   el("database-select").replaceChildren(new Option("选择数据库…", ""));
   for (const item of state.databases) {
-    const option = new Option(`${item.label} · ${item.filename}${item.error ? "（异常）" : ""}`, item.filename);
+    const option = new Option(`${item.label} · ${item.filename}${item.error ? "（异常）" : item.read_only ? "（只读）" : ""}`, item.filename);
     el("database-select").append(option);
   }
   el("database-select").value = state.database || "";
-  for (const id of ["new-table", "query", "save-schema", "add-column", "schema-name", "schema-label"]) el(id).disabled = !state.database;
+  el("query").disabled = !state.database;
+  updateSchemaLocks();
   state.tables = state.database ? (await request("tables")).tables : [];
   state.checkedTables = new Set([...state.checkedTables].filter((name) => state.tables.some((item) => item.name === name)));
   renderTables();
@@ -673,7 +664,7 @@ async function selectTable(name) {
   el("current-table").textContent = `${chineseName(state.definition.head)} / ${name}`;
   el("table-meta").textContent = `${state.definition.columns.length} 个字段 · 主键 ${state.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name).join(" + ")}`;
   renderTables(); renderFields(); renderSchema(state.definition); await queryRows();
-  await localDrafts.offer();
+  if (!isReadOnlyDatabase()) await localDrafts.offer();
 }
 async function refresh() {
   if (!await discardSchema()) return;
@@ -825,7 +816,7 @@ function openRowContextMenu(event, record, index) {
   setDisabled("undo-edit", !editUndo.length); setDisabled("redo-edit", !editRedo.length);
   setDisabled("preview-edits", !hasPendingData());
   setDisabled("restore-draft",hasPendingData()||!localDrafts.candidates().length);
-  setDisabled("add-row", !hasTable || draftRecords().length >= 500);
+  setDisabled("add-row", !hasTable || isReadOnlyDatabase() || draftRecords().length >= 500);
   const rowIndexes = selectedRowIndexes(record, index);
   setDisabled("copy-rows", !state.editable || !rowIndexes.length);
   setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
@@ -834,7 +825,7 @@ function openRowContextMenu(event, record, index) {
   setDisabled("copy-cells", !hasCellSelection);
   setDisabled("paste-cells", !hasTable || !state.editable || !hasCellSelection);
   setDisabled("delete-selected", !state.editable || !rowIndexes.length);
-  setDisabled("clear-table", !hasTable || pending);
+  setDisabled("clear-table", !hasTable || pending || isReadOnlyDatabase());
   menu.querySelector('[data-action="delete-selected"]').title = !state.editable ? "当前查询结果不可删除，请切换到完整表查询" : rowIndexes.length
     ? `删除选区涉及的 ${rowIndexes.length} 条整行记录；保留其他行的待保存修改` : "请选择行或单元格区域";
   const canPlot = selection.fields.some((column) => selection.indexes.some((rowIndex) =>
@@ -1525,16 +1516,38 @@ function schemaDefaultDisplayType(kind) {
   const type = String(kind || "str").toLowerCase();
   return integerTypes.has(type) ? "整数" : floatTypes.has(type) ? "浮点数" : "文本";
 }
+function isReadOnlyDatabase() {
+  return state.databases.some((item) => item.filename === state.database && item.read_only);
+}
+function isNativeDatabase() {
+  return state.databases.some((item) => item.filename === state.database && item.storage_format === "native");
+}
+function isLockedNativeField(row, property) {
+  if (!state.table || !isNativeDatabase()) return false;
+  return property === "primary_key"
+    || Boolean(row.dataset.originalName) && ["data_type", "default_value"].includes(property);
+}
 function updateSchemaLocks() {
-  el("schema-hint").textContent = state.table
-    ? "表名和字段属性均可修改；下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。"
-    : "下拉框和主键单击修改，文本字段双击后编辑；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON。";
+  const readOnly = isReadOnlyDatabase();
+  for (const id of ["new-table", "save-schema", "add-column", "schema-name", "schema-label", "delete-schema"]) {
+    el(id).disabled = !state.database || readOnly;
+  }
+  const hint = el("schema-hint");
+  if (readOnly) hint.textContent = "当前数据库只读。";
+  else if (isNativeDatabase() && state.table) {
+    hint.textContent = "可修改表名和显示信息、增删或重命名字段。已有字段的类型、主键和默认值由原表定义。";
+  } else if (state.table) {
+    hint.textContent = "表名和字段属性均可修改；下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。";
+  } else {
+    hint.textContent = "下拉框和主键单击修改，文本字段双击后编辑；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON。";
+  }
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
       const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
-      input.disabled = !directEdit && !editing;
-      input.title = directEdit ? "单击修改" : editing ? "编辑中" : "双击单元格进入编辑";
+      const locked = isLockedNativeField(row, input.dataset.property);
+      input.disabled = readOnly || locked || (!directEdit && !editing);
+      input.title = readOnly || locked ? "保留原表定义" : directEdit ? "单击修改" : editing ? "编辑中" : "双击单元格进入编辑";
     }
     row.classList.toggle("schema-editing", editing);
   }
@@ -1558,7 +1571,12 @@ function renderSchema(definition) {
       const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
       cell.title = directEdit ? "单击修改" : "双击此单元格编辑";
       input.setAttribute("aria-label", `${column.eng_name || "新字段"} ${property}`);
-      if (property === "data_type") for (const kind of new Set(["int", "float", "str", "bool", "json", "list", "dict", "datetime", column.data_type])) input.append(new Option(kind, kind));
+      if (property === "data_type") {
+        const types = isNativeDatabase()
+          ? ["int", "float", "str", "bool", "blob"]
+          : ["int", "float", "str", "bool", "json", "list", "dict", "datetime"];
+        for (const kind of new Set([...types, column.data_type])) input.append(new Option(kind, kind));
+      }
       if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
       else if (property === "default_value") {
@@ -1585,6 +1603,7 @@ function renderSchema(definition) {
       input.oninput = update; input.onchange = update;
       cell.ondblclick = (event) => {
         event.preventDefault(); event.stopPropagation();
+        if (isReadOnlyDatabase() || isLockedNativeField(row, property)) return;
         row.dataset.editing = "true"; updateSchemaLocks(); input.disabled = false; input.focus({ preventScroll: true });
         if (input.select && input.type !== "checkbox") input.select();
       };
@@ -1605,10 +1624,14 @@ function openSchemaContextMenu(event, row) {
   if (state.busy) return;
   state.schemaContextRow = row;
   const menu = el("schema-context-menu"); menu.hidden = false; menu.scrollTop = 0;
+  const indexes = menu.querySelector('[data-schema-action="indexes"]');
+  indexes.disabled = isReadOnlyDatabase() || isNativeDatabase();
+  indexes.title = isNativeDatabase() ? "原生 SQLite 的索引由原表定义" : "";
+  menu.querySelector('[data-schema-action="remove-column"]').disabled = isReadOnlyDatabase();
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
-  menu.querySelector("button")?.focus({ preventScroll: true });
+  menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
 }
 function handleSchemaContextAction(actionName) {
   const row = state.schemaContextRow; closeSchemaContextMenu();
@@ -1629,8 +1652,10 @@ function openSidebarContextMenu(event) {
   state.sidebarContextTrigger = event.target.closest("[tabindex]") || el("table-list");
   const menu = el("sidebar-context-menu");
   menu.querySelector('[data-sidebar-action="backup"]').disabled = !state.checkedTables.size;
-  for (const name of ["load-definition", "restore", "receipt-maintenance"]) menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = !state.database;
-  menu.querySelector('[data-sidebar-action="csv-import"]').disabled=!state.database||!state.table;
+  const unavailable = !state.database || isReadOnlyDatabase();
+  for (const name of ["load-definition", "restore"]) menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = unavailable || isNativeDatabase();
+  menu.querySelector('[data-sidebar-action="receipt-maintenance"]').disabled = unavailable;
+  menu.querySelector('[data-sidebar-action="csv-import"]').disabled = unavailable || !state.table;
   menu.hidden = false; menu.scrollTop = 0;
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
@@ -2544,10 +2569,13 @@ el("new-table").onclick = () => run(async () => {
   renderSchema({ head: { eng_name: "", chn_name: "" }, columns: [{ eng_name: "id", chn_name: "编号", data_type: "int", primary_key: true, disp_type: "整数", disp_menu: "" },
     { eng_name: "name", chn_name: "名称", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" }] }); tab("schema");await localDrafts.offer();
 });
-async function openDatabaseFileDialog() {
+async function openDatabaseFileDialog(fileTab = "server") {
   if (!await discardSchema() || !await discardCellEdits()) return;
-  setDatabaseFileTab("server"); el("database-file-error").textContent = ""; el("database-file-dialog").showModal();
-  await loadDatabaseFiles();
+  await loadWorkspaceDirectories({ reset: true });
+  el("database-file-create").open = false;
+  setDatabaseFileTab(fileTab);
+  el("database-file-dialog").showModal();
+  if (fileTab === "server") showWorkspacePicker();
 }
 el("app-title").ondblclick = () => run(openDatabaseFileDialog);
 el("open-database-files").onclick = () => run(openDatabaseFileDialog);
@@ -2558,18 +2586,34 @@ el("database-select").onchange = () => {
   if (state.busy) return;
   run(async () => {
     if (!await discardSchema() || !await discardCellEdits()) return;
-    state.database = filename || null; state.checkedTables.clear(); state.copiedRows = null; resetSelection();
-    await refreshTables();
-    const first = state.tables.find((item) => !item.orphan && item.selectable !== false);
-    if (first) await selectTable(first.name);
+    await activateDatabase(filename);
   });
 };
-document.querySelectorAll("[data-database-file-tab]").forEach((button) => { button.onclick = () => setDatabaseFileTab(button.dataset.databaseFileTab); });
-el("refresh-database-files").onclick = () => run(loadDatabaseFiles);
+document.querySelectorAll("[data-database-file-tab]").forEach((button) => {
+  button.onclick = () => run(async () => {
+    const fileTab = button.dataset.databaseFileTab;
+    const directory = workspaceTree.browsingPath;
+    if (fileTab === "upload" && directory !== workspaceTree.currentPath) {
+      canSwitchWorkspace();
+      if (!await discardSchema() || !await discardCellEdits()) return;
+      navigateWorkspace(directory, { choose: "upload" });
+      return;
+    }
+    setDatabaseFileTab(fileTab);
+    if (fileTab === "server") showWorkspacePicker();
+  });
+});
+el("refresh-database-files").onclick = () => run(async () => {
+  await loadWorkspaceDirectories();
+  await refreshWorkspaceFiles(workspaceTree.browsingPath);
+});
 el("database-repair-embed").onclick = () => run(() => repairDatabase("rebuild-embedded-definition"), "database-repair-error");
 el("database-repair-delete").onclick = () => run(() => repairDatabase("delete-orphan"), "database-repair-error");
 el("database-repair-rebuild").onclick = () => run(() => repairDatabase("rebuild-from-embedded"), "database-repair-error");
-el("database-repair-dialog").addEventListener("close", () => { state.databaseRepairFile = null; });
+el("database-repair-dialog").addEventListener("close", () => {
+  state.databaseRepairFile = null;
+  if (el("database-file-dialog").open && !el("database-file-server").hidden) showWorkspacePicker();
+});
 el("database-file-upload-input").onchange = renderDatabaseUploadSelection;
 el("upload-database-file").onclick = () => run(uploadDatabaseFile, "database-file-error");
 el("create-database-file").onclick = () => run(createDatabaseFile);
@@ -2692,15 +2736,48 @@ chartObserver.observe(el("chart-area"));
 virtualGrid.init();
 schemaTools.init();
 run(async () => {
-  const info = await request("info"); el("connection").textContent = `SQLite ${info.sqlite_version} · WAL / FULL`;
+  let info;
+  try {
+    info = await request("info");
+  } catch (error) {
+    if (!workspacePath || ![400, 403, 404].includes(error.status)) throw error;
+    const fallback = new URL(location.href);
+    fallback.searchParams.delete("workspace");
+    fallback.searchParams.delete("database");
+    fallback.searchParams.set("choose_database", "1");
+    location.replace(fallback.href);
+    return;
+  }
+  el("connection").textContent = `SQLite ${info.sqlite_version} · WAL / FULL`;
   configureWorkspaceScope(info);
+  if (await restoreWorkspaceSelection(info)) return;
   state.historyScope = workspaceScope || `${info.data_dir}\n${info.schema_dir}`;
   await localDrafts.init();
   state.dataDir = info.data_dir || "";
   el("storage-path").textContent = info.data_dir; el("storage-path").title = `数据：${info.data_dir}\n定义：${info.schema_dir}`;
   log("管理终端已连接 SQLite"); await refreshTables(); if (state.tables.length) await selectTable(state.tables[0].name); else resetSelection();
   await backgroundTasks.resume();
-  const requestedDatabase = new URLSearchParams(location.search).get('database');
-  if (requestedDatabase) await selectDatabaseFile(requestedDatabase);
-  else if (new URLSearchParams(location.search).get('choose_database') === '1') await openDatabaseFileDialog();
+  const parameters = new URLSearchParams(location.search);
+  const requestedDatabase = parameters.get("database");
+  const chooseDatabase = parameters.get("choose_database");
+  const previousDatabase = rememberedDatabase();
+  const filename = requestedDatabase || (!parameters.has("database") && !chooseDatabase ? previousDatabase : null);
+  if (filename) {
+    try {
+      await selectDatabaseFile(filename);
+      return;
+    } catch (error) {
+      if (![400, 403, 404, 409, 422].includes(error.status)) throw error;
+      if (filename === previousDatabase) rememberWorkspaceSelection(null);
+      await openDatabaseFileDialog();
+      el("workspace-path-error").textContent = `无法打开 ${filename}，请选择其他数据库。`;
+      return;
+    }
+  }
+  if (chooseDatabase === "1" || chooseDatabase === "upload") {
+    rememberWorkspaceSelection();
+    await openDatabaseFileDialog(chooseDatabase === "upload" ? "upload" : "server");
+  } else {
+    rememberWorkspaceSelection(parameters.has("database") ? null : undefined);
+  }
 });

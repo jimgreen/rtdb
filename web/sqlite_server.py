@@ -17,7 +17,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .errors import APIError
 from .audit import status_for_exception
@@ -111,8 +111,10 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         workspace = getattr(self.server, 'workspaces', None)
         if getattr(workspace, 'strict_root', False):
             payload = _relative_metadata(payload, workspace.root)
-            if isinstance(payload, dict) and ('workspace_root' in payload or payload.get('engine') == 'sqlite'):
-                payload.update(strict_root=True, root_id=workspace.root_id)
+        if workspace is not None and isinstance(payload, dict) and (
+            'workspace_root' in payload or payload.get('engine') == 'sqlite'
+        ):
+            payload.update(strict_root=workspace.strict_root, root_id=workspace.root_id)
         body = json.dumps(browser_value(payload), ensure_ascii=False, allow_nan=False).encode('utf-8')
         encoding_ms=(time.perf_counter()-encoding_started)*1000
         self.send_response(status)
@@ -256,7 +258,15 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'export':
                 content, media, filename = self._recorded('GET', parts, None,
                     lambda: self.manager.export(parts[3], {k: v[0] for k, v in query.items()}))
-                self.send_response(200); self.send_header('Content-Type', media); self.send_header('Content-Disposition', f'attachment; filename="{filename}"'); self.send_header('Content-Length', str(len(content))); self.end_headers(); self.wfile.write(content); return
+                disposition = (f'attachment; filename="{filename}"' if filename.isascii()
+                               else "attachment; filename*=UTF-8''" + quote(filename))
+                self.send_response(200)
+                self.send_header('Content-Type', media)
+                self.send_header('Content-Disposition', disposition)
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'check':
                 self._send_json(200, self._recorded('GET', parts, None, lambda: self.manager.check(parts[3]))); return
             raise APIError(404, '路由不存在')
@@ -327,6 +337,9 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             return False
         if parts == ['api', 'manage', 'workspaces'] and method == 'GET':
             self._send_json(200, self.server.workspaces.listing())
+            return True
+        if parts == ['api', 'manage', 'workspaces', 'directories'] and method == 'POST':
+            self._send_json(201, self.server.workspaces.create_directory(payload.get('parent'), payload.get('name')))
             return True
         if len(parts)==3 and parts[2]=='tasks' and method=='GET':
             self._send_json(200,{'tasks':self.context.tasks.recent()})

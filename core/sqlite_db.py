@@ -12,7 +12,6 @@ Structured fields optionally use MessagePack BLOBs, never pickle or row JSON.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -26,15 +25,17 @@ import time
 import uuid
 from collections.abc import Mapping, MutableMapping, MutableSequence
 from contextlib import contextmanager
+from itertools import groupby
 
 from .file_mapped_db import (
     FileMappedDatabase, Table as _SQLTable, _compile_where, _parse_equality_mapping,
     _parse_order_by, _sort_rows, _unquote_identifier, _validate_identifier,
 )
-from .table_schema import SchemaError, SchemaRegistry
+from .table_schema import NATIVE_IDENTIFIER, SchemaError, SchemaRegistry
 from .sqlite_schema import (
-    EMBEDDED_TABLES, EMBEDDED_TABLES_TABLE, ensure_embedded_schema,
-    load_embedded_database, write_embedded_definition,
+    EMBEDDED_DATABASE_TABLE, EMBEDDED_TABLES, EMBEDDED_TABLES_TABLE, ensure_embedded_schema,
+    definition_fingerprint, iter_embedded_databases, legacy_sqlite_filename, native_database, sqlite_filename,
+    validate_native_table, write_embedded_definition,
 )
 
 __all__ = ['SQLiteDatabase', 'SQLiteTable', 'SQLiteTableKeyValue',
@@ -64,11 +65,12 @@ _FLOAT = {'float', 'double', 'number', 'decimal'}
 _BOOL = {'bool', 'boolean'}
 _TEXT = {'str', 'string', 'text', 'varchar', 'char', 'date', 'datetime', 'time'}
 _OBJECT = {'list', 'array', 'dict', 'object', 'json'}
+_BLOB = {'blob'}
 
 
 class SQLiteTable(MutableSequence):
     def __init__(self, database, definition, *, database_path=None, shared=False,
-                 database_label=None):
+                 database_label=None, native=False):
         self.database = database
         self.definition = self.schema = definition
         self.name = definition.eng_name
@@ -77,11 +79,14 @@ class SQLiteTable(MutableSequence):
         self.path = Path(database_path or (database.directory / (self.name + '.sqlite3'))).resolve()
         self.shared = bool(shared)
         self.database_label = database_label
-        self._data_name = 'data' if not self.shared else f'rtdb_data_{self.name}'
+        self.native = native
+        self.read_only = native and not database.native_writable
+        self._data_name = self.name if native else ('data' if not self.shared else f'rtdb_data_{self.name}')
         self._metadata_name = 'metadata' if not self.shared else f'rtdb_metadata_{self.name}'
         self._data_sql = _quote_sql_name(self._data_name)
         self._metadata_sql = _quote_sql_name(self._metadata_name)
-        self._fields = {name: f'c{i}' for i, name in enumerate(self.columns)}
+        self._fields = {name: _quote_sql_name(name) if native else f'c{i}' for i, name in enumerate(self.columns)}
+        self._row_order = ','.join(self._fields[name] for name in self.primary_keys) if native else '_pos'
         self._types = {c.eng_name: c.data_type.strip().lower() for c in definition.columns}
         self._msgpack = None
         if any(kind in _OBJECT for kind in self._types.values()):
@@ -91,15 +96,24 @@ class SQLiteTable(MutableSequence):
                 raise ImportError('install msgpack>=1 for SQLite list/object/json columns') from exc
             self._msgpack = msgpack
         for kind in self._types.values():
-            if kind not in _INT | _FLOAT | _BOOL | _TEXT | _OBJECT:
+            if kind not in _INT | _FLOAT | _BOOL | _TEXT | _OBJECT and not (native and kind in _BLOB):
                 raise SchemaError(f'unsupported SQLite data_type: {kind}')
         self._local = threading.local()
         self._connections = []
         self._connection_lock = threading.RLock()
         self._closed = False
         self._schema_fingerprint = None
-        fingerprint = hashlib.sha256(json.dumps(definition.to_mapping(), sort_keys=True,
-                                                ensure_ascii=False).encode()).hexdigest()
+        fingerprint = definition_fingerprint(definition)
+        if self.native:
+            self._schema_fingerprint = fingerprint
+            self._native_schema_version = None
+            try:
+                with self._read_transaction():
+                    pass
+            except BaseException:
+                self.close()
+                raise
+            return
         def initialize(c):
             ensure_database_name = self.path.stem
             ensure_embedded_schema(c, ensure_database_name, self.database_label)
@@ -171,13 +185,20 @@ class SQLiteTable(MutableSequence):
                 raise SQLiteStorageError('table is closed')
             connection = getattr(self._local, 'connection', None)
             if connection is None:
-                connection = sqlite3.connect(self.path, timeout=self.database.busy_timeout,
+                if self.native:
+                    mode = 'ro' if self.read_only else 'rw'
+                    target = f'{self.path.as_uri()}?mode={mode}'
+                else:
+                    target = self.path
+                connection = sqlite3.connect(target, uri=self.native, timeout=self.database.busy_timeout,
                                              isolation_level=None, check_same_thread=False)
                 try:
-                    mode = connection.execute('PRAGMA journal_mode=WAL').fetchone()[0]
-                    if mode.lower() != 'wal':
-                        raise SQLiteStorageError('WAL mode unavailable')
-                    connection.execute('PRAGMA synchronous=FULL')
+                    if not self.native:
+                        mode = connection.execute('PRAGMA journal_mode=WAL').fetchone()[0]
+                        if mode.lower() != 'wal':
+                            raise SQLiteStorageError('WAL mode unavailable')
+                    if not self.read_only:
+                        connection.execute('PRAGMA synchronous=FULL')
                     connection.execute(f'PRAGMA mmap_size={self.database.mmap_size}')
                     connection.execute('PRAGMA cache_size=-8192')
                     connection.execute('PRAGMA foreign_keys=ON')
@@ -189,6 +210,8 @@ class SQLiteTable(MutableSequence):
             return connection
 
     def _write(self, callback):
+        if self.read_only:
+            raise SQLiteStorageError('原生 SQLite 表由应用维护，RTDB 仅支持读取')
         c = self._connection()
         if c.in_transaction:
             raise SQLiteStorageError('nested transactions are not supported')
@@ -232,7 +255,21 @@ class SQLiteTable(MutableSequence):
     def _check_schema(self, connection):
         if self._schema_fingerprint is None:
             return
-        actual = connection.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
+        if self.native:
+            actual = connection.execute(
+                f'SELECT fingerprint, '
+                f'(SELECT storage_format FROM {_quote_sql_name(EMBEDDED_DATABASE_TABLE)} WHERE version=1), '
+                f'(SELECT schema_version FROM pragma_schema_version) '
+                f'FROM {_quote_sql_name(EMBEDDED_TABLES_TABLE)} WHERE table_name=?', (self.name,),
+            ).fetchone()
+            if actual is None or actual[0] != self._schema_fingerprint or actual[1] != 'native':
+                raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
+            if actual[2] != self._native_schema_version:
+                validate_native_table(connection, self.definition)
+                self._native_schema_version = actual[2]
+            return
+        else:
+            actual = connection.execute(f'SELECT fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
         if not actual or actual[0] != self._schema_fingerprint:
             raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
 
@@ -261,6 +298,8 @@ class SQLiteTable(MutableSequence):
             return int(bool(value))
         if kind in _INT and not -(2**63) <= value < 2**63:
             raise SchemaError(f'{name}: integer outside SQLite signed 64-bit range')
+        if kind in _BLOB and not isinstance(value, (bytes, bytearray)):
+            raise SchemaError(f'{name}: expected a SQLite BLOB')
         if isinstance(value, float) and not math.isfinite(value):
             raise SchemaError(f'{name}: non-finite number')
         return value
@@ -275,7 +314,8 @@ class SQLiteTable(MutableSequence):
         if complete:
             row = self.definition.apply_defaults(row)
             self.definition.validate_rows([row])
-            row = {name: row.get(name) for name in self.columns}
+            if not self.native:
+                row = {name: row.get(name) for name in self.columns}
         for name, value in row.items():
             if value is not None:
                 self.definition._validate_value(value, self.definition.column(name), 1)
@@ -285,6 +325,8 @@ class SQLiteTable(MutableSequence):
         return row
 
     def _decode(self, record, fields=None):
+        if self.native:
+            return dict(zip(fields or self.columns, record))
         row = {}
         for name, value in zip(fields or self.columns, record):
             if value is not None:
@@ -307,9 +349,9 @@ class SQLiteTable(MutableSequence):
                 return None
             kind = self._types[name]
             if value is not None:
-                if kind in _TEXT and not isinstance(value, str):
+                if not self.native and kind in _TEXT and not isinstance(value, str):
                     return '0', []
-                if kind in _INT | _FLOAT | _BOOL and not isinstance(value, (int, float)):
+                if not self.native and kind in _INT | _FLOAT | _BOOL and not isinstance(value, (int, float)):
                     return '0', []
                 if isinstance(value, int) and not -(2**63) <= value < 2**63:
                     return None
@@ -332,7 +374,7 @@ class SQLiteTable(MutableSequence):
         condition = self._where_sql(where)
         ordering = _parse_order_by(order_by)
         if condition is None or any(self._types.get(f) in _OBJECT for f, desc in ordering):
-            rows = [self._decode(r) for r in c.execute('SELECT '+','.join(self._fields.values())+f' FROM {self._data_sql} ORDER BY _pos')]
+            rows = [self._decode(r) for r in c.execute('SELECT '+','.join(self._fields.values())+f' FROM {self._data_sql} ORDER BY {self._row_order}')]
             predicate = _compile_where(where)
             rows = [row for row in rows if predicate(copy.deepcopy(row))]
             _sort_rows(rows, order_by)
@@ -342,9 +384,9 @@ class SQLiteTable(MutableSequence):
             field = self._fields[name]
             direction = 'DESC' if descending else 'ASC'
             order.extend([f'({field} IS NULL) {direction}', f'{field} {direction}'])
-        order.append('_pos')
+        order.append(self._row_order)
         predicate, values = condition
-        projection = ','.join(self._fields[f] for f in fields) or '_pos'
+        projection = ','.join(self._fields[f] for f in fields) or '1'
         records = c.execute(f'SELECT {projection} FROM {self._data_sql} WHERE {predicate} ORDER BY '+','.join(order)+
                             ' LIMIT ? OFFSET ?', (*values, -1 if limit is None else limit, offset))
         return [self._decode(r, fields) if fields else {} for r in records]
@@ -371,6 +413,21 @@ class SQLiteTable(MutableSequence):
             return connection.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, values).fetchone()[0]
 
     def _insert(self, c, rows):
+        if self.native:
+            # Omitted columns keep their SQL defaults, including default
+            # expressions the embedded definition cannot represent.
+            def shape(row):
+                return tuple(field for field in self.columns if field in row)
+
+            count = 0
+            for fields, group in groupby(rows, key=shape):
+                columns = ','.join(self._fields[name] for name in fields)
+                values = ','.join('?' for _ in fields)
+                batch = [tuple(self._encode(field, row[field]) for field in fields) for row in group]
+                count += c.executemany(
+                    f'INSERT INTO {self._data_sql} ({columns}) VALUES ({values})', batch
+                ).rowcount
+            return count
         if rows:
             c.executemany(f'INSERT INTO {self._data_sql} ('+','.join(self._fields.values())+') VALUES ('+
                           ','.join('?' for _ in self.columns)+')',
@@ -398,8 +455,11 @@ class SQLiteTable(MutableSequence):
         sql, args = condition
         # The primary-key index already guarantees uniqueness. Check the DML
         # rowcount in this transaction instead of probing each key twice.
-        primary = (strict and limit is None and isinstance(where, Mapping)
+        primary = (strict and not self.native and limit is None and isinstance(where, Mapping)
                    and set(where) == set(self.primary_keys))
+        if self.native and strict and isinstance(where, Mapping) and any(
+                field in where and where[field] is None for field in self.primary_keys):
+            raise SchemaError('原生 SQLite 记录的主键不能为空')
         if strict and not primary:
             count = c.execute(f'SELECT COUNT(*) FROM {self._data_sql} WHERE '+sql, args).fetchone()[0]
             if count > 1:
@@ -409,6 +469,8 @@ class SQLiteTable(MutableSequence):
                     raise KeyError(where)
                 return self._insert(c, [upsert])
         if limit is not None:
+            if self.native:
+                return self._change_native_matching(c, kind, where, patch, limit)
             sql = f' _pos IN (SELECT _pos FROM {self._data_sql} WHERE '+sql+' ORDER BY _pos LIMIT ?)'
             args = [*args, limit]
         if kind == 'delete':
@@ -425,11 +487,19 @@ class SQLiteTable(MutableSequence):
             return self._insert(c, [upsert])
         return count
 
+    def _change_native_matching(self, connection, kind, where, patch, limit):
+        # Native tables have no RTDB position column and may use WITHOUT ROWID.
+        # Select and modify by logical keys in the same write transaction.
+        keys = self._select(connection, where, columns=self.primary_keys, limit=limit)
+        return sum(self._change(connection, kind, key, patch, strict=True) for key in keys)
+
     def update(self, values, where=None, *, limit=None):
         self._window(limit)
         patch = self._normalise_row(values)
         if self._where_sql(where) is not None:
             return self._write(lambda c: self._change(c, 'update', where, patch, limit))
+        if self.native:
+            return self._write(lambda c: self._change_native_matching(c, 'update', where, patch, limit))
         predicate = _compile_where(where)
         def apply(rows, columns):
             count = 0
@@ -443,6 +513,8 @@ class SQLiteTable(MutableSequence):
         self._window(limit)
         if self._where_sql(where) is not None:
             return self._write(lambda c: self._change(c, 'delete', where, limit=limit))
+        if self.native:
+            return self._write(lambda c: self._change_native_matching(c, 'delete', where, None, limit))
         predicate = _compile_where(where)
         def remove(rows, columns):
             keep, count = [], 0
@@ -471,6 +543,8 @@ class SQLiteTable(MutableSequence):
         for the mmap backend; SQLite has a fixed schema, so those arguments
         are accepted and intentionally ignored here.
         """
+        if self.native and not self.read_only:
+            raise SQLiteStorageError('原生 SQLite 表按主键排序，请使用主键或条件修改记录')
         def change(c):
             rows = self._select(c)
             result = callback(rows, list(self.columns))
@@ -481,11 +555,20 @@ class SQLiteTable(MutableSequence):
             return copy.deepcopy(result)
         return self._write(change)
 
-    def __len__(self):
-        row = self._connection().execute(f'SELECT row_count,fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
+    def _row_count(self, connection):
+        if self.native:
+            return connection.execute(f'SELECT count(*) FROM {self._data_sql}').fetchone()[0]
+        row = connection.execute(f'SELECT row_count,fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
         if row[1] != self._schema_fingerprint:
             raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
         return row[0]
+
+    def __len__(self):
+        connection = self._connection()
+        if self.native and not connection.in_transaction:
+            with self._read_transaction() as connection:
+                return self._row_count(connection)
+        return self._row_count(connection)
 
     def __iter__(self):
         return iter(self.all())
@@ -625,7 +708,7 @@ class SQLiteTableKeyValue(MutableMapping):
             return result
         wheres = [self._where(k) for k in keys]
         conditions = [self.table._where_sql(w) for w in wheres]
-        if all(q is not None and all(v is not None for v in w.values())
+        if not self.table.native and all(q is not None and all(v is not None for v in w.values())
                for q,w in zip(conditions, wheres)):
             # Use native indexed IN lookups. All chunks share the caller's snapshot.
             valid = [(k, tuple(w.values())) for k,w,q in zip(keys, wheres, conditions) if q[0] != '0']
@@ -1246,18 +1329,26 @@ class SQLiteWriteProcess(SQLiteWriteClient):
 
 class SQLiteDatabase:
     def __init__(self, directory=None, *, schema_directory=None, busy_timeout=5.0,
-                 transaction_retries=3, mmap_size=256 * 1024 * 1024, database_file=None):
+                 transaction_retries=3, mmap_size=256 * 1024 * 1024, database_file=None,
+                 native_writable=False):
         if busy_timeout < 0 or transaction_retries < 1 or mmap_size < 0:
             raise ValueError('invalid SQLite timeout/retry/mmap configuration')
         self.directory = Path(directory or Path.cwd() / 'dat').expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.schema_directory = Path(schema_directory) if schema_directory else self.directory.parent / 'def/table'
-        if database_file is not None and (Path(database_file).name != database_file or
-                not database_file.endswith('.sqlite3')):
-            raise ValueError('database_file must be a local .sqlite3 filename')
         self.database_file = database_file
-        self.schema_registry = SchemaRegistry(self.schema_directory,
-            database_name=Path(database_file).stem if database_file else None)
+        self.native_writable = native_writable
+        schema_name = None
+        if database_file is not None:
+            if not sqlite_filename(database_file):
+                raise ValueError('database_file must be a local SQLite filename')
+            path = Path(database_file)
+            if not legacy_sqlite_filename(database_file):
+                if not native_database(self.directory / path):
+                    raise ValueError(f'{database_file!r} requires a native SQLite embedded definition')
+            else:
+                schema_name = path.stem
+        self.schema_registry = SchemaRegistry(self.schema_directory, database_name=schema_name)
         self.busy_timeout, self.transaction_retries = float(busy_timeout), int(transaction_retries)
         self.mmap_size = int(mmap_size)
         self._pid, self._closed = os.getpid(), False
@@ -1274,12 +1365,7 @@ class SQLiteDatabase:
         if self._embedded_cache is not None:
             return self._embedded_cache
         found = {}
-        for path in sorted(self.directory.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
-            if self.database_file and path.name != self.database_file:
-                continue
-            document = load_embedded_database(path)
-            if document is None:
-                continue
+        for document in iter_embedded_databases(self.directory, self.database_file):
             for definition in document.tables:
                 if definition.eng_name in found:
                     raise SchemaError(f'ambiguous table {definition.eng_name!r}; specify database_file')
@@ -1289,16 +1375,23 @@ class SQLiteDatabase:
 
     def table(self, name):
         self._check_open()
-        name = _validate_identifier(name, label='table name')
+        name = _unquote_identifier(name)
+        if not NATIVE_IDENTIFIER.fullmatch(name):
+            raise ValueError(f'invalid table name: {name!r}')
         with self._lock:
             if name not in self._tables:
                 embedded = self._embedded_tables().get(name)
+                native = False
                 if embedded is not None:
                     definition, document = embedded
                     database_name = document.path.stem
                     database_label = document.chn_name
                     shared = document.is_grouped
+                    native = document.storage_format == 'native'
                 else:
+                    _validate_identifier(name, label='table name')
+                    if self.database_file and native_database(self.directory / self.database_file):
+                        raise SchemaError(f'原生 SQLite 数据库未定义表 {name!r}')
                     definition = self.schema_registry.load(name)
                     document = self.schema_registry.database_definition(name)
                     database_name = Path(self.database_file).stem if self.database_file else document.eng_name
@@ -1307,9 +1400,10 @@ class SQLiteDatabase:
                 self._tables[name] = SQLiteTable(
                     self,
                     definition,
-                    database_path=self.directory / (database_name + '.sqlite3'),
+                    database_path=document.path if embedded is not None else self.directory / (database_name + '.sqlite3'),
                     shared=shared,
                     database_label=database_label,
+                    native=native,
                 )
             return self._tables[name]
     __getitem__ = table
