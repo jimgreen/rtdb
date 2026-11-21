@@ -214,7 +214,7 @@ class FileMappedWriterTests(unittest.TestCase):
                 target = '_append_wal_locked' if stage == 'before_wal' else '_apply_entries_and_header_locked'
                 with patch.object(_FixedRecordStore, target, side_effect=OSError('injected disk error')):
                     with ThreadPoolExecutor(2) as pool:
-                        results = list(pool.map(lambda n: service.execute('records', 'insert', [_row(n)], str(n)), [1, 2]))
+                        results = list(pool.map(lambda n, _svc=service: _svc.execute('records', 'insert', [_row(n)], str(n)), [1, 2]))
                     self.assertTrue(all(r.get('unknown') and 'result' not in r for r in results))
                     self.assertIn('error', service.stop())
                 # Before WAL there is nothing to recover. After WAL, both

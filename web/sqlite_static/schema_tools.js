@@ -10,11 +10,18 @@ const schemaTools={
   updateMode(){el('index-custom').hidden=el('index-mode').value==='auto';},
   addIndex(fields=[]){
     const row=node('div',null,'index-entry'),selected=node('span',fields.join(' → ')||'尚未选择字段');row.fields=[...fields];
-    const choose=node('select');choose.setAttribute('aria-label','索引字段');choose.append(new Option('选择字段…',''));
-    for(const field of this.fields)choose.append(new Option(field,field));
-    choose.onchange=()=>{if(choose.value&&!row.fields.includes(choose.value))row.fields.push(choose.value);selected.textContent=row.fields.join(' → ');choose.value='';};
-    const back=node('button','撤回末列');back.type='button';back.onclick=()=>{row.fields.pop();selected.textContent=row.fields.join(' → ')||'尚未选择字段';};
-    const remove=node('button','删除索引');remove.type='button';remove.onclick=()=>row.remove();
+    const choose=node('select');choose.setAttribute('aria-label','索引字段');
+    const refreshOptions=()=>{
+      choose.replaceChildren(new Option('选择字段…',''));
+      for(const field of this.fields){
+        if(!row.fields.includes(field))choose.append(new Option(field,field));
+      }
+      choose.disabled=choose.options.length<=1;
+    };
+    refreshOptions();
+    choose.onchange=()=>{if(choose.value&&!row.fields.includes(choose.value)){row.fields.push(choose.value);selected.textContent=row.fields.join(' → ');refreshOptions();}choose.value='';};
+    const back=node('button','撤回末列','secondary small');back.type='button';back.onclick=()=>{row.fields.pop();selected.textContent=row.fields.join(' → ')||'尚未选择字段';refreshOptions();};
+    const remove=node('button','删除索引','danger-outline small');remove.type='button';remove.onclick=()=>row.remove();
     row.append(selected,choose,back,remove);el('index-rows').append(row);
   },
   apply(){
@@ -46,24 +53,31 @@ const schemaTools={
   },
   init(){
     el('index-mode').onchange=()=>this.updateMode();el('add-index').onclick=()=>this.addIndex();el('apply-indexes').onclick=()=>run(()=>this.apply());
-    el('cancel-indexes').onclick=()=>el('schema-index-dialog').close();el('close-schema-preview').onclick=()=>el('schema-preview-dialog').close();
+    el('cancel-indexes').onclick=()=>el('schema-index-dialog').close();el('close-indexes-x').onclick=()=>el('schema-index-dialog').close();
+    el('close-schema-preview').onclick=()=>el('schema-preview-dialog').close();el('close-schema-preview-x').onclick=()=>el('schema-preview-dialog').close();
   }
 };
 
 const auditDeliveryUI={
-  timer:null,
+  timer:null,seq:0,
   watch(){
-    clearTimeout(this.timer);const target=el('audit-warning');target.hidden=false;target.textContent='日志同步中';
+    clearTimeout(this.timer);this.seq+=1;
+    const target=el('audit-warning');target.hidden=false;target.textContent='日志同步中';
     target.title='数据和审计事件已提交，正在同步日期日志';target.onclick=()=>this.poll();this.timer=setTimeout(()=>this.poll(),250);
   },
   async poll(){
-    const target=el('audit-warning');
+    clearTimeout(this.timer);
+    const seq=++this.seq, target=el('audit-warning');
     try{
-      const response=await workspaceFetch('/api/manage/audit-delivery');if(!response.ok)throw Error('无法读取日志同步状态');
-      const state=await response.json();
-      if(!state.pending_databases.length){target.hidden=true;return;}
-      target.textContent=state.error?'日志同步待重试':'日志同步中';target.title=state.error||'数据已保存，日志同步中';
-    }catch(error){target.textContent='日志同步状态未知';target.title=error.message;}
-    clearTimeout(this.timer);this.timer=setTimeout(()=>this.poll(),2000);
+      const response=await workspaceFetch('/api/manage/audit-delivery');
+      const deliveryState=await parseJsonResponse(response,'无法读取日志同步状态');
+      if(seq!==this.seq)return;
+      if(!deliveryState.pending_databases.length){target.hidden=true;return;}
+      target.textContent=deliveryState.error?'日志同步待重试':'日志同步中';target.title=deliveryState.error||'数据已保存，日志同步中';
+    }catch(error){
+      if(seq!==this.seq)return;
+      target.textContent='日志同步状态未知';target.title=error.message;
+    }
+    this.timer=setTimeout(()=>{if(seq===this.seq)this.poll();},2000);
   }
 };

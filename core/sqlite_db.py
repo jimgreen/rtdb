@@ -12,24 +12,24 @@ Structured fields optionally use MessagePack BLOBs, never pickle or row JSON.
 from __future__ import annotations
 
 import copy
-import json
 import math
 import multiprocessing as mp
 from multiprocessing.managers import BaseManager
 import os
 from pathlib import Path
 import queue
+import re
 import sqlite3
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Mapping, MutableMapping, MutableSequence
 from contextlib import contextmanager
 from itertools import groupby
 
 from .file_mapped_db import (
-    FileMappedDatabase, Table as _SQLTable, _compile_where, _parse_equality_mapping,
-    _parse_order_by, _sort_rows, _unquote_identifier, _validate_identifier,
+    FileMappedDatabase, Table as _SQLTable, _compile_where, _parse_order_by, _sort_rows, _unquote_identifier, _validate_identifier,
 )
 from .table_schema import NATIVE_IDENTIFIER, SchemaError, SchemaRegistry
 from .sqlite_schema import (
@@ -68,6 +68,24 @@ _OBJECT = {'list', 'array', 'dict', 'object', 'json'}
 _BLOB = {'blob'}
 
 
+class _ThreadConnectionSlot:
+    """包装线程私有 SQLite 连接，随线程退出自动触发关闭回收。"""
+    def __init__(self, connection):
+        self.connection = connection
+
+
+def _release_thread_connection(connection, connections, lock):
+    """线程销毁时自动从活跃集合移除并关闭连接，避免短生命周期线程连接泄漏。"""
+    with lock:
+        if connection not in connections:
+            return
+        connections.discard(connection)
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
 class SQLiteTable(MutableSequence):
     def __init__(self, database, definition, *, database_path=None, shared=False,
                  database_label=None, native=False):
@@ -99,7 +117,7 @@ class SQLiteTable(MutableSequence):
             if kind not in _INT | _FLOAT | _BOOL | _TEXT | _OBJECT and not (native and kind in _BLOB):
                 raise SchemaError(f'unsupported SQLite data_type: {kind}')
         self._local = threading.local()
-        self._connections = []
+        self._connections = set()
         self._connection_lock = threading.RLock()
         self._closed = False
         self._schema_fingerprint = None
@@ -183,7 +201,8 @@ class SQLiteTable(MutableSequence):
         with self._connection_lock:
             if self._closed:
                 raise SQLiteStorageError('table is closed')
-            connection = getattr(self._local, 'connection', None)
+            slot = getattr(self._local, 'slot', None)
+            connection = slot.connection if slot is not None else None
             if connection is None:
                 if self.native:
                     mode = 'ro' if self.read_only else 'rw'
@@ -205,8 +224,10 @@ class SQLiteTable(MutableSequence):
                 except BaseException:
                     connection.close()
                     raise
-                self._local.connection = connection
-                self._connections.append(connection)
+                slot = _ThreadConnectionSlot(connection)
+                self._connections.add(connection)
+                weakref.finalize(slot, _release_thread_connection, connection, self._connections, self._connection_lock)
+                self._local.slot = slot
             return connection
 
     def _write(self, callback):
@@ -293,7 +314,10 @@ class SQLiteTable(MutableSequence):
         if kind in _OBJECT:
             return self._msgpack.packb(value, use_bin_type=True)
         if kind in _FLOAT:
-            return float(value)
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise SchemaError(f'{name}: non-finite number')
+            return numeric
         if kind in _BOOL:
             return int(bool(value))
         if kind in _INT and not -(2**63) <= value < 2**63:
@@ -339,30 +363,174 @@ class SQLiteTable(MutableSequence):
             row[name] = value
         return row
 
-    def _where_sql(self, where):
-        eq = where if isinstance(where, Mapping) else _parse_equality_mapping(where)
-        if where is not None and eq is None:
+    def _where_sql(self, where, *, equality_only=False):
+        if where is None:
+            return '1', []
+        if isinstance(where, Mapping):
+            terms, values = [], []
+            for name, value in where.items():
+                clause = self._compile_scalar_clause(name, '=', value)
+                if clause is None:
+                    return None
+                if clause[0] == '0':
+                    return '0', []
+                terms.append(clause[0])
+                values.extend(clause[1])
+            return ' AND '.join(terms) or '1', values
+        if not isinstance(where, str) or not where.strip():
+            return None
+        from .file_mapped_db import (
+            _IDENTIFIER, _parse_scalar, _parse_value_list,
+            _split_keyword, _strip_outer_parentheses,
+        )
+        expression = _strip_outer_parentheses(where)
+        if len(_split_keyword(expression, 'OR')) > 1:
+            return None
+        parts = _split_keyword(expression, 'AND')
+        if not parts or any(not part.strip() for part in parts):
             return None
         terms, values = [], []
-        for name, value in (eq or {}).items():
-            if name not in self._fields or self._types[name] in _OBJECT:
-                return None
-            kind = self._types[name]
-            if value is not None:
-                if not self.native and kind in _TEXT and not isinstance(value, str):
-                    return '0', []
-                if not self.native and kind in _INT | _FLOAT | _BOOL and not isinstance(value, (int, float)):
-                    return '0', []
-                if isinstance(value, int) and not -(2**63) <= value < 2**63:
+        for raw_part in parts:
+            part = _strip_outer_parentheses(raw_part)
+            null_match = re.match(
+                rf'^\s*(?P<field>{_IDENTIFIER}(?:\.{_IDENTIFIER})?)\s+IS\s+(?P<not>NOT\s+)?NULL\s*$',
+                part, re.IGNORECASE,
+            )
+            if null_match:
+                if equality_only:
                     return None
-            terms.append(self._fields[name] + ' IS ?')
-            values.append(value)
+                name = self._where_field_name(null_match.group('field'))
+                if name is None:
+                    return None
+                terms.append(f"{self._fields[name]} IS {'NOT ' if null_match.group('not') else ''}NULL")
+                continue
+            in_match = re.match(
+                rf'^\s*(?P<field>{_IDENTIFIER}(?:\.{_IDENTIFIER})?)\s+IN\s+(?P<value>.+?)\s*$',
+                part, re.IGNORECASE,
+            )
+            if in_match:
+                if equality_only:
+                    return None
+                name = self._where_field_name(in_match.group('field'))
+                if name is None or self._types[name] in _OBJECT | _BLOB:
+                    return None
+                try:
+                    items = _parse_value_list(in_match.group('value'))
+                except ValueError:
+                    return None
+                if not items:
+                    return '0', []
+                kind = self._types[name]
+                has_null = False
+                filtered = []
+                for item in items:
+                    if item is None:
+                        has_null = True
+                        continue
+                    checked = self._check_where_scalar(kind, item)
+                    if checked is False:
+                        continue
+                    if checked is None:
+                        return None
+                    filtered.append(checked)
+                if not filtered and not has_null:
+                    return '0', []
+                sub = []
+                if filtered:
+                    sub.append(f"{self._fields[name]} IN ({','.join('?' for _ in filtered)})")
+                    values.extend(filtered)
+                if has_null:
+                    sub.append(f'{self._fields[name]} IS NULL')
+                terms.append('(' + ' OR '.join(sub) + ')' if len(sub) > 1 else sub[0])
+                continue
+            cmp_match = re.match(
+                rf'^\s*(?P<field>{_IDENTIFIER}(?:\.{_IDENTIFIER})?)\s*(?P<op><>|!=|>=|<=|=|>|<)\s*(?P<value>.+?)\s*$',
+                part, re.IGNORECASE,
+            )
+            if not cmp_match:
+                return None
+            if equality_only and cmp_match.group('op') != '=':
+                return None
+            name = self._where_field_name(cmp_match.group('field'))
+            if name is None:
+                return None
+            try:
+                expected = _parse_scalar(cmp_match.group('value'))
+            except ValueError:
+                return None
+            clause = self._compile_scalar_clause(name, cmp_match.group('op'), expected)
+            if clause is None:
+                return None
+            if clause[0] == '0':
+                return '0', []
+            terms.append(clause[0])
+            values.extend(clause[1])
         return ' AND '.join(terms) or '1', values
+
+    def _where_field_name(self, raw_field):
+        field = _unquote_identifier(raw_field)
+        if '.' in field:
+            field = field.rsplit('.', 1)[1]
+        return field if field in self._fields else None
+
+    def _check_where_scalar(self, kind, value):
+        """返回规范化参数；不匹配列类型返回 False（恒假）；无法安全下推返回 None。"""
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        if isinstance(value, int) and not isinstance(value, bool) and not -(2**63) <= value < 2**63:
+            return None
+        if not self.native:
+            if kind in _TEXT:
+                return value if isinstance(value, str) else False
+            if kind in _INT | _FLOAT | _BOOL:
+                if not isinstance(value, (int, float)):
+                    return False
+                return int(value) if isinstance(value, bool) else value
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        return value if isinstance(value, (int, float, str)) else None
+
+    def _compile_scalar_clause(self, name, operator, value):
+        if name not in self._fields or self._types[name] in _OBJECT | _BLOB:
+            return None
+        field = self._fields[name]
+        kind = self._types[name]
+        if operator == '=':
+            if value is None:
+                return f'{field} IS NULL', []
+            checked = self._check_where_scalar(kind, value)
+            if checked is False:
+                return '0', []
+            if checked is None:
+                return None
+            return f'{field} IS ?', [checked]
+        if operator in ('!=', '<>'):
+            if value is None:
+                return f'{field} IS NOT NULL', []
+            checked = self._check_where_scalar(kind, value)
+            if checked is False:
+                return '1', []
+            if checked is None:
+                return None
+            return f'{field} IS NOT ?', [checked]
+        # 范围比较 > >= < <=：任一侧为 NULL 或类型不兼容时与 Python 保持一致返回恒假。
+        if value is None:
+            return '0', []
+        if self.native:
+            # 原生 SQLite 列可能含混合存储类，范围比较保守回退 Python 以防跨类型比较差异。
+            return None
+        checked = self._check_where_scalar(kind, value)
+        if checked is False:
+            return '0', []
+        if checked is None:
+            return None
+        return f'({field} IS NOT NULL AND {field} {operator} ?)', [checked]
 
     @staticmethod
     def _window(limit, offset=0):
-        if not isinstance(offset, int) or offset < 0 or (limit is not None and
-                (not isinstance(limit, int) or limit < 0)):
+        if (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0 or
+                (limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0))):
             raise ValueError('limit/offset must be non-negative integers')
 
     def _select(self, c, where=None, *, columns=None, order_by=None, limit=None, offset=0):
@@ -559,7 +727,7 @@ class SQLiteTable(MutableSequence):
         if self.native:
             return connection.execute(f'SELECT count(*) FROM {self._data_sql}').fetchone()[0]
         row = connection.execute(f'SELECT row_count,fingerprint FROM {self._metadata_sql} WHERE version=1').fetchone()
-        if row[1] != self._schema_fingerprint:
+        if not row or row[1] != self._schema_fingerprint:
             raise SchemaError(f'SQLite {self.name}: schema changed; close and reopen the database')
         return row[0]
 
@@ -634,12 +802,18 @@ class SQLiteTable(MutableSequence):
         return SQLiteTableWriteBatch(self)
 
     def close(self):
-        # Call only after worker operations finish; close releases all thread connections.
+        # 逐个容错关闭全部活跃线程连接，确保单连接异常不会中断释放与状态标记。
         with self._connection_lock:
-            for c in self._connections:
-                c.close()
+            connections = list(self._connections)
             self._connections.clear()
             self._closed = True
+            if hasattr(self._local, 'slot'):
+                del self._local.slot
+        for c in connections:
+            try:
+                c.close()
+            except Exception:
+                pass
 
     execute = _SQLTable.execute
     _clauses = staticmethod(_SQLTable._clauses)
@@ -939,7 +1113,7 @@ def _prepare_writer_operation(table, operation, payload):
             where, limit = payload
             patch = None
         table._window(limit)
-        if table._where_sql(where) is None:
+        if table._where_sql(where, equality_only=True) is None:
             raise ValueError('writer conditions require scalar equalities')
         return lambda c: table._change(c, operation, where, patch, limit)
     if operation in ('update_keys', 'delete_keys'):
@@ -1026,6 +1200,7 @@ class _SQLiteWriterService:
     def _commit(self, db, group):
         self._stats['active_requests'] = len(group)
         prepared, responses = [], {}
+        validation_errors = {}
         try:
             table = db[group[0]['table']]
             for i, request in enumerate(group):
@@ -1033,7 +1208,7 @@ class _SQLiteWriterService:
                     prepared.append((i, _prepare_writer_operation(
                         table, request['operation'], request['payload'])))
                 except (ValueError, TypeError, KeyError) as exc:
-                    responses[i] = _writer_error(exc)
+                    validation_errors[i] = responses[i] = _writer_error(exc)
 
             def apply(c):
                 for i, callback in prepared:
@@ -1052,10 +1227,9 @@ class _SQLiteWriterService:
                 table._write(apply)
                 self._stats['commits'] += 1
         except Exception as exc:
-            # Lock acquisition failure is known not to have started. I/O and
-            # ambiguous COMMIT failures are never automatically replayed.
+            # 仅保留事务开始前已确定的预校验错误；已进入事务的请求在 COMMIT 失败时必须标记 unknown。
             response = _writer_error(exc, unknown=not isinstance(exc, (SQLiteBusyError, SchemaError)))
-            responses = {i: response for i in range(len(group))}
+            responses = {i: validation_errors.get(i, response) for i in range(len(group))}
         self._stats['requests'] += len(group)
         self._stats['max_group'] = max(self._stats['max_group'], len(group))
         for i, item in enumerate(group):
@@ -1249,12 +1423,16 @@ class SQLiteWriteProcess(SQLiteWriteClient):
                  transaction_retries=3, mmap_size=256 * 1024 * 1024,
                  batch_size=256, flush_interval=0.001, queue_size=1024,
                  request_timeout=30.0, start_method='spawn'):
-        if (not isinstance(batch_size, int) or batch_size < 1 or
-                not isinstance(queue_size, int) or queue_size < 1 or
+        if (isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1 or
+                isinstance(queue_size, bool) or not isinstance(queue_size, int) or queue_size < 1 or
+                isinstance(transaction_retries, bool) or not isinstance(transaction_retries, int) or transaction_retries < 1 or
+                isinstance(mmap_size, bool) or not isinstance(mmap_size, int) or mmap_size < 0 or
+                isinstance(flush_interval, bool) or not isinstance(flush_interval, (int, float)) or
                 not math.isfinite(flush_interval) or flush_interval < 0 or
+                isinstance(request_timeout, bool) or not isinstance(request_timeout, (int, float)) or
                 not math.isfinite(request_timeout) or request_timeout <= 0 or
-                not math.isfinite(busy_timeout) or busy_timeout < 0 or
-                transaction_retries < 1 or mmap_size < 0):
+                isinstance(busy_timeout, bool) or not isinstance(busy_timeout, (int, float)) or
+                not math.isfinite(busy_timeout) or busy_timeout < 0):
             raise ValueError('invalid SQLite writer configuration')
         directory = Path(directory or Path.cwd() / 'dat').expanduser().resolve()
         schema_directory = (Path(schema_directory).expanduser().resolve()

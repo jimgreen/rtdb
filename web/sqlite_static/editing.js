@@ -75,9 +75,32 @@ function renderSaveProblems(error) {
   const conflicts = error.details?.conflicts || [];
   if (!conflicts.length) return;
   const table = node("table"), head = node("tr"), thead = node("thead"), tbody = node("tbody");
-  for (const label of ["KEY / 字段", "原值", "服务器值", "本地修改值", "解决方式"]) head.append(node("th", label));
+  for (const label of ["KEY / 字段", "原值", "服务器值", "本地修改值"]) head.append(node("th", label));
+  const actionHeader = node("th", "解决方式");
+  const batchSelect = node("select");
+  batchSelect.className = "conflict-batch-select";
+  batchSelect.setAttribute("aria-label", "批量设置冲突解决方式");
+  batchSelect.append(
+    new Option("批量选择…", ""),
+    new Option("全部保留本地", "local"),
+    new Option("全部采用服务器", "server")
+  );
+  actionHeader.append(batchSelect);
+  head.append(actionHeader);
   thead.append(head); table.append(thead);
   const update = () => { apply.disabled = !conflictChoices.length || conflictChoices.some((item) => item.controls.some((control) => !control.value)); };
+  batchSelect.onchange = () => {
+    const picked = batchSelect.value;
+    if (!picked) return;
+    for (const item of conflictChoices) {
+      for (const control of item.controls) {
+        if ([...control.options].some((opt) => opt.value === picked)) control.value = picked;
+        else if (!item.conflict.current && [...control.options].some((opt) => opt.value === "discard")) control.value = "discard";
+      }
+    }
+    batchSelect.value = "";
+    update();
+  };
   for (const conflict of conflicts) {
     const record = find(conflict.key); if (!record) continue;
     const item = {record, conflict, controls:[]}; conflictChoices.push(item);

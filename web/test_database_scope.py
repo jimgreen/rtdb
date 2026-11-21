@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from concurrent.futures import ThreadPoolExecutor
 
-from core import SQLiteDatabase, SchemaError
+from core import SchemaError
 from web.errors import APIError
 from web.management import SQLiteManagement
 from web.sqlite_service import SQLiteManager, fingerprint

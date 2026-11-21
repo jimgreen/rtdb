@@ -15,6 +15,11 @@ def logical_lines(stream):
         number += 1
         if not pieces:
             start = number
+            stripped = raw.lstrip()
+            # 注释行与单行字段说明不进入跨行引号状态机，避免孤立引号吞噬后续数据行。
+            if stripped.startswith(('<!', '//')):
+                yield start, stripped.strip()
+                continue
         size += len(raw)
         if size > MAX_LINE:
             raise SchemaError(f'第 {start} 行：单条逻辑行超过1 Mi字符')
@@ -62,7 +67,7 @@ def events(stream):
                 raise SchemaError('一次最多导入200张表')
             props = {m[1]: (m[2] or m[3] or m[4]) for m in re.finditer(
                 r'''(\w+)\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s]+))''', body)}
-            current = dict(name=name, tag=tag, props=props, columns=[], descriptions=[])
+            current = dict(name=name, tag=tag, props=props, columns=[], descriptions=[], has_rows=False)
             yield 'start', number, current
         elif current and line.startswith('@'):
             if current['columns']:
@@ -72,8 +77,10 @@ def events(stream):
                 raise SchemaError(f'第 {number} 行：字段重复或字段数不在1–512范围')
             yield 'columns', number, current
         elif current and line.startswith('//'):
-            current['descriptions'] = tokens(line[2:])
+            if not current['has_rows']:
+                current['descriptions'] = tokens(line[2:])
         elif current and line.startswith('#'):
+            current['has_rows'] = True
             cells = tokens(line[1:])
             if not current['columns'] or len(cells) != len(current['columns']):
                 raise SchemaError(f"{current['name']} 第 {number} 行：值数量与字段不一致；空字符串请写 ''")

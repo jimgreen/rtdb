@@ -2,9 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import hashlib
-import io
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import unittest

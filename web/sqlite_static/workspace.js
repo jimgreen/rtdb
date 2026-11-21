@@ -44,7 +44,9 @@ async function restoreWorkspaceSelection(info) {
   if (!explicit && typeof saved.workspace === 'string' && saved.workspace !== selectionDirectory) {
     // Validate existence and containment at the server before restoring a path.
     const response = await workspaceFetch('/api/manage/info?' + new URLSearchParams({workspace:saved.workspace}));
-    const target = await response.json();
+    const raw = await response.text();
+    let target = {};
+    try { target = raw ? JSON.parse(raw) : {}; } catch { target = {}; }
     if (response.ok && target.root_id === info.root_id) {
       url.searchParams.set('workspace', saved.workspace);
       location.replace(url.href);
@@ -64,6 +66,26 @@ function workspaceUrl(value) {
   return url.href;
 }
 function workspaceFetch(value, options) { return fetch(workspaceUrl(value), options); }
+async function parseJsonResponse(response, fallbackError = '请求失败') {
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = null; }
+  }
+  if (!response.ok) {
+    const message = (data && typeof data === 'object' && data.error) || `${fallbackError} (${response.status})`;
+    const error = new Error(message);
+    error.status = response.status;
+    if (data && typeof data === 'object' && data.details !== undefined) error.details = data.details;
+    throw error;
+  }
+  if (data === null) {
+    const error = new Error('服务端返回了非 JSON 响应');
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
 function configureWorkspaceScope(info) {
   workspaceScope = info.strict_root ? JSON.stringify([info.root_id, info.data_dir]) : null;
 }

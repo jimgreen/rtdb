@@ -46,14 +46,22 @@ def configure(manager,payload):
 
 def decode_result(connection,ident,encoded):
     if encoded!='null':return json.loads(encoded)
+    # 区分正常返回 None 与归档墓碑（event='{}' 且 result='null'）。
+    event_row=connection.execute(f'SELECT event FROM {TABLE} WHERE id=?',(ident,)).fetchone() if exists(connection,TABLE) else None
+    archived_marker=(event_row is None) or (event_row[0]=='{}')
+    if not archived_marker:
+        return None
     # A tombstone must never be treated as permission to execute an old write.
     if not exists(connection,ARCHIVE):raise APIError(409,'归档回执缺失，不能重复执行，请核查数据库')
     row=connection.execute(f'SELECT body,digest FROM {ARCHIVE} WHERE id=?',(ident,)).fetchone()
     if not row:raise APIError(409,'归档回执缺失，不能重复执行，请核查数据库')
     import hashlib
-    raw=zlib.decompress(row[0])
-    if hashlib.sha256(raw).hexdigest()!=row[1]:raise APIError(409,'归档回执校验失败，不能重复执行')
-    return json.loads(raw)['result']
+    try:
+        raw=zlib.decompress(row[0])
+        if hashlib.sha256(raw).hexdigest()!=row[1]:raise APIError(409,'归档回执校验失败，不能重复执行')
+        return json.loads(raw)['result']
+    except (zlib.error, ValueError, KeyError, TypeError) as error:
+        raise APIError(409,'归档回执损坏，不能重复执行，请核查数据库') from error
 
 
 def archive_batch(manager,*,batch_size=200,max_bytes=MAX_BATCH_BYTES):
@@ -87,7 +95,7 @@ def statistics(manager):
         result={'days':_days(c),'pending':0,'delivered':0,'archived':0,'original_bytes':0,'compressed_bytes':0,'oldest_pending':None}
         if exists(c,TABLE):
             result['pending']=c.execute(f'SELECT COUNT(*) FROM {TABLE} WHERE delivered=0').fetchone()[0]
-            result['delivered']=c.execute(f'SELECT COUNT(*) FROM {TABLE} WHERE delivered=1').fetchone()[0]
+            result['delivered']=c.execute(f"SELECT COUNT(*) FROM {TABLE} WHERE delivered=1 AND NOT (result='null' AND event='{{}}')").fetchone()[0]
             result['oldest_pending']=c.execute(f"SELECT MIN(json_extract(event,'$.timestamp')) FROM {TABLE} WHERE delivered=0").fetchone()[0]
         if exists(c,ARCHIVE):
             result['archived'],result['original_bytes'],result['compressed_bytes']=c.execute(f'SELECT COUNT(*),COALESCE(SUM(original_bytes),0),COALESCE(SUM(length(body)),0) FROM {ARCHIVE}').fetchone()

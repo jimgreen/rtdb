@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import threading
 import multiprocessing
@@ -12,8 +11,8 @@ from unittest.mock import patch
 from web import test_database_scope, test_sqlite_server
 from web.management import SQLiteManagement
 from web.errors import APIError
-from web.tasks import TaskRegistry, snapshot, persist
-from web.task_store import TaskStore, request_fingerprint
+from web.tasks import TaskRegistry
+from web.task_store import request_fingerprint
 
 
 def crash_after_commit(root, ident):

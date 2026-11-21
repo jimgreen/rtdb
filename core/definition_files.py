@@ -29,7 +29,10 @@ def normalize_definition_labels(definition):
 
 def decode_upload(payload):
     if isinstance(payload.get('text'), str):
-        return payload['text'].lstrip('\ufeff'), 'text'
+        text = payload['text'].lstrip('\ufeff')
+        if not text.strip() or len(text.encode('utf-8')) > 20 * 1024 * 1024:
+            raise SchemaError('请选择不超过 20 MiB 的非空文件')
+        return text, 'text'
     try:
         data = base64.b64decode(payload.get('content', ''), validate=True)
     except (ValueError, TypeError) as error:
@@ -88,6 +91,11 @@ def logical_lines(text):
     for number, raw in enumerate(text.splitlines(keepends=True), 1):
         if not line:
             start = number
+            stripped = raw.lstrip()
+            # 注释行与单行字段说明不进入跨行引号状态机，避免孤立引号吞噬后续数据行。
+            if stripped.startswith(('<!', '//')):
+                yield start, stripped.strip()
+                continue
         i = 0
         while i < len(raw):
             ch = raw[i]
@@ -114,7 +122,7 @@ def parse_modules(text, *, dbdef=False):
         if not line or line.startswith('<!') or (line.startswith('//') and current is None):
             continue
         if line.startswith('</'):
-            if current is None or line[2:-1].strip() != current['tag']:
+            if current is None or not line.endswith('>') or line[2:-1].strip() != current['tag']:
                 raise SchemaError(f'第 {number} 行：结束标签不匹配')
             if not current['columns']:
                 raise SchemaError(f"{current['name']} 缺少 @ 字段定义")
@@ -123,6 +131,8 @@ def parse_modules(text, *, dbdef=False):
             if current:
                 raise SchemaError(f'第 {number} 行：不支持嵌套模块')
             body = line[1:-1].strip()
+            if not body:
+                raise SchemaError(f'第 {number} 行：模块名为空')
             tag = body.split()[0]
             name = tag.split('::')[0]
             if any(module['name'] == name for module in modules):
@@ -145,7 +155,9 @@ def parse_modules(text, *, dbdef=False):
             if len(set(current['columns'])) != len(current['columns']):
                 raise SchemaError(f'第 {number} 行：字段名重复')
         elif current and line.startswith('//'):
-            current['descriptions'] = tokens(line[2:])
+            # 仅在数据行出现之前记录中文字段说明，避免数据区注释覆盖字段描述。
+            if not current['rows']:
+                current['descriptions'] = tokens(line[2:])
         elif current and line.startswith('#'):
             if not current['columns']:
                 raise SchemaError(f'第 {number} 行：数据之前缺少 @ 字段定义')
@@ -249,7 +261,7 @@ def infer_type(values):
     values = [value for value in values if value not in ('', r'\N')]
     if not values:
         return 'str'
-    if all(re.fullmatch(r'-?(?:0|[1-9]\d*)', value) for value in values):
+    if all(re.fullmatch(r'-?(?:0|[1-9]\d*)', value) and -(2**63) <= int(value) < 2**63 for value in values):
         return 'int'
     if all(value.lower() in ('true', 'false') for value in values):
         return 'bool'
@@ -275,18 +287,19 @@ def python_definition(definition):
                  'from dataclasses import dataclass as _dataclass, field as _field',
                  'from typing import Any as _Any, ClassVar as _ClassVar, Optional as _Optional', '',
                  f'DATABASE_DEFINITION = {definition!r}',
-                 'TABLE_DEFINITIONS = {name: item for name, item in zip(',
-                 '    DATABASE_DEFINITION["tables"], DATABASE_DEFINITION["tables"])}', '']
-        # Keep a normal name-to-document mapping available to callers.  The
-        # generated row classes below are deliberately data-only as before.
-        lines[-3:] = [
-            'TABLE_DEFINITIONS = {item["head"]["eng_name"]: item for item in DATABASE_DEFINITION["tables"]}',
-            '',
-        ]
+                 'TABLE_DEFINITIONS = {item["head"]["eng_name"]: item for item in DATABASE_DEFINITION["tables"]}',
+                 '']
         rows = []
+        used_names = {'DATABASE_DEFINITION', 'TABLE_DEFINITIONS', 'ROWS', 'TABLE_ROWS'}
         for index, item in enumerate(tables):
             name = item['head']['eng_name']
-            class_name = name if not keyword.iskeyword(name) and not name.startswith('_') else f'TableRow{index}'
+            candidate = name if not keyword.iskeyword(name) and not name.startswith('_') else f'TableRow{index}'
+            class_name = candidate
+            suffix = 0
+            while class_name in used_names or f'{class_name}Row' in used_names:
+                suffix += 1
+                class_name = f'{candidate}_{suffix}'
+            used_names.update((class_name, f'{class_name}Row'))
             rows.append((name, class_name))
             lines.extend(_python_row_class_lines(item, class_name))
         lines.extend(['', 'ROWS = {' + ', '.join(f'{name!r}: {class_name}' for name, class_name in rows) + '}',

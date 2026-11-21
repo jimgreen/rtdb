@@ -26,12 +26,16 @@ def convert(value, column, *, from_file=False):
         return None
     try:
         if kind in _INT:
+            if isinstance(value, bool):
+                raise ValueError('布尔值不能转换为整数')
             if isinstance(value, float) and not value.is_integer():
                 raise ValueError('小数不能转换为整数')
             if isinstance(value, str) and not re.fullmatch(r'[+-]?\d+', value):
                 raise ValueError('必须为整数')
             return int(value)
         if kind in _FLOAT:
+            if isinstance(value, bool):
+                raise ValueError('布尔值不能转换为浮点数')
             result = float(value)
             if not math.isfinite(result):
                 raise ValueError('必须为有限数值')
@@ -190,8 +194,8 @@ class DefinitionImporter:
             retained = [] if format == 'e' and mode == 'replace' else [
                 {col.eng_name: convert(row.get(col.eng_name), col) for col in definition.columns} for row in existing]
             definition.validate_rows(retained)
-            identity = lambda row: tuple(row.get(key) for key in definition.primary_keys)
-            indexed = {identity(row): row for row in retained}
+            primary_keys = tuple(definition.primary_keys)
+            indexed = {tuple(row.get(key) for key in primary_keys): row for row in retained}
             seen, inserted, updated = set(), 0, 0
             duplicates, skipped = 0, 0
             duplicate_examples, skipped_examples = [], []
@@ -200,7 +204,7 @@ class DefinitionImporter:
                 converted = {col.eng_name: convert(row[col.eng_name], col, from_file=True) for col in definition.columns if col.eng_name in row}
                 # A duplicate is recoverable; malformed values and missing keys are not.
                 definition.validate_rows([converted])
-                key = identity(converted)
+                key = tuple(converted.get(k) for k in primary_keys)
                 if key in seen:
                     duplicates += 1
                     if len(duplicate_examples) < 5:
@@ -306,9 +310,19 @@ class DefinitionImporter:
             raise APIError(500, '多表 SQLite 文件未生成')
         target_db.parent.mkdir(parents=True, exist_ok=True)
         target_json.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(source_db, target_db)
+        # 发布前先写恢复日志，保证 SQLite 替换后若导出中断可由 _recover() 补全。
+        atomic_json(
+            self.manager._journal,
+            dict(kind='definition-import', database_path=str(target_db), schema_path=str(target_json)),
+        )
+        try:
+            os.replace(source_db, target_db)
+        except BaseException:
+            self.manager._journal.unlink(missing_ok=True)
+            raise
         atomic_json(target_json, document)
         atomic_text(target_python, python_definition(document))
+        self.manager._journal.unlink(missing_ok=True)
         return database_name
 
     def _apply_grouped_existing(self, plan):
@@ -330,10 +344,16 @@ class DefinitionImporter:
         except BaseException:
             # Remove only our exclusively-created, uncommitted database shell.
             if created:
-                with closing(sqlite3.connect(path)) as connection:
-                    committed = connection.execute("SELECT 1 FROM sqlite_master WHERE name='metadata'").fetchone()
+                committed = None
+                if path.exists():
+                    try:
+                        with closing(sqlite3.connect(path)) as connection:
+                            committed = connection.execute("SELECT 1 FROM sqlite_master WHERE name='metadata'").fetchone()
+                    except sqlite3.Error:
+                        committed = None
                 if not committed:
-                    path.unlink(missing_ok=True)
+                    for suffix in ('', '-wal', '-shm'):
+                        path.with_name(path.name + suffix).unlink(missing_ok=True)
             raise
 
     def _apply_table(self, plan):
@@ -391,6 +411,7 @@ class DefinitionImporter:
                 connection.commit()
             except BaseException:
                 connection.rollback()
+                manager._journal.unlink(missing_ok=True)
                 raise
         atomic_json(schema_path, definition)
         atomic_text(schema_path.with_suffix('.py'), plan['source'])
@@ -398,7 +419,7 @@ class DefinitionImporter:
 
     def run(self, payload, *, preview):
         manager = self.manager
-        with manager.exclusive(), tempfile.TemporaryDirectory(prefix='rtdb-definition-') as folder:
+        with manager.exclusive(), tempfile.TemporaryDirectory(prefix='rtdb-definition-', dir=manager.data_dir) as folder:
             manager._recover()
             plans, encoding, token = self._prepare(payload, Path(folder))
             checkpoint('文件与数据库校验完成', len(plans), len(plans))

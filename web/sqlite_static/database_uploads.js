@@ -8,6 +8,7 @@ const databaseUploads={
     el('chunk-discard').onclick=()=>this.discard();
     el('chunk-restore').onclick=()=>this.restore();
     el('chunk-close').onclick=()=>el('chunk-upload-dialog').close();
+    el('chunk-close-x').onclick=()=>el('chunk-upload-dialog').close();
     el('chunk-upload-dialog').addEventListener('cancel',event=>{if(this.active){event.preventDefault();this.pause();}});
     el('chunk-file').onchange=()=>{
       const file=el('chunk-file').files[0];
@@ -67,8 +68,7 @@ const databaseUploads={
       if(!this.sameFile(file)){
         this.session={id:crypto.randomUUID().replaceAll('-',''),filename:file.name,size:file.size,last_modified:file.lastModified,sha256:el('chunk-sha').value.trim()};this.remember();
       }
-      this.session=await request('database-uploads','POST',this.session);this.remember();
-      this.session=await request('database-uploads/'+this.session.id);this.render();
+      this.session=await request('database-uploads','POST',this.session);this.remember();this.render();
       if(this.session.state==='ready'){this.message('该文件已校验完成，可直接恢复。');return;}
       if(this.session.state==='error')throw Error(this.session.error||'上传校验失败，请放弃后重新上传');
       const size=this.session.chunk_size;
@@ -89,7 +89,7 @@ const databaseUploads={
           if(this.paused)return;this.controller=new AbortController();
           try{
             const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
-            const result=await response.json();if(!response.ok){const error=Error(result.error||'上传分块失败');error.status=response.status;throw error;}
+            const result=await parseJsonResponse(response,'上传分块失败');
             answer=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}
         }

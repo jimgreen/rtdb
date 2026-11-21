@@ -146,7 +146,6 @@ class SchemaMigrationTests(unittest.TestCase):
 
     def test_populated_schema_edit_and_table_rename_preserve_data(self):
         self.insert([fixtures.record(1), fixtures.record(2)])
-        original = copy.deepcopy(self.schema['definition'])
         desired = {
             'head': {'chn_name': '设备信息', 'eng_name': 'renamed_devices'},
             'columns': [
@@ -221,10 +220,10 @@ class SchemaMigrationTests(unittest.TestCase):
                 desired = copy.deepcopy(self.schema['definition'])
                 desired['columns'].append(column('extra_' + extension))
                 target = manager.schema_dir / ('devices.' + extension)
-                def fail_publish(path, value):
-                    if path == target:
+                def fail_publish(path, value, _target=target, _original=original):
+                    if path == _target:
                         raise OSError('simulated publish failure')
-                    return original(path, value)
+                    return _original(path, value)
                 with patch('web.sqlite_service.' + function, side_effect=fail_publish):
                     with self.assertRaises(OSError):
                         manager.save_schema('devices', dict(definition=desired, version=self.schema['schema_version']))

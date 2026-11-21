@@ -1,6 +1,5 @@
 """Real-file and HTTP regressions for progress, cancellation and task isolation."""
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +9,7 @@ from web import test_database_scope, test_sqlite_server
 from web.errors import APIError
 from web.management import SQLiteManagement
 from web.definition_import import DefinitionImporter
-from web.tasks import TaskRegistry, checkpoint, committing, TaskCancelled
+from web.tasks import TaskRegistry, checkpoint, committing
 from core import SchemaError
 
 
@@ -104,7 +103,7 @@ class TaskTests(unittest.TestCase):
         with self.scoped.session('first') as table: self.assertEqual(table.all(), [{'id':1, 'name':'A'}])
 
     def test_cancel_logs_leaves_jsonl_and_index_rebuilds(self):
-        for i in range(600):
+        for _i in range(600):
             self.scoped.record_operation(category='data', operation='fixture', status='success', http_status=200, method='GET', path='/test')
         source = self.scoped.audit_log.path.read_bytes()
         entered = threading.Event()

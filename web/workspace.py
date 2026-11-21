@@ -1,4 +1,5 @@
 """Per-directory Web contexts for databases below a configured workspace root."""
+from collections import OrderedDict
 import errno
 from hashlib import sha256
 import os
@@ -45,7 +46,7 @@ class WorkspaceCatalog:
         self.strict_root = strict_root
         self.root_id = sha256(os.fsencode(os.path.normcase(self.root))).hexdigest()
         self.default = default
-        self.contexts = {}
+        self.contexts = OrderedDict()
         self.lock = threading.RLock()
 
     def _check_path(self, path):
@@ -152,12 +153,33 @@ class WorkspaceCatalog:
                 children[:] = sorted(name for name in children
                     if not name.startswith('.') and name.lower() not in _UNLISTED_DIRECTORIES
                     and _ordinary(folder / name))
-                names = sorted(name for name in files if _ordinary(folder / name)
-                               and is_listed_database(folder / name))
+                names = sorted(
+                    name for name in files
+                    if name.lower().endswith(('.sqlite3', '.sqlite', '.db'))
+                    and _ordinary(folder / name)
+                    and is_listed_database(folder / name)
+                )
                 directories.append({'path': folder.relative_to(self.root).as_posix(),
                                     'files': names, 'database_count': len(names)})
         return {'workspace_root': str(self.root), 'directories': directories,
                 'default_data_dir': str(self.default.sqlite_manager.data_dir)}
+
+    @staticmethod
+    def _is_context_idle(context):
+        with context.tasks.lock:
+            if context.tasks.running_databases or context.tasks.queues:
+                return False
+        with context.audit_delivery.condition:
+            if (context.audit_delivery.pending or context.audit_delivery.active
+                    or context.audit_delivery.archive_queue or context.audit_delivery.archive_active):
+                return False
+        return True
+
+    @staticmethod
+    def _close_context(context):
+        context.tasks.close()
+        context.audit_delivery.close()
+        context.sqlite_manager.close()
 
     def get(self, relative):
         default_manager = self.default.sqlite_manager
@@ -167,23 +189,38 @@ class WorkspaceCatalog:
             return self.default
         schema = path / '.rtdb-schema'
         self.validate_storage(path, schema)
+        evicted = None
         with self.lock:
-            if path not in self.contexts:
-                if len(self.contexts) >= 64:
-                    raise APIError(503, '已打开64个工作目录，请重启服务后继续')
-                manager = SQLiteManager(path, schema, strict_paths=self.strict_root)
-                tasks = None
-                try:
-                    tasks = TaskRegistry(path / '.web-tasks', manager)
-                    delivery = manager.audit_delivery = AuditDelivery(manager)
-                except BaseException:
-                    if tasks is not None:
-                        tasks.close()
-                    manager.close()
-                    raise
-                self.contexts[path] = SimpleNamespace(sqlite_manager=manager,
-                    management=SQLiteManagement(manager), tasks=tasks, audit_delivery=delivery)
-            return self.contexts[path]
+            if path in self.contexts:
+                self.contexts.move_to_end(path)
+                return self.contexts[path]
+            if len(self.contexts) >= 64:
+                victim_key = next(
+                    (key for key, ctx in self.contexts.items() if self._is_context_idle(ctx)),
+                    None,
+                )
+                if victim_key is None:
+                    raise APIError(503, '已打开64个活跃工作目录，请等待后台任务完成或重启服务后继续')
+                evicted = self.contexts.pop(victim_key)
+            manager = SQLiteManager(path, schema, strict_paths=self.strict_root)
+            tasks = None
+            try:
+                tasks = TaskRegistry(path / '.web-tasks', manager)
+                delivery = manager.audit_delivery = AuditDelivery(manager)
+            except BaseException:
+                if tasks is not None:
+                    tasks.close()
+                manager.close()
+                raise
+            context = SimpleNamespace(sqlite_manager=manager,
+                management=SQLiteManagement(manager), tasks=tasks, audit_delivery=delivery)
+            self.contexts[path] = context
+        if evicted is not None:
+            try:
+                self._close_context(evicted)
+            except Exception:
+                pass
+        return context
 
     def close(self):
         with self.lock:

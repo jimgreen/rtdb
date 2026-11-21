@@ -2,7 +2,6 @@
 from contextlib import closing
 import json
 import os
-from pathlib import Path
 import time
 import unittest
 import uuid

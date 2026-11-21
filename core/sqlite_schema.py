@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from contextlib import closing
 
-from .table_schema import DatabaseDefinition, NATIVE_IDENTIFIER, SchemaError, TableDefinition
+from .table_schema import DatabaseDefinition, SchemaError, TableDefinition
 
 EMBEDDED_DATABASE_TABLE = 'rtdb_schema_database'
 EMBEDDED_TABLES_TABLE = 'rtdb_schema_tables'
@@ -152,13 +152,17 @@ def _read_embedded_database(connection: sqlite3.Connection, path: Path) -> Datab
         f'SELECT eng_name, chn_name FROM {_quote(EMBEDDED_DATABASE_TABLE)} WHERE version=1'
     ).fetchone()
     database_name, database_label = database_row if database_row else (path.stem, path.stem)
+    # 一次性批量读取全部列定义并按表名分组，避免多表库 N+1 查询。
+    columns_by_table: dict[str, list[tuple]] = {}
+    for row in connection.execute(
+        f'SELECT table_name, eng_name, chn_name, data_type, primary_key, disp_type, disp_menu, '
+        f'has_default, default_json FROM {_quote(EMBEDDED_COLUMNS_TABLE)} '
+        'ORDER BY table_name, ordinal'
+    ):
+        columns_by_table.setdefault(row[0], []).append(row[1:])
     tables = []
     for table_name, chn_name, _ordinal, stored_fingerprint, indexes_json in table_rows:
-        column_rows = connection.execute(
-            f'SELECT eng_name, chn_name, data_type, primary_key, disp_type, disp_menu, '
-            f'has_default, default_json FROM {_quote(EMBEDDED_COLUMNS_TABLE)} '
-            'WHERE table_name=? ORDER BY ordinal', (table_name,)
-        ).fetchall()
+        column_rows = columns_by_table.get(table_name, [])
         if not column_rows:
             raise SchemaError(f'embedded schema table {table_name!r} has no columns')
         columns = []
@@ -183,7 +187,7 @@ def _read_embedded_database(connection: sqlite3.Connection, path: Path) -> Datab
             except (TypeError,ValueError) as error:raise SchemaError(f'invalid embedded indexes for {table_name}') from error
         native_table = table_name if storage_format == 'native' else None
         parsed = TableDefinition.from_mapping(mapping, path.parent, table_name, native_table=native_table)
-        if (stored_fingerprint or native_table is not None) and stored_fingerprint != definition_fingerprint(parsed):
+        if stored_fingerprint != definition_fingerprint(parsed):
             raise SchemaError(f'embedded schema fingerprint mismatch for {table_name!r}')
         tables.append(replace(parsed, path=path))
     return DatabaseDefinition(
@@ -215,7 +219,8 @@ def validate_native_table(connection: sqlite3.Connection, definition: TableDefin
     ).fetchone()
     if not exists:
         raise SchemaError(f'SQLite native table {name!r} is missing')
-    columns = [row for row in connection.execute(f'PRAGMA table_xinfo({_quote(name)})') if row[6] != 1]
+    # 仅保留普通物理列（hidden == 0），排除隐藏列（1）及虚拟/存储生成列（2/3）。
+    columns = [row for row in connection.execute(f'PRAGMA table_xinfo({_quote(name)})') if row[6] == 0]
     if tuple(row[1] for row in columns) != definition.column_names:
         raise SchemaError(f'SQLite native table {name!r} columns differ from the embedded definition')
     primary_keys = {row[1] for row in columns if row[5]}

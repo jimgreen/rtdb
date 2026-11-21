@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
+import uuid
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Union
@@ -141,6 +143,7 @@ class TableDefinition:
     native_table: Optional[str] = None
     _column_names: tuple[str, ...] = field(init=False, repr=False, compare=False)
     _primary_keys: tuple[str, ...] = field(init=False, repr=False, compare=False)
+    _columns_by_name: dict[str, ColumnDefinition] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.native_table is not None and (
@@ -170,6 +173,11 @@ class TableDefinition:
             "_primary_keys",
             tuple(column.eng_name for column in self.columns if column.primary_key),
         )
+        object.__setattr__(
+            self,
+            "_columns_by_name",
+            {column.eng_name: column for column in self.columns},
+        )
 
     @property
     def chn_name(self) -> str:
@@ -192,10 +200,8 @@ class TableDefinition:
         return self.indexes if self.indexes is not None else tuple((name,) for name in self.column_names if (name,)!=self.primary_keys)
 
     def column(self, name: str) -> ColumnDefinition:
-        for column in self.columns:
-            if column.eng_name == name:
-                return column
-        raise KeyError(name)
+        # 使用预建字典实现 O(1) 列定义查找，避免宽表写入时的 O(M^2) 扫描。
+        return self._columns_by_name[name]
 
     @classmethod
     def load(cls, directory: Union[str, os.PathLike[str]], table_name: str) -> "TableDefinition":
@@ -321,7 +327,7 @@ class TableDefinition:
         if kind in {"int", "integer", "long"}:
             valid = isinstance(value, int) and not isinstance(value, bool)
         elif kind in {"float", "double", "number", "decimal"}:
-            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
         elif kind in {"bool", "boolean"}:
             valid = isinstance(value, bool)
         elif kind in {"str", "string", "text", "varchar", "char", "date", "datetime", "time"}:
@@ -364,7 +370,7 @@ class TableDefinition:
         path = root / f"{self.eng_name}.json"
         if not overwrite and path.exists():
             raise FileExistsError(f"definition already exists for {self.eng_name!r}")
-        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             with temporary.open("w", encoding="utf-8", newline="\n") as handle:
                 json.dump(self.to_mapping(), handle, ensure_ascii=False, indent=2)
@@ -506,11 +512,13 @@ class SchemaRegistry:
         document = self._database_cache.get(path)
         if document is None:
             document = load_database_definition(path)
-            self._database_cache[path] = document
+            # 先完整预检冲突，全部通过后再原子写入缓存，避免异常后残留半写入状态。
             for table in document.tables:
                 previous = self._source_by_table.get(table.eng_name)
                 if previous is not None and previous != path:
                     raise SchemaError(f"table {table.eng_name!r} is defined by both {previous.name} and {path.name}")
+            self._database_cache[path] = document
+            for table in document.tables:
                 self._source_by_table[table.eng_name] = path
                 self._cache[table.eng_name] = table
         return document

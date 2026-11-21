@@ -356,10 +356,15 @@ class _ReadWriteLock:
             if self._writer == ident:
                 self._reader_counts[ident] = self._reader_counts.get(ident, 0) + 1
                 return
+            # 已持读锁的线程允许直接重入，避免与等待中的写者互相阻塞死锁。
+            if self._reader_counts.get(ident, 0) > 0:
+                self._readers += 1
+                self._reader_counts[ident] += 1
+                return
             while self._writer is not None or self._waiting_writers:
                 self._condition.wait()
             self._readers += 1
-            self._reader_counts[ident] = self._reader_counts.get(ident, 0) + 1
+            self._reader_counts[ident] = 1
 
     def release_read(self) -> None:
         ident = threading.get_ident()
@@ -546,17 +551,37 @@ class _FileLock:
             self._handle = None
 
 
+_locked_reentry = threading.local()
+
+
 @contextmanager
 def _locked(lock_path: Path, timeout: Optional[float] = 30.0) -> Iterator[None]:
     """Hold both the local and inter-process lock for one table operation."""
 
+    key = os.path.normcase(str(lock_path.resolve()))
     thread_lock = _thread_lock(lock_path)
     acquired = thread_lock.acquire() if timeout is None else thread_lock.acquire(timeout=timeout)
     if not acquired:
         raise StorageBusyError(f"timed out waiting for thread lock: {lock_path}")
+    held = getattr(_locked_reentry, "held", None)
+    if held is None:
+        held = _locked_reentry.held = {}
+    depth = held.get(key, 0)
     try:
+        if depth > 0:
+            # 同线程重入同一路径锁时仅递增深度，避免 Windows 二次锁字节自阻塞或 POSIX 提前解锁。
+            held[key] = depth + 1
+            try:
+                yield
+            finally:
+                held[key] -= 1
+            return
         with _FileLock(lock_path, timeout=timeout):
-            yield
+            held[key] = 1
+            try:
+                yield
+            finally:
+                held.pop(key, None)
     finally:
         thread_lock.release()
 
@@ -766,7 +791,13 @@ def _compile_where(expression: Optional[Union[str, Mapping[str, Any], Callable[[
         if not isinstance(pattern, str):
             pattern = str(pattern)
         regex = re.compile("^" + re.escape(pattern).replace("%", ".*").replace("_", ".") + "$", re.IGNORECASE | re.DOTALL)
-        return lambda row: bool(regex.match(str(_value_for_field(row, field) or "")))
+
+        def match_like(row: Mapping[str, Any]) -> bool:
+            val = _value_for_field(row, field)
+            # SQL 中 NULL LIKE 任意模式恒为 False，且 0/False 不能被误当空字符串。
+            return False if val is None else bool(regex.match(str(val)))
+
+        return match_like
 
     match = re.match(
         rf"^\s*(?P<field>{_IDENTIFIER}(?:\.{_IDENTIFIER})?)\s*(?P<op><>|!=|>=|<=|=|>|<)\s*(?P<value>.+?)\s*$",
@@ -1447,22 +1478,29 @@ class _FixedRecordStore:
             # call: mmap writes do not reliably change Windows file mtimes, so
             # an mtime-based cache could otherwise reuse a stale row count
             # during concurrent appends.
-            with self._mapping_guard.read():
-                _handle, mapping = self._ensure_mapping()
-                # Only the two redundant header slots are needed.  Copying
-                # the whole 4 KiB metadata region on every point read adds
-                # avoidable memory traffic while preserving exactly the same
-                # CRC and generation validation.
-                first_view = memoryview(mapping)[:_FIXED_HEADER_SLOT]
-                second_view = memoryview(mapping)[_FIXED_HEADER_SLOT : 2 * _FIXED_HEADER_SLOT]
-                try:
-                    if cached is not None and first_view == cached[0] and second_view == cached[1]:
-                        return cached[2]
-                    first = bytes(first_view)
-                    second = bytes(second_view)
-                finally:
-                    first_view.release()
-                    second_view.release()
+            # 严禁在持有读锁时升级写锁打开映射，避免双线程冷读死锁。
+            while True:
+                if self._mapping is None or self._mapping_handle is None:
+                    self._ensure_mapping()
+                with self._mapping_guard.read():
+                    mapping = self._mapping
+                    if mapping is None or self._mapping_handle is None:
+                        continue
+                    # Only the two redundant header slots are needed.  Copying
+                    # the whole 4 KiB metadata region on every point read adds
+                    # avoidable memory traffic while preserving exactly the same
+                    # CRC and generation validation.
+                    first_view = memoryview(mapping)[:_FIXED_HEADER_SLOT]
+                    second_view = memoryview(mapping)[_FIXED_HEADER_SLOT : 2 * _FIXED_HEADER_SLOT]
+                    try:
+                        if cached is not None and first_view == cached[0] and second_view == cached[1]:
+                            return cached[2]
+                        first = bytes(first_view)
+                        second = bytes(second_view)
+                    finally:
+                        first_view.release()
+                        second_view.release()
+                    break
         except (OSError, ValueError, StorageError) as exc:
             if isinstance(exc, StorageError):
                 raise
@@ -2046,9 +2084,28 @@ class _FixedRecordStore:
             return False, None
         try:
             fields = tuple(self._fields_by_name[column] for column in key_columns)
+            # 严格校验查询键类型，防止字符串/布尔被隐式强转命中错误槽位。
+            normalised_key = []
+            for value, field in zip(key, fields):
+                if value is None:
+                    return True, None
+                if field.kind == "int":
+                    if isinstance(value, bool) or not isinstance(value, int):
+                        return True, None
+                elif field.kind == "float":
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        return True, None
+                    value = 0.0 if value == 0 else float(value)
+                elif field.kind == "bool":
+                    if not isinstance(value, bool):
+                        return True, None
+                elif field.kind == "str":
+                    if not isinstance(value, str):
+                        return True, None
+                normalised_key.append(value)
             target_blob = b"".join(
                 self._encode_field(value, field)
-                for value, field in zip(key, fields)
+                for value, field in zip(normalised_key, fields)
             )
         except (KeyError, TypeError, ValueError, StorageError):
             return False, None
@@ -2430,9 +2487,28 @@ class _FixedRecordStore:
             return False, None
         try:
             fields = tuple(self._fields_by_name[column] for column in key_columns)
+            # 严格校验查询键类型，防止字符串/布尔被隐式强转命中错误槽位。
+            normalised_key = []
+            for value, field in zip(key, fields):
+                if value is None:
+                    return True, None
+                if field.kind == "int":
+                    if isinstance(value, bool) or not isinstance(value, int):
+                        return True, None
+                elif field.kind == "float":
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        return True, None
+                    value = 0.0 if value == 0 else float(value)
+                elif field.kind == "bool":
+                    if not isinstance(value, bool):
+                        return True, None
+                elif field.kind == "str":
+                    if not isinstance(value, str):
+                        return True, None
+                normalised_key.append(value)
             target_blob = b"".join(
                 self._encode_field(value, field)
-                for value, field in zip(key, fields)
+                for value, field in zip(normalised_key, fields)
             )
         except (KeyError, TypeError, ValueError, StorageError):
             return False, None
@@ -2860,6 +2936,7 @@ class _FixedRecordStore:
             compact = False
             handle = self._index_update_handle(path)
             try:
+                handle.seek(0)
                 header_area = handle.read(_FIXED_PRIMARY_HEADER_SLOT * 2)
                 valid = [
                     self._decode_primary_header_slot(
@@ -3252,8 +3329,15 @@ class _FixedRecordStore:
             with self._mapping_guard:
                 yield self._ensure_mapping()
         else:
-            with self._mapping_guard.read():
-                yield self._ensure_mapping()
+            # 先在无读锁状态下初始化映射，禁止持读锁升级写锁。
+            while True:
+                if self._mapping is None or self._mapping_handle is None:
+                    self._ensure_mapping()
+                with self._mapping_guard.read():
+                    if self._mapping is None or self._mapping_handle is None:
+                        continue
+                    yield self._mapping_handle, self._mapping
+                    return
 
     def _slot_offset(self, slot: int) -> int:
         if slot < 0 or slot >= self.max_records:
@@ -3413,10 +3497,9 @@ class _FixedRecordStore:
         try:
             handle = self._ensure_wal_handle()
             with self._wal_probe_guard:
-                base_position = self._wal_position
-                if base_position is None:
-                    handle.seek(0, os.SEEK_END)
-                    base_position = int(handle.tell())
+                # 始终定位到真实文件末尾，避免跨进程 checkpoint 截断后出现零字节空洞。
+                handle.seek(0, os.SEEK_END)
+                base_position = int(handle.tell())
                 handle.write(frame)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -3599,15 +3682,11 @@ class _FixedRecordStore:
         wal_size = self._wal_size()
         if wal_size == 0:
             header = self._read_header()
-            self._wal_observed_size = 0
-            self._wal_observed_tail_generation = None
-            self._wal_observed_header_generation = header["generation"]
-            return
-        # The only way a writer changes a non-empty append-only WAL is by
-        # appending bytes first.  When the size is unchanged, the last tail
-        # probe already proved that the stream is covered; avoid a duplicate
-        # header decode on every short write.
-        if self._wal_observed_size == wal_size and self._wal_observed_tail_generation is not None:
+            with self._wal_probe_guard:
+                self._wal_position = None
+                self._wal_observed_size = 0
+                self._wal_observed_tail_generation = None
+                self._wal_observed_header_generation = header["generation"]
             return
         header = self._read_header()
         if (
@@ -3659,7 +3738,8 @@ class _FixedRecordStore:
                 recovered_row_count = row_count
                 changed = True
                 continue
-            if generation != recovered_generation + 1:
+            # 组提交在单批次大量增删循环时可合法跳代，允许单调递增的 generation。
+            if generation <= recovered_generation:
                 raise StorageError(f"fixed WAL sequence gap: {self.wal_path}")
             recovered_entries.extend(entries)
             recovered_generation = generation
@@ -3710,10 +3790,10 @@ class _FixedRecordStore:
             return
         size = self._wal_size()
         if size <= 0:
-            self._wal_observed_size = 0
-            self._wal_observed_tail_generation = None
-            return
-        if self._wal_observed_size == size and self._wal_observed_tail_generation is not None:
+            with self._wal_probe_guard:
+                self._wal_position = None
+                self._wal_observed_size = 0
+                self._wal_observed_tail_generation = None
             return
         header = self._read_header()
         if (
@@ -4083,7 +4163,7 @@ class _FixedRecordStore:
                 offset = 0
                 limit = None
             rows: list[dict[str, Any]] = []
-            for order, slot in decode_matches:
+            for _order, slot in decode_matches:
                 _current_order, row = self._read_record(mapping, slot, fields=decode_fields)
                 if row is not None and tuple(row.get(column) for column in normalised_key_columns) == normalised_key:
                     rows.append(row)
@@ -4956,7 +5036,11 @@ class _FixedRecordStore:
         with self._mapped() as (_handle, mapping):
             pairs: list[tuple[int, Any]] = []
             fields = tuple(field for field in self.fields if field.name in key_columns)
+            base_offset = _FIXED_DATA_OFFSET
+            stride = self.record_size
             for slot in range(self.max_records):
+                if mapping[base_offset + slot * stride] == 0:
+                    continue
                 order, row = self._read_record(mapping, slot, fields=fields)
                 if row is not None:
                     values = tuple(row[column] for column in key_columns)
@@ -4965,21 +5049,22 @@ class _FixedRecordStore:
         return [key for _order, key in pairs]
 
     def values(self) -> list[dict[str, Any]]:
-        return [row for _key, row in self.items()]
+        return [row for _key, row in self.items(self.definition.primary_keys)]
 
     def items(self, key_columns: Sequence[str]) -> list[tuple[Any, dict[str, Any]]]:
         self._recover_if_needed()
         with self._mapped() as (_handle, mapping):
             pairs: list[tuple[int, Any, dict[str, Any]]] = []
-            fields = tuple(field for field in self.fields if field.name in key_columns)
             for slot in range(self.max_records):
-                order, key_row = self._read_record(mapping, slot, fields=fields)
-                if key_row is None:
+                if mapping[self._slot_offset(slot)] == 0:
                     continue
-                key_values = tuple(key_row[column] for column in key_columns)
-                pairs.append((order, key_values[0] if len(key_values) == 1 else key_values, self._row_for_slot(mapping, slot)))
+                order, row = self._read_record(mapping, slot)
+                if row is None:
+                    continue
+                key_values = tuple(row[column] for column in key_columns)
+                pairs.append((order, key_values[0] if len(key_values) == 1 else key_values, self._detach_row(row)))
         pairs.sort(key=lambda item: item[0])
-        return [(key, copy.deepcopy(row)) for _order, key, row in pairs]
+        return [(key, row) for _order, key, row in pairs]
 
     def _validate_row(self, row: Mapping[str, Any]) -> None:
         self.definition.validate_rows([row])
@@ -5062,7 +5147,15 @@ class _FixedRecordStore:
                     row = dict(patch)
                     for column, value in zip(key_columns, key):
                         row.setdefault(column, value)
+                    row = self.definition.apply_defaults(row)
                     self._validate_row(row)
+                    # 非主键视图 upsert 时同样必须校验主键唯一性。
+                    if not self._is_primary_key(key_columns):
+                        pk_columns = self.definition.primary_keys
+                        pk_value = tuple(row.get(column) for column in pk_columns)
+                        pk_index = self._key_index_locked(mapping, header["generation"], pk_columns)
+                        if pk_index.get(pk_value):
+                            raise SchemaError(f"duplicate primary key {pk_value!r}")
                     slot = self._free_slot(mapping, header["row_count"])
                     order = self._order_for_generation(header["generation"] + 1)
                     record = self._encode_record(row, order)
@@ -5074,7 +5167,10 @@ class _FixedRecordStore:
                     slot = positions[0]
                     row_count = header["row_count"]
                     patch_values = dict(patch)
-                    key_unchanged = not set(patch_values).intersection(key_columns)
+                    primary_keys = self.definition.primary_keys
+                    touches_key = bool(set(patch_values).intersection(key_columns))
+                    touches_pk = bool(set(patch_values).intersection(primary_keys))
+                    key_unchanged = not touches_key and not touches_pk
                     if key_unchanged:
                         self._validate_patch(patch_values)
                         _order, record = self._patch_mapped_record(mapping, slot, patch_values)
@@ -5091,8 +5187,13 @@ class _FixedRecordStore:
                             conflicting = index.get(updated_key, ())
                             if any(candidate != slot for candidate in conflicting):
                                 raise SchemaError(f"duplicate primary key {updated_key!r}")
+                        if touches_pk and not self._is_primary_key(key_columns):
+                            updated_pk = tuple(updated.get(column) for column in primary_keys)
+                            pk_index = self._key_index_locked(mapping, header["generation"], primary_keys)
+                            if any(candidate != slot for candidate in pk_index.get(updated_pk, ())):
+                                raise SchemaError(f"duplicate primary key {updated_pk!r}")
                         record = self._encode_record(updated, order)
-                        key_unchanged = updated_key == key
+                        key_unchanged = updated_key == key and not touches_pk
             changed_columns = {str(column) for column in patch}
             with self._key_cache_guard.read():
                 preserve_key_cache = bool(positions) and key_unchanged and all(
@@ -5117,7 +5218,7 @@ class _FixedRecordStore:
             header = self._read_header()
             if header["row_count"] + len(rows) > self.max_records:
                 raise SchemaError(f"table {self.definition.eng_name!r} reached fixed storage capacity {self.max_records}")
-            prepared = [dict(row) for row in rows]
+            prepared = [self.definition.apply_defaults(dict(row)) for row in rows]
             for row in prepared:
                 self._validate_row(row)
             with self._mapped() as (_handle, mapping):
@@ -5155,7 +5256,7 @@ class _FixedRecordStore:
                     used.add(key)
                     entries.append((slot, self._encode_record(row, order + position)))
                     for cached_columns in cached_key_columns:
-                        cached_key = tuple(row[column] for column in cached_columns)
+                        cached_key = tuple(row.get(column) for column in cached_columns)
                         try:
                             hash(cached_key)
                         except TypeError:
@@ -5206,8 +5307,11 @@ class _FixedRecordStore:
                     slot = positions[0]
                     order, _current = self._read_record(mapping, slot)
                     row_count = header["row_count"]
+            row = self.definition.apply_defaults(dict(row))
             self._validate_row(row)
             replacement_key = tuple(row.get(column) for column in key_columns)
+            primary_keys = self.definition.primary_keys
+            replacement_pk = tuple(row.get(column) for column in primary_keys)
             if positions and replacement_key != key:
                 if index is None:
                     with self._mapped() as (_handle, mapping):
@@ -5215,13 +5319,29 @@ class _FixedRecordStore:
                 conflicting = index.get(replacement_key, ())
                 if any(candidate != slot for candidate in conflicting):
                     raise SchemaError(f"duplicate primary key {replacement_key!r}")
+            # 无论通过主键还是非主键视图替换/插入，均校验主键唯一性。
+            if not self._is_primary_key(key_columns):
+                with self._mapped() as (_handle, mapping):
+                    pk_index = self._key_index_locked(mapping, header["generation"], primary_keys)
+                conflicting_pk = pk_index.get(replacement_pk, ())
+                if any((not positions) or candidate != slot for candidate in conflicting_pk):
+                    raise SchemaError(f"duplicate primary key {replacement_pk!r}")
             record = self._encode_record(row, order)
             key_unchanged = replacement_key == key
+            with self._key_cache_guard.read():
+                # 整行替换可能变更任意非主键列，仅当无其他二级索引缓存时保留缓存。
+                normalized_key_cols = tuple(key_columns)
+                preserve_key_cache = (
+                    bool(positions)
+                    and key_unchanged
+                    and self._is_primary_key(key_columns)
+                    and all(cache_key == normalized_key_cols for cache_key in self._key_cache)
+                )
             self._commit_locked(
                 [(slot, record)],
                 row_count,
                 header=header,
-                preserve_key_cache=bool(positions) and key_unchanged,
+                preserve_key_cache=preserve_key_cache,
                 persisted_index_changed_columns=(set(self._fields_by_name) if positions else None),
             )
             return 1
@@ -5339,12 +5459,18 @@ class _FixedRecordStore:
         if len(rows) > self.max_records:
             raise SchemaError(f"table {self.definition.eng_name!r} reached fixed storage capacity {self.max_records}")
         self.definition.validate_rows(rows)
+        # 仅写入新数据槽以及尾部当前非空的待清空槽，避免对大量空尾部生成无用 WAL 条目。
         entries = [
             (slot, self._encode_record(rows[slot], self._order_for_generation(generation, slot)))
-            if slot < len(rows)
-            else (slot, bytes(self.record_size))
-            for slot in range(self.max_records)
+            for slot in range(len(rows))
         ]
+        zero_record = bytes(self.record_size)
+        base_offset = _FIXED_DATA_OFFSET
+        stride = self.record_size
+        with self._mapped() as (_handle, mapping):
+            for slot in range(len(rows), self.max_records):
+                if mapping[base_offset + slot * stride] != 0:
+                    entries.append((slot, zero_record))
         frame_size = len(_FIXED_WAL_HEADER.pack(_FIXED_WAL_MAGIC, 0, 0)) + len(_FIXED_WAL_TRAILER.pack(_FIXED_WAL_END_MAGIC, 0))
         frame_size += _FIXED_WAL_PAYLOAD_HEADER.size + sum(_FIXED_WAL_ENTRY_HEADER.size + len(record) for _slot, record in entries)
         if frame_size > _MAX_WAL_RECORD:
@@ -5367,8 +5493,12 @@ class _FixedRecordStore:
             if self._snapshot_cache is not None and self._snapshot_cache.generation == header["generation"]:
                 return self._snapshot_cache
         rows_with_order: list[tuple[int, dict[str, Any]]] = []
+        base_offset = _FIXED_DATA_OFFSET
+        stride = self.record_size
         with self._mapped() as (_handle, mapping):
             for slot in range(self.max_records):
+                if mapping[base_offset + slot * stride] == 0:
+                    continue
                 order, row = self._read_record(mapping, slot)
                 if row is not None:
                     rows_with_order.append((order, row))
@@ -5526,13 +5656,22 @@ class Table(MutableSequence[dict[str, Any]]):
                     return cached
                 if (
                     cached is not None
+                    and len(cached.cache_key) >= 12
+                    and not cached.cache_key[11]
                     and cached.cache_key[:4] == base_signature
                     and cached.cache_key[7] == wal_signature[3]
-                    and wal_signature[1] >= cached.cache_key[5]
+                    and wal_signature[1] >= cached.cache_key[10]
                 ):
-                    incremental_records, _incomplete, _valid_end = self._read_wal_records(
-                        start_offset=cached.cache_key[5]
-                    )
+                    try:
+                        incremental_records, inc_incomplete, inc_valid_end = self._read_wal_records(
+                            start_offset=cached.cache_key[10]
+                        )
+                    except StorageError:
+                        # 增量回放遇截断修复或格式不对齐时清空缓存，回退至全量读取核验。
+                        with self._cache_guard:
+                            self._cache = None
+                        cached = None
+                        continue
                     after_base_signature = _file_signature(self.path)
                     after_wal_signature = _file_signature(self.wal_path)
                     if after_base_signature != base_signature or after_wal_signature != wal_signature:
@@ -5555,7 +5694,7 @@ class Table(MutableSequence[dict[str, Any]]):
                         incremental_rows,
                         incremental_columns,
                         current_generation,
-                        base_signature + wal_signature + (cached.cache_key[8], current_generation),
+                        base_signature + wal_signature + (cached.cache_key[8], current_generation, inc_valid_end, inc_incomplete),
                         indexes,
                         primary_index,
                     )
@@ -5573,7 +5712,7 @@ class Table(MutableSequence[dict[str, Any]]):
                         if payload_size > _MAX_PAYLOAD or _HEADER.size + payload_size > stat.st_size:
                             raise StorageError(f"invalid payload length in {self.path}")
                         payload = mapped[_HEADER.size : _HEADER.size + payload_size]
-                records, _incomplete, _valid_end = self._read_wal_records()
+                records, incomplete, valid_end = self._read_wal_records()
                 after_base_signature = _file_signature(self.path)
                 after_wal_signature = _file_signature(self.wal_path)
                 if after_base_signature != base_signature or after_wal_signature != wal_signature:
@@ -5607,7 +5746,7 @@ class Table(MutableSequence[dict[str, Any]]):
                     normalised_rows,
                     normalised_columns,
                     current_generation,
-                    base_signature + wal_signature + (int(generation), current_generation),
+                    base_signature + wal_signature + (int(generation), current_generation, valid_end, incomplete),
                     indexes,
                     primary_index,
                 )
@@ -5735,8 +5874,8 @@ class Table(MutableSequence[dict[str, Any]]):
                 if key_index is None:
                     raise StorageError(f"WAL key column is missing or unhashable: {self.wal_path}")
 
-                def key_from_record(raw_key: Any) -> tuple[Any, ...]:
-                    if not isinstance(raw_key, list) or len(raw_key) != len(key_columns):
+                def key_from_record(raw_key: Any, _cols: tuple[str, ...] = key_columns) -> tuple[Any, ...]:
+                    if not isinstance(raw_key, list) or len(raw_key) != len(_cols):
                         raise StorageError(f"invalid WAL key: {self.wal_path}")
                     try:
                         key = tuple(raw_key)
@@ -5745,9 +5884,9 @@ class Table(MutableSequence[dict[str, Any]]):
                         raise StorageError(f"invalid WAL key: {self.wal_path}") from exc
                     return key
 
-                def unique_position(raw_key: Any) -> int:
+                def unique_position(raw_key: Any, _idx: dict[tuple[Any, ...], tuple[int, ...]] = key_index) -> int:
                     key = key_from_record(raw_key)
-                    positions = key_index.get(key, ())
+                    positions = _idx.get(key, ())
                     if len(positions) != 1:
                         raise StorageError(f"WAL key target is not unique: {self.wal_path}")
                     return positions[0]
@@ -6877,7 +7016,8 @@ class Table(MutableSequence[dict[str, Any]]):
             else:
                 rows[index] = replacement  # type: ignore[list-item]
 
-        self._mutate(assign, copy_rows=False, new_columns=(key for row in replacement for key in row))
+        new_columns = (key for row in replacement for key in row) if isinstance(index, slice) else replacement.keys()
+        self._mutate(assign, copy_rows=False, new_columns=new_columns)
 
     def __delitem__(self, index: Union[int, slice]) -> None:
         def remove(rows: list[dict[str, Any]], columns: list[str]) -> None:
@@ -6929,7 +7069,7 @@ class Table(MutableSequence[dict[str, Any]]):
             raise ValueError(f"statement targets table {_parse_table_name(token)!r}, not {self.name!r}")
 
     @staticmethod
-    def _clauses(text: str, names: Sequence[str]) -> dict[str, str]:
+    def _clause_positions(text: str, names: Sequence[str]) -> list[tuple[int, str]]:
         positions: list[tuple[int, str]] = []
         upper = text.upper()
         quote: Optional[str] = None
@@ -6938,8 +7078,18 @@ class Table(MutableSequence[dict[str, Any]]):
         while index < len(text):
             char = text[index]
             if quote:
-                if char == quote and (index == 0 or text[index - 1] != "\\"):
-                    quote = None
+                if char == quote:
+                    if index + 1 < len(text) and text[index + 1] == quote:
+                        index += 2
+                        continue
+                    # 统计连续反斜杠数量，仅奇数个反斜杠才转义结束引号。
+                    slashes = 0
+                    cursor = index - 1
+                    while cursor >= 0 and text[cursor] == "\\":
+                        slashes += 1
+                        cursor -= 1
+                    if slashes % 2 == 0:
+                        quote = None
                 index += 1
                 continue
             if char in ("'", '"'):
@@ -6969,6 +7119,11 @@ class Table(MutableSequence[dict[str, Any]]):
                 continue
             index += 1
         positions.sort()
+        return positions
+
+    @staticmethod
+    def _clauses(text: str, names: Sequence[str]) -> dict[str, str]:
+        positions = Table._clause_positions(text, names)
         result: dict[str, str] = {}
         for pos, (start, name) in enumerate(positions):
             end = positions[pos + 1][0] if pos + 1 < len(positions) else len(text)
@@ -7055,12 +7210,9 @@ class Table(MutableSequence[dict[str, Any]]):
             if len(values) != len(target_columns):
                 raise ValueError("INSERT column/value count mismatch")
             parsed.append(dict(zip(target_columns, values)))
-        def add(rows: list[dict[str, Any]], columns: list[str]) -> tuple[int, int]:
-            first = len(rows)
-            rows.extend(parsed)
-            return first, len(parsed)
-
-        first, count = self._mutate(add, copy_rows=False, new_columns=(key for row in parsed for key in row))
+        # 统一走 insert_many，避免全表重写并兼容 RedisTable 与原生 SQLite 表。
+        first = len(self)
+        count = self.insert_many(parsed)
         return QueryResult(rowcount=count, lastrowid=(first if count else None))
 
     def _read_snapshot_columns(self) -> list[str]:
@@ -7073,12 +7225,14 @@ class Table(MutableSequence[dict[str, Any]]):
         if not match:
             raise ValueError("invalid UPDATE syntax")
         self._assert_table(match.group("table"))
-        clauses = self._clauses(match.group("tail"), ("WHERE", "LIMIT"))
-        assignments_text = clauses.get("WHERE", clauses.get("LIMIT", match.group("tail")))
-        if "WHERE" in clauses:
-            assignments_text = match.group("tail")[: match.group("tail").upper().find("WHERE")].strip()
-        elif "LIMIT" in clauses:
-            assignments_text = match.group("tail")[: match.group("tail").upper().find("LIMIT")].strip()
+        tail = match.group("tail")
+        positions = Table._clause_positions(tail, ("WHERE", "LIMIT"))
+        clauses = {}
+        for pos, (start, name) in enumerate(positions):
+            end = positions[pos + 1][0] if pos + 1 < len(positions) else len(tail)
+            clauses[name] = tail[start + len(name) : end].strip()
+        # 基于词法子句边界切片，避免字符串字面量或列名中的 WHERE/LIMIT 被误截断。
+        assignments_text = tail[: positions[0][0]].strip() if positions else tail.strip()
         values: dict[str, Any] = {}
         for item in _split_top_level(assignments_text):
             if "=" not in item:
@@ -7795,7 +7949,7 @@ class TableReadPipeline:
         for kind, value in commands:
             if kind == "get_many":
                 command_rows: dict[Any, dict[str, Any]] = {}
-                for key in value:
+                for _key in value:
                     _public, normalized_key = normalized[cursor]
                     cursor += 1
                     public_key = normalized_key[0] if len(normalized_key) == 1 else normalized_key
@@ -8296,6 +8450,8 @@ class FileMappedDatabase:
         """Reload JSON table definitions and rebind already opened tables."""
 
         with self._lock:
+            for table in self._tables.values():
+                table._close()
             if self.schema_registry is not None:
                 self.schema_registry.clear()
             self._tables.clear()

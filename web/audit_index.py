@@ -109,7 +109,38 @@ class AuditIndex:
             except FileNotFoundError:
                 connection.execute('DELETE FROM sources WHERE source=?', (source,))
 
+    def _try_readonly(self, action, *, selected_date=None, dates_only=False):
+        """源文件均未变化时走无写锁只读快路径，提升并发日志查询性能。"""
+        if not self.path.is_file():
+            return False, None
+        try:
+            with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=2)) as connection:
+                connection.execute('BEGIN')
+                zone = json.dumps([time.tzname, time.timezone, time.daylight, os.environ.get('TZ')])
+                old_zone = connection.execute("SELECT value FROM settings WHERE key='timezone'").fetchone()
+                if old_zone != (zone,):
+                    return False, None
+                paths = self.audit._log_paths()
+                sources = {('0:' if p == self.audit.legacy_path else '1:') + p.name: p for p in paths}
+                saved = {row[0]: row[1:] for row in connection.execute('SELECT source,identity,size,mtime FROM sources')}
+                if saved.keys() - sources.keys():
+                    return False, None
+                for source, path in sources.items():
+                    if path != self.audit.legacy_path:
+                        if dates_only or (selected_date and path.name != selected_date.isoformat() + '.jsonl'):
+                            continue
+                    info = path.stat()
+                    identity = f'{info.st_dev}:{info.st_ino}'
+                    if saved.get(source) != (identity, info.st_size, info.st_mtime_ns):
+                        return False, None
+                return True, action(connection)
+        except (OSError, sqlite3.Error):
+            return False, None
+
     def _run(self, action, *, selected_date=None, dates_only=False):
+        hit, cached = self._try_readonly(action, selected_date=selected_date, dates_only=dates_only)
+        if hit:
+            return cached
         # Index construction must not hold the JSONL append lock or delay audited writes.
         with _locked(self.lock_path, timeout=2):
             for attempt in range(2):

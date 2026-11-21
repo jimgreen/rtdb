@@ -35,8 +35,9 @@ const efileImports={
     el('efile-progress').max=this.session?.size||1;el('efile-progress').value=this.session?.received||0;
     el('efile-target').textContent=`目标：${this.session?.database||state.database} · ${this.session?.filename||'E 文件'}${this.session?' · '+formatBytes(this.session.received)+' / '+formatBytes(this.session.size):''}`;
   },
-  render(){
+  render(preserveTab = false){
     const result=this.session?.result;if(!result){this.controls();return;}
+    const activeTab=preserveTab?[...el('definition-preview').querySelectorAll('.definition-table-tab')].findIndex(item=>item.classList.contains('active')):-1;
     const host=el('definition-preview');host.replaceChildren(node('p',`${result.encoding} · ${result.tables.length} 张表；逐表确认后校验全部数据，再执行导入。`));
     const tabs=node('nav',null,'tabs definition-table-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','导入表预览');host.append(tabs);
     for(const [index,original] of result.tables.entries()){
@@ -52,7 +53,9 @@ const efileImports={
         for(const cells of original.sample){const row=node('tr');cells.forEach(cell=>row.append(node('td',cell)));table.append(row);}details.append(table);article.append(details);}
       host.append(article);
     }
-    definitionPreview={format:'e',upload_id:this.session.id};selectDefinitionTable(0);this.controls();
+    definitionPreview={format:'e',upload_id:this.session.id};
+    selectDefinitionTable(activeTab>=0&&activeTab<result.tables.length?activeTab:0);
+    this.controls();
   },
   async restore(){
     if(!this.session){try{this.session=JSON.parse(localStorage.getItem(this.key));}catch{}}
@@ -73,13 +76,13 @@ const efileImports={
         if(file&&!this.sameFile(file))throw Error('请选择原文件，或先清除临时上传');
         const overrides=collectDefinitionOverrides();this.validation=null;
         const result=await request('definition-preview','POST',{upload_id:this.session.id,mode:el('definition-mode').value,definition_overrides:overrides});
-        this.validation=result;this.session.validation=result;this.render();this.message('全部数据已校验。请核对记录数、重复KEY警告和各表字段，再确认导入。');return;
+        this.validation=result;this.session.validation=result;this.render(true);this.message('全部数据已校验。请核对记录数、重复KEY警告和各表字段，再确认导入。');return;
       }
       if(!file||!file.size||file.size>128*1024**2||!/\.e$/i.test(file.name))throw Error('请选择不超过128 MiB的非空 E 文件');
       if(!crypto.subtle)throw Error('请通过 localhost 或 HTTPS 访问，以校验上传内容');
       if(this.session&&!this.sameFile(file))throw Error('请选择原文件，或先清除临时上传');
       if(!this.session){this.session={id:crypto.randomUUID().replaceAll('-',''),kind:'e',database:state.database,encoding:el('definition-encoding').value,filename:file.name,size:file.size,last_modified:file.lastModified};this.remember();}
-      this.session=await request('database-uploads','POST',this.session);this.session=await request('database-uploads/'+this.session.id);this.controls();
+      this.session=await request('database-uploads','POST',this.session);this.controls();
       if(this.session.state==='error')throw Error(this.session.error||'请清除后重新上传');
       const size=this.session.chunk_size;
       for(let i=0;i<this.session.chunks.length;i++){
@@ -93,7 +96,7 @@ const efileImports={
         for(let attempt=0;attempt<3;attempt++){
           if(this.paused)return;this.controller=new AbortController();
           try{const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
-            const result=await response.json();if(!response.ok){const error=Error(result.error||'上传失败');error.status=response.status;throw error;}this.session=result;break;
+            const result=await parseJsonResponse(response,'上传失败');this.session=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}
         }
         this.controls();this.message('分块上传中，可暂停或刷新后续传。');

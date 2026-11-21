@@ -35,8 +35,10 @@ def scope(manager, filename):
     scoped = copy.copy(manager)
     scoped.database_file = manager._database_filename({'filename': filename})
     from .sqlite_service import is_native_database
-    scoped.read_only = is_native_database(manager.data_dir / scoped.database_file)
-    scoped._journal = manager.schema_dir / ('.sqlite-web.' + Path(scoped.database_file).stem + '.pending.json')
+    target_path = manager.data_dir / scoped.database_file
+    scoped.native = is_native_database(target_path)
+    tag = target_path.stem if target_path.suffix.lower() == '.sqlite3' else scoped.database_file
+    scoped._journal = manager.schema_dir / ('.sqlite-web.' + tag + '.pending.json')
     return scoped
 
 
@@ -87,26 +89,31 @@ def _hash(path, phase='计算快照校验值'):
 
 def _validate(path):
     checkpoint('检查数据库完整性')
-    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as connection:
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
         connection.set_progress_handler(lambda: int(cancellation_requested()), 10000)
         try:
             errors = [row[0] for row in connection.execute('PRAGMA quick_check') if row[0] != 'ok']
             if errors: raise APIError(422, '数据库完整性检查失败：' + '; '.join(errors[:5]))
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as error:
             if cancellation_requested(): raise TaskCancelled()
-            raise
+            raise APIError(422, f'数据库完整性检查失败：{error}') from error
+        except sqlite3.Error as error:
+            raise APIError(422, f'数据库文件无法读取或已损坏：{error}') from error
     document = load_embedded_database(path)
     if document is None or not document.is_grouped:
         raise APIError(422, '整库快照要求有效的多表内置定义')
-    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as connection:
-        for definition in document.tables:
-            checkpoint('核对表结构：' + definition.eng_name)
-            quote = lambda s: '"' + s.replace('"', '""') + '"'
-            metadata = connection.execute('SELECT fingerprint,row_count FROM ' + quote('rtdb_metadata_' + definition.eng_name) + ' WHERE version=1').fetchone()
-            if not metadata or metadata[0] != fingerprint(definition.to_mapping()):
-                raise APIError(409, '内置定义与物理表不一致：' + definition.eng_name)
-            count = connection.execute('SELECT COUNT(*) FROM ' + quote('rtdb_data_' + definition.eng_name)).fetchone()[0]
-            if count != metadata[1]: raise APIError(409, '记录数元数据不一致：' + definition.eng_name)
+    try:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
+            for definition in document.tables:
+                checkpoint('核对表结构：' + definition.eng_name)
+                quote = lambda s: '"' + s.replace('"', '""') + '"'
+                metadata = connection.execute('SELECT fingerprint,row_count FROM ' + quote('rtdb_metadata_' + definition.eng_name) + ' WHERE version=1').fetchone()
+                if not metadata or metadata[0] != fingerprint(definition.to_mapping()):
+                    raise APIError(409, '内置定义与物理表不一致：' + definition.eng_name)
+                count = connection.execute('SELECT COUNT(*) FROM ' + quote('rtdb_data_' + definition.eng_name)).fetchone()[0]
+                if count != metadata[1]: raise APIError(409, '记录数元数据不一致：' + definition.eng_name)
+    except sqlite3.Error as error:
+        raise APIError(422, f'快照物理表结构异常：{error}') from error
     return document
 
 
@@ -210,12 +217,14 @@ def restore(manager, ident, payload):
             scoped._journal = manager.schema_dir / ('.sqlite-web.' + name + '.pending.json')
             if scoped._journal.exists(): raise APIError(409, '目标数据库有待恢复的操作，请先检查')
             intent = dict(kind='snapshot-restore', name=name, restore_id=restore_id)
+            restore_manifest = directory(manager) / (restore_id + '.restore.json')
             atomic_json(scoped._journal, intent)
-            atomic_json(directory(manager) / (restore_id + '.restore.json'),
+            atomic_json(restore_manifest,
                         dict(database=manager.database_file, task_fingerprint=task['fingerprint'] if task else None, result=result))
             try: os.link(stage, target)
             except BaseException:
                 scoped._journal.unlink(missing_ok=True)
+                restore_manifest.unlink(missing_ok=True)
                 raise
             try: recover_definition(scoped, intent)
             except Exception as error:
@@ -242,8 +251,11 @@ def recover_task(manager, task, signature):
 
 
 def byte_range(header, size):
-    if not header: return 0, size - 1, False
-    match = re.fullmatch(r'bytes=(\d*)-(\d*)', header)
+    if not header:
+        return 0, size - 1, False
+    if size <= 0:
+        raise APIError(416, '下载范围超出文件大小')
+    match = re.fullmatch(r'bytes=(\d*)-(\d*)', header.strip())
     if not match or not any(match.groups()): raise APIError(416, '不支持的下载范围')
     left, right = match.groups()
     if not left:

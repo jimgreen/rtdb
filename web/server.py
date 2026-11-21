@@ -216,7 +216,9 @@ class RTDBWebApp:
         try:
             table[index] = row
             return {"table": table.name, "index": index, "row": table[index]}
-        except (IndexError, TypeError, ValueError, SchemaError, StorageError) as exc:
+        except IndexError as exc:
+            raise APIError(404, "row not found") from exc
+        except (TypeError, ValueError, SchemaError, StorageError) as exc:
             raise APIError(422, str(exc)) from exc
 
     def delete_row(self, name: str, index: int) -> dict[str, Any]:
@@ -239,12 +241,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
 
     def _send_json(self, status: int, payload: Any) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -257,23 +259,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": "internal server error", "details": str(error)})
 
     def _json_body(self) -> Any:
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (ValueError, TypeError) as exc:
+            raise APIError(400, "Content-Length must be a non-negative integer") from exc
+        if length < 0:
+            raise APIError(400, "Content-Length must be a non-negative integer")
         if length > MAX_JSON_BYTES:
             raise APIError(413, "request body is too large")
-        raw = self.rfile.read(length) if length else b"{}"
+        old_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(30)
+            raw = self.rfile.read(length) if length else b"{}"
+        finally:
+            self.connection.settimeout(old_timeout)
+        if length and len(raw) != length:
+            raise APIError(400, "incomplete request body")
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise APIError(400, "request body must be valid UTF-8 JSON") from exc
 
     def _route(self) -> tuple[str, list[str], Mapping[str, list[str]]]:
+        # 对齐 SQLite Web 安全策略：限制本机 Host 并拒绝跨站 Origin 访问。
+        host = self.headers.get("Host", "")
+        if self.server.server_address[0] in ("127.0.0.1", "::1"):
+            if urlsplit("http://" + host).hostname not in ("127.0.0.1", "localhost", "::1"):
+                raise APIError(403, "disallowed Host")
+        origin = self.headers.get("Origin")
+        if origin and (not host or urlsplit(origin).netloc != host):
+            raise APIError(403, "cross-origin access is not allowed")
         parsed = urlsplit(self.path)
         parts = [unquote(item) for item in parsed.path.split("/") if item]
         return parsed.path, parts, parse_qs(parsed.query, keep_blank_values=True)
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -304,6 +325,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if len(parts) == 4 and parts[1] == "data":
                     self._send_json(200, self.app.get_row(parts[2], _path_index(parts[3])))
                     return
+                raise APIError(404, "route not found")
             self._send_static(path)
         except Exception as exc:
             self._send_error(exc)
@@ -318,7 +340,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raise APIError(400, "head.eng_name is required")
                 self._send_json(201, self.app.save_definition(name, payload, replace=False))
                 return
-            if len(parts) == 3 and parts[1] == "data":
+            if len(parts) == 3 and parts[0:2] == ["api", "data"]:
                 self._send_json(201, self.app.insert_rows(parts[2], payload))
                 return
             raise APIError(404, "route not found")
@@ -332,10 +354,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0:2] == ["api", "schemas"]:
                 self._send_json(200, self.app.save_definition(parts[2], payload, replace=True))
                 return
-            if len(parts) == 3 and parts[1] == "data":
+            if len(parts) == 3 and parts[0:2] == ["api", "data"]:
                 self._send_json(200, self.app.update_rows(parts[2], payload))
                 return
-            if len(parts) == 4 and parts[1] == "data":
+            if len(parts) == 4 and parts[0:2] == ["api", "data"]:
                 self._send_json(200, self.app.replace_row(parts[2], _path_index(parts[3]), payload))
                 return
             raise APIError(404, "route not found")
@@ -347,12 +369,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             _, parts, query = self._route()
             payload = self._json_body() if self.headers.get("Content-Length") else {}
             if len(parts) == 3 and parts[0:2] == ["api", "schemas"]:
-                self._send_json(200, self.app.delete_definition(parts[2], delete_data=False))
+                delete_data = query.get("delete_data", ["false"])[0].strip().lower() in ("1", "true", "yes")
+                self._send_json(200, self.app.delete_definition(parts[2], delete_data=delete_data))
                 return
-            if len(parts) == 3 and parts[1] == "data":
+            if len(parts) == 3 and parts[0:2] == ["api", "data"]:
                 self._send_json(200, self.app.delete_rows(parts[2], payload))
                 return
-            if len(parts) == 4 and parts[1] == "data":
+            if len(parts) == 4 and parts[0:2] == ["api", "data"]:
                 self._send_json(200, self.app.delete_row(parts[2], _path_index(parts[3])))
                 return
             raise APIError(404, "route not found")
@@ -378,6 +401,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class FileMappedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_close(self) -> None:
+        super().server_close()
+        app = getattr(self, "rtdb_app", None)
+        if app is not None:
+            app.db.close()
+
+
 def create_server(
     host: str = "127.0.0.1",
     port: int = 8877,
@@ -394,7 +427,11 @@ def create_server(
     if engine != "file_mapped":
         raise ValueError("engine must be file_mapped or sqlite")
     app = RTDBWebApp(root, data_dir=data_dir, schema_dir=schema_dir)
-    server = ThreadingHTTPServer((host, port), RequestHandler)
+    try:
+        server = FileMappedHTTPServer((host, port), RequestHandler)
+    except BaseException:
+        app.db.close()
+        raise
     server.rtdb_app = app  # type: ignore[attr-defined]
     return server
 

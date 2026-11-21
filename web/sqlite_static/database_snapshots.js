@@ -12,6 +12,7 @@ const databaseSnapshots = {
     el('snapshot-status').textContent='';el('snapshot-restore').disabled=true;
     el('snapshot-restore-caption').textContent='选择一份快照，再恢复为新数据库。';
     el('snapshot-close').onclick=()=>el('database-snapshots-dialog').close();
+    el('snapshot-close-x').onclick=()=>el('database-snapshots-dialog').close();
     el('snapshot-refresh').onclick=()=>this.action(()=>this.refresh());
     el('snapshot-create').onclick=()=>this.action(async()=>{
       const result=await request('database-snapshots?database='+encodeURIComponent(this.source),'POST',{});
@@ -37,8 +38,8 @@ const databaseSnapshots = {
     finally{controls.forEach((control,index)=>control.disabled=previous[index]);el('snapshot-restore').disabled=!this.selected;}
   },
   async refresh(){
-    const response=await workspaceFetch('/api/manage/database-snapshots'),data=await response.json();
-    if(!response.ok)throw Error(data.error||'读取快照失败');
+    const response=await workspaceFetch('/api/manage/database-snapshots');
+    const data=await parseJsonResponse(response,'读取快照失败');
     const host=el('snapshot-list');host.replaceChildren();
     if(!data.snapshots.length){host.append(node('p','尚无快照。选择数据库后生成第一份快照。','muted'));return;}
     const table=node('table'),head=node('tr');

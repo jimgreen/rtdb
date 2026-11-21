@@ -8,39 +8,62 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <p class="eyebrow">RTDB WEB SERVICE</p>
-      <h1>表结构与数据管理</h1>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/></svg></span>
+      <div>
+        <p class="eyebrow">RTDB WEB SERVICE</p>
+        <h1>表结构与数据管理</h1>
+      </div>
     </div>
-    <button id="refresh" class="secondary">刷新</button>
+    <div class="header-actions">
+      <button id="toggle-theme" type="button" class="ghost" title="切换深色 / 浅色主题" aria-label="切换深色或浅色主题"><svg class="ui-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg class="ui-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+      <button id="refresh" type="button" class="secondary"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>刷新</button>
+    </div>
   </header>
   <main class="layout">
     <aside class="panel tables-panel">
-      <div class="panel-title"><h2>表</h2><button id="new-table" class="small">新建</button></div>
+      <div class="panel-title"><h2>数据表</h2><button id="new-table" type="button" class="small"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>新建</button></div>
       <div id="table-list" class="table-list"><p class="muted">正在加载…</p></div>
     </aside>
     <section class="content">
-      <div id="notice" class="notice" hidden></div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <section class="panel">
-        <div class="panel-title"><h2>表结构</h2><div><button id="save-schema">保存结构</button><button id="delete-schema" class="danger">删除结构</button></div></div>
-        <p class="muted">JSON 定义：head + columns，字段使用最终命名。</p>
-        <textarea id="schema-editor" class="editor" spellcheck="false" aria-label="表结构 JSON"></textarea>
+        <div class="panel-title">
+          <div><h2>表数据</h2><span id="table-summary" class="muted"></span></div>
+          <div class="actions"><button id="add-row" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>新增行</button><button id="delete-rows" type="button" class="danger-outline"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除选中</button></div>
+        </div>
+        <div class="toolbar">
+          <input id="where" placeholder='条件，例如 age >= 18 或 {"status":"启用"}' aria-label="筛选条件">
+          <select id="order-field" aria-label="排序字段"><option value="">默认排序</option></select>
+          <select id="order-dir" aria-label="排序方向" disabled><option value="ASC">升序 ASC</option><option value="DESC">降序 DESC</option></select>
+          <input id="order-by" type="hidden">
+          <button id="query" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>查询</button>
+        </div>
+        <div id="data-grid" class="grid-wrap"><p class="muted empty">请选择一张表。</p></div>
       </section>
       <section class="panel">
-        <div class="panel-title"><h2>表数据</h2><div><button id="add-row">新增行</button><button id="delete-rows" class="danger">删除选中</button></div></div>
-        <div class="toolbar"><input id="where" placeholder='条件，例如 age >= 18 或 {"status":"启用"}'><input id="order-by" placeholder="排序，例如 id DESC"><button id="query">查询</button></div>
-        <div id="data-grid" class="grid-wrap"><p class="muted">请选择一张表。</p></div>
+        <div class="panel-title">
+          <h2>表结构</h2>
+          <div class="actions"><button id="save-schema" type="button" class="secondary">保存结构</button><button id="delete-schema" type="button" class="danger-outline">删除结构</button></div>
+        </div>
+        <textarea id="schema-editor" class="editor" spellcheck="false" aria-label="表结构 JSON" placeholder="head + columns JSON 定义"></textarea>
       </section>
     </section>
   </main>
   <dialog id="row-dialog">
     <form method="dialog" class="dialog-form">
-      <div class="panel-title"><h2 id="row-dialog-title">新增行</h2><button value="cancel" class="icon">×</button></div>
+      <div class="panel-title"><h2 id="row-dialog-title">新增行</h2><button value="cancel" class="icon" aria-label="关闭">×</button></div>
       <textarea id="row-editor" class="editor" spellcheck="false" aria-label="行 JSON"></textarea>
       <div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="save-row" value="default">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <form method="dialog" class="dialog-form">
+      <div class="panel-title"><h2 id="confirm-title">确认操作</h2><button value="cancel" class="icon" aria-label="关闭">×</button></div>
+      <p id="confirm-text" class="confirm-text"></p>
+      <div class="dialog-actions"><button id="confirm-cancel" value="cancel" class="secondary">取消</button><button id="confirm-ok" value="confirmed" class="danger">确认</button></div>
     </form>
   </dialog>
   <script src="/static/app.js"></script>
 </body>
 </html>
-

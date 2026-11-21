@@ -78,15 +78,22 @@ def inventory(root):
 
 
 def upload_expired(manager, value):
-    days = configuration(manager)['upload_retention_days']
-    if not days or value.get('state') not in ('receiving', 'ready', 'error', 'preview'):
+    try:
+        days = configuration(manager)['upload_retention_days']
+    except APIError:
+        days = DEFAULTS['upload_retention_days']
+    state = value.get('state')
+    if not days or state not in ('receiving', 'ready', 'error', 'preview'):
         return False
     ledger = manager.data_dir / '.web-tasks' / 'ledger.sqlite'
     if ledger.exists():
-        with closing(sqlite3.connect(ledger.as_uri()+'?mode=ro', uri=True)) as db:
-            if db.execute("SELECT 1 FROM tasks WHERE status IN ('queued','running') LIMIT 1").fetchone():
-                return False
-    return time.time()-value['updated'] > max(86400, days*86400)
+        try:
+            with closing(sqlite3.connect(ledger.as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
+                if db.execute("SELECT 1 FROM tasks WHERE status IN ('queued','running') LIMIT 1").fetchone():
+                    return False
+        except sqlite3.Error:
+            return False
+    return time.time() - value['updated'] > max(86400, days * 86400)
 
 
 def size(files):
@@ -113,10 +120,11 @@ class StorageMaintenance:
     def ledger(self):
         return self.manager.data_dir / '.web-tasks' / 'ledger.sqlite'
 
-    def _connect(self):
+    def _connect(self, *, readonly=False):
         if not regular(self.ledger().parent) or not regular(self.ledger()):
             raise ValueError('任务账本是链接，已保护')
-        return sqlite3.connect(self.ledger().as_uri() + '?mode=rw', uri=True, timeout=5)
+        mode = 'ro' if readonly else 'rw'
+        return sqlite3.connect(self.ledger().as_uri() + f'?mode={mode}', uri=True, timeout=5)
 
     def _scan(self):
         started = time.perf_counter()
@@ -149,7 +157,7 @@ class StorageMaintenance:
         if self.ledger().exists() and regular(self.ledger().parent) and regular(self.ledger()):
             from .tasks import current_task
             task = current_task()
-            with closing(self._connect()) as db:
+            with closing(self._connect(readonly=True)) as db:
                 active = db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running') AND id<>?",
                                     (task['id'] if task else '',)).fetchone()[0]
                 total, body_bytes = db.execute('SELECT COUNT(*),COALESCE(SUM(length(CAST(state AS BLOB))+COALESCE(length(CAST(result AS BLOB)),0)),0) FROM tasks').fetchone()
@@ -216,8 +224,28 @@ class StorageMaintenance:
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     protect('snapshots', path.name, str(error))
         totals['logs']['retention_days'] = self.manager.audit_log.config()['retention_days']
-        return dict(config=config, statistics=totals, candidates=candidates[:LIMIT],
-                    candidate_count=len(candidates), limited=len(candidates)>=LIMIT,
+        # 按类别公平分配预览配额，避免大量过期任务饿死 uploads / snapshots。
+        buckets = {kind: [item for item in candidates if item['kind'] == kind] for kind in ('tasks', 'uploads', 'snapshots')}
+        selected = []
+        remaining = LIMIT
+        active_kinds = [kind for kind in ('tasks', 'uploads', 'snapshots') if buckets[kind]]
+        offsets = {kind: 0 for kind in active_kinds}
+        while remaining > 0 and active_kinds:
+            share = max(1, remaining // len(active_kinds))
+            next_kinds = []
+            for kind in active_kinds:
+                if remaining <= 0:
+                    break
+                take = min(share, remaining, len(buckets[kind]) - offsets[kind])
+                if take > 0:
+                    selected.extend(buckets[kind][offsets[kind]:offsets[kind] + take])
+                    offsets[kind] += take
+                    remaining -= take
+                if offsets[kind] < len(buckets[kind]):
+                    next_kinds.append(kind)
+            active_kinds = next_kinds
+        return dict(config=config, statistics=totals, candidates=selected,
+                    candidate_count=len(candidates), limited=len(candidates) > len(selected),
                     protected=protected[:LIMIT], protected_count=len(protected),
                     scan_ms=round((time.perf_counter()-started)*1000, 3))
 

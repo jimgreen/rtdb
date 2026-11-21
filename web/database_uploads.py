@@ -99,16 +99,34 @@ def create(manager, payload):
     with file_fence(directory(manager)/'.catalog.lock',True):
         folder=session_path(manager,ident)
         if (folder/'state.json').exists():
-            existing=_load(manager,ident)
-            if existing.get('kind','snapshot')!=kind or any(existing.get(key)!=value for key,value in identity.items()):raise APIError(409,'上传编号已对应另一文件或目标')
-            return _public(existing,True)
+            try:
+                existing=_load(manager,ident,expired=True)
+            except (APIError,OSError,ValueError,KeyError,TypeError):
+                existing=None
+            if existing is not None:
+                if time.time()-existing.get('updated',0)>TTL:
+                    if existing.get('state')!='validating' and not existing.get('apply_started'):
+                        with lock(manager,ident):
+                            _remove(manager,ident)
+                    else:
+                        raise APIError(410,'上传会话已超过24小时，请重新上传')
+                else:
+                    if existing.get('kind','snapshot')!=kind or any(existing.get(key)!=value for key,value in identity.items()):
+                        raise APIError(409,'上传编号已对应另一文件或目标')
+                    return _public(existing,True)
         active=[]
         for item in directory(manager).glob('*/state.json'):
             if not re.fullmatch('[a-f0-9]{32}',item.parent.name):continue
-            value=_load(manager,item.parent.name,expired=True)
+            try:
+                value=_load(manager,item.parent.name,expired=True)
+            except (APIError,OSError,ValueError,KeyError,TypeError):
+                continue
             if upload_expired(manager,value):
                 with lock(manager,value['id']):
-                    fresh=_load(manager,value['id'],expired=True)
+                    try:
+                        fresh=_load(manager,value['id'],expired=True)
+                    except (APIError,OSError,ValueError,KeyError,TypeError):
+                        continue
                     if upload_expired(manager,fresh):
                         _remove(manager,value['id'])
                         manager.record_operation(category='system',operation='清理过期临时上传',status='success',http_status=200,
@@ -151,8 +169,15 @@ def put_chunk(manager, ident, offset, block, digest):
 def discard(manager, ident):
     with lock(manager,ident):
         value=_load(manager,ident,expired=True)
+        if value.get('state')=='validating' or value.get('apply_started'):
+            raise APIError(409,'当前上传正在校验或已开始提交，暂不可放弃')
         _remove(manager,ident)
-        return {'discarded':True,'snapshot_retained':value['state']=='ready' and value.get('kind','snapshot')=='snapshot'}
+        retained=value['state']=='ready' and value.get('kind','snapshot')=='snapshot'
+    try:
+        (directory(manager)/(snapshots.identifier(ident)+'.lock')).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {'discarded':True,'snapshot_retained':retained}
 
 
 def finalize(manager, ident):
@@ -180,10 +205,21 @@ def finalize(manager, ident):
         try:
             actual=verify(manager,value)
             document=snapshots._validate(source)
+            # 若上传的 SQLite 头部声明为 WAL 模式，发布前转为 DELETE 模式，确保单文件快照可稳定只读访问。
+            import sqlite3
+            from contextlib import closing
+            byte_size=value['size']
+            with closing(sqlite3.connect(source, timeout=5)) as conn:
+                mode=conn.execute('PRAGMA journal_mode').fetchone()
+                if mode and str(mode[0]).lower()=='wal':
+                    conn.execute('PRAGMA journal_mode=DELETE')
+                    conn.commit()
+                    actual=snapshots._hash(source,'计算规范化后校验值')
+                    byte_size=source.stat().st_size
             database=manager._database_filename({'filename':document.eng_name+'.sqlite3'})
             now=datetime.now(timezone.utc)
             item=dict(id=ident,upload_id=ident,database=database,filename=f'{Path(database).stem}_uploaded_{ident[:8]}.sqlite3',
-                      created=now.isoformat(),bytes=value['size'],sha256=actual,table_count=len(document.tables),tables=list(document.table_names))
+                      created=now.isoformat(),bytes=byte_size,sha256=actual,table_count=len(document.tables),tables=list(document.table_names))
             with committing('发布已校验的上传快照'):
                 linked=False
                 try:
@@ -218,7 +254,16 @@ def recover_task(manager, task, signature):
     if not manifest.is_file():return None
     item=json.loads(manifest.read_text(encoding='utf-8'))
     if item.get('upload_id')!=ident:return None
-    return snapshots.resolve(snapshots.scope(manager,item['database']),ident)[1]
+    resolved=snapshots.resolve(snapshots.scope(manager,item['database']),ident)[1]
+    if value.get('state')!='ready':
+        try:
+            with lock(manager,ident):
+                value.update(state='ready',result=resolved)
+                _save(manager,value)
+                (session_path(manager,ident)/'payload.sqlite3').unlink(missing_ok=True)
+        except Exception:
+            pass
+    return resolved
 
 
 def verify(manager,value):

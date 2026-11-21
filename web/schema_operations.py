@@ -1,17 +1,35 @@
 """Scoped schema creation/deletion with receipts in the same business transaction."""
 from contextlib import closing
+import re
+import shutil
 import sqlite3
 import uuid
 
 from core.sqlite_schema import _read_embedded_database, write_embedded_definition, remove_embedded_definition
-from .atomic_import import create_layout, quote
+from .atomic_import import create_layout
 from .errors import APIError
 from . import write_receipts
 
 
+def _strip_leading_sql_comments(sql):
+    text = sql.lstrip()
+    while True:
+        if text.startswith('--'):
+            newline = text.find('\n')
+            text = '' if newline == -1 else text[newline + 1:].lstrip()
+        elif text.startswith('/*'):
+            end = text.find('*/', 2)
+            if end == -1:
+                return ''
+            text = text[end + 2:].lstrip()
+        else:
+            return text
+
+
 def query_plan(manager, name, payload):
     statement=payload.get('sql','')
-    if not isinstance(statement,str) or not statement.strip() or len(statement)>100000 or statement.strip().split(None,1)[0].upper() not in ('SELECT','WITH'):
+    stripped = _strip_leading_sql_comments(statement) if isinstance(statement, str) else ''
+    if not stripped or len(statement)>100000 or stripped.split(None,1)[0].upper() not in ('SELECT','WITH'):
         raise APIError(400,'查询计划仅支持 SELECT / WITH 语句')
     with manager.session(name) as table:
         manager._view(table,table._connection())
@@ -40,6 +58,8 @@ def preview(manager, name, payload):
         else:
             old=manager.definition(name)
             if payload.get('version')!=fingerprint(old.to_mapping()):raise APIError(409,'表结构已变化，请刷新后预览')
+            if desired.eng_name.casefold() != old.eng_name.casefold() and manager._find(desired.eng_name):
+                errors.append(f'目标表名已存在：{desired.eng_name}')
             with manager.session(name) as table:count=len(table)
             renames=_normalise_column_renames(old,desired,payload.get('column_renames'))
             previous={renames.get(c.eng_name,c.eng_name):c for c in old.columns}
@@ -85,7 +105,7 @@ def create(manager, desired):
             def apply(c):
                 document=_read_embedded_database(c,path)
                 if document is None:raise APIError(409,'数据库缺少内置定义，请先修复')
-                if any(table.eng_name==desired.eng_name for table in document.tables):raise APIError(409,'表名已存在')
+                if any(table.eng_name.casefold()==desired.eng_name.casefold() for table in document.tables):raise APIError(409,'表名已存在')
                 if document.tables and not document.is_grouped:raise APIError(409,'数据库需要先转换为多表布局')
                 atomic_json(manager._journal,dict(kind='definition-import',database_path=str(path),schema_path=str(manager.schema_dir/(path.stem+'.json'))))
                 create_layout(c,desired,'rtdb_data_'+desired.eng_name,'rtdb_metadata_'+desired.eng_name)
@@ -93,7 +113,10 @@ def create(manager, desired):
                 return dict(name=desired.eng_name,definition=desired.to_mapping(),schema_version=fingerprint(desired.to_mapping()))
             result=write_receipts.in_transaction(connection,apply)
             connection.commit();write_receipts.mark_committed(result)
-        except BaseException:connection.rollback();raise
+        except BaseException:
+            connection.rollback()
+            manager._journal.unlink(missing_ok=True)
+            raise
     return export_after_commit(manager,result)
 
 
@@ -104,16 +127,25 @@ def drop(manager, name, payload):
         with manager._database() as database:
             table=database[name]
             if payload.get('version')!=fingerprint(table.definition.to_mapping()):raise APIError(409,'表结构已变化，请刷新')
-            archive=manager.data_dir/'.web-archive'/(name+'-'+uuid.uuid4().hex)
+            if len(table):
+                raise APIError(409,'表有数据，请先导出并清空后删除表结构')
+            safe_name=re.sub(r'[^A-Za-z0-9_-]','_',name)[:48] or 'table'
+            archive=manager.data_dir/'.web-archive'/f'{safe_name}-{uuid.uuid4().hex}'
             archive.mkdir(parents=True)
-            with closing(sqlite3.connect(archive/table.path.name)) as backup:table._connection().backup(backup)
-            def remove(connection):
-                if connection.execute(f'SELECT 1 FROM {table._data_sql} LIMIT 1').fetchone():raise APIError(409,'表有数据，请先导出并清空后删除表结构')
-                document=_read_embedded_database(connection,table.path)
-                atomic_json(manager._journal,dict(kind='definition-import',database_path=str(table.path),schema_path=str(manager.schema_dir/(table.path.stem+'.json'))))
-                connection.execute(f'DROP TABLE {table._data_sql}')
-                connection.execute(f'DROP TABLE {table._metadata_sql}')
-                remove_embedded_definition(connection,name)
-                return dict(deleted=True,archive=str(archive),database_file=table.path.name,remaining_tables=[t.eng_name for t in document.tables if t.eng_name!=name])
-            result=write_receipts.write(table,remove)
+            try:
+                with closing(sqlite3.connect(archive/table.path.name)) as backup:table._connection().backup(backup)
+                def remove(connection):
+                    if connection.execute(f'SELECT 1 FROM {table._data_sql} LIMIT 1').fetchone():raise APIError(409,'表有数据，请先导出并清空后删除表结构')
+                    document=_read_embedded_database(connection,table.path)
+                    if document is None:raise APIError(409,'数据库缺少内置定义，无法删除表结构')
+                    atomic_json(manager._journal,dict(kind='definition-import',database_path=str(table.path),schema_path=str(manager.schema_dir/(table.path.stem+'.json'))))
+                    connection.execute(f'DROP TABLE {table._data_sql}')
+                    connection.execute(f'DROP TABLE {table._metadata_sql}')
+                    remove_embedded_definition(connection,name)
+                    return dict(deleted=True,archive=str(archive),database_file=table.path.name,remaining_tables=[t.eng_name for t in document.tables if t.eng_name!=name])
+                result=write_receipts.write(table,remove)
+            except BaseException:
+                manager._journal.unlink(missing_ok=True)
+                shutil.rmtree(archive,ignore_errors=True)
+                raise
         return export_after_commit(manager,result)

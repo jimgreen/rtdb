@@ -5,6 +5,7 @@ const csvImports={
     el('csv-start').onclick=()=>this.start();el('csv-pause').onclick=()=>this.pause();
     el('csv-apply').onclick=()=>this.apply();el('csv-discard').onclick=()=>this.discard();
     el('csv-close').onclick=()=>el('csv-dialog').close();
+    el('csv-close-x').onclick=()=>el('csv-dialog').close();
     el('csv-dialog').oncancel=event=>{if(this.active){event.preventDefault();this.pause();}};
     el('csv-file').onchange=()=>{
       const file=el('csv-file').files[0];
@@ -67,7 +68,7 @@ const csvImports={
       if(!this.session){this.session={id:crypto.randomUUID().replaceAll('-',''),kind:'csv',...this.target,filename:file.name,size:file.size,last_modified:file.lastModified,encoding:el('csv-encoding').value};this.remember();}
       // After a lost create response only the ID may be in browser storage; open() resolves it.
       this.session=await request('database-uploads','POST',this.session);
-      this.session=await request('database-uploads/'+this.session.id);this.remember();this.render();
+      this.remember();this.render();
       if(this.session.state==='ready'){this.message('文件已校验，可以确认导入。');return;}
       if(this.session.state==='error')throw Error(this.session.error||'请清除临时上传后重试');
       const size=this.session.chunk_size;
@@ -85,7 +86,7 @@ const csvImports={
           if(this.paused)return;this.controller=new AbortController();
           try{
             const response=await workspaceFetch(`/api/manage/database-uploads/${this.session.id}/chunk?offset=${offset}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream','X-Chunk-SHA256':hash},body:bytes,signal:this.controller.signal});
-            const result=await response.json();if(!response.ok){const error=Error(result.error||'上传失败');error.status=response.status;throw error;}
+            const result=await parseJsonResponse(response,'上传失败');
             this.session=result;break;
           }catch(error){if(this.paused)return;if(attempt===2||error.status&&error.status<500)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}
         }

@@ -68,12 +68,13 @@ def committing(phase):
         return
     with task['lock']:
         checkpoint(phase)
+        previous = task['cancellable']
         task['cancellable'] = False
         persist(task,True)
     try:
         yield
     finally:
-        with task['lock']: task['cancellable'] = True
+        with task['lock']: task['cancellable'] = previous
 
 
 def table_completed(name):
@@ -107,38 +108,43 @@ class TaskRegistry:
         self.closing = False
         self.tasks = OrderedDict()
         self.store = TaskStore(directory) if directory is not None else None
-        if self.store and manager:
-            from .write_receipts import receipt, steps
-            for signature, task in self.store.interrupted():
-                if task['path'].startswith('database-uploads/'):
+        try:
+            if self.store and manager:
+                from .write_receipts import receipt, steps
+                for signature, task in self.store.interrupted():
+                    if task['path'].startswith('database-uploads/'):
+                        try:
+                            from .database_uploads import recover_task
+                            result=recover_task(manager,task,signature)
+                            if result is not None:
+                                task.update(status='done',phase='已从上传快照恢复任务结果',result=result)
+                                for key in ('error','error_status','details'):task.pop(key,None)
+                                self.store.put(task,signature)
+                        except Exception:pass
+                        continue
+                    if not task['database']: continue
                     try:
-                        from .database_uploads import recover_task
-                        result=recover_task(manager,task,signature)
-                        if result is not None:
-                            task.update(status='done',phase='已从上传快照恢复任务结果',result=result)
-                            for key in ('error','error_status','details'):task.pop(key,None)
-                            self.store.put(task,signature)
-                    except Exception:pass
-                    continue
-                if not task['database']: continue
-                try:
-                    if task['path'].startswith('database-snapshots'):
-                        from .database_snapshots import recover_task, scope
-                        result = recover_task(scope(manager, task['database']), task, signature)
-                    else: result = receipt(manager.for_database(task['database']), task['id'], signature)
-                except Exception: continue
-                if result is not None:
-                    task.update(status='done', phase='已从数据库提交回执恢复', result=result)
-                    for key in ('error','error_status','details'): task.pop(key,None)
-                    self.store.put(task,signature)
-                else:
-                    try:completed=steps(manager.for_database(task['database']),task['id'],signature)
-                    except Exception:completed=[]
-                    if completed:
-                        task.update(completed_tables=[item['name'] for item in completed],phase='已核实部分表提交，请核查剩余步骤',
-                                    details={'interrupted':True,'completed_tables':[item['name'] for item in completed],'committed_results':completed})
+                        if task['path'].startswith('database-snapshots'):
+                            from .database_snapshots import recover_task, scope
+                            result = recover_task(scope(manager, task['database']), task, signature)
+                        else: result = receipt(manager.for_database(task['database']), task['id'], signature)
+                    except Exception: continue
+                    if result is not None:
+                        task.update(status='done', phase='已从数据库提交回执恢复', result=result)
+                        for key in ('error','error_status','details'): task.pop(key,None)
                         self.store.put(task,signature)
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='rtdb-task')
+                    else:
+                        try:completed=steps(manager.for_database(task['database']),task['id'],signature)
+                        except Exception:completed=[]
+                        if completed:
+                            task.update(completed_tables=[item['name'] for item in completed],phase='已核实部分表提交，请核查剩余步骤',
+                                        details={'interrupted':True,'completed_tables':[item['name'] for item in completed],'committed_results':completed})
+                            self.store.put(task,signature)
+            self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='rtdb-task')
+        except BaseException:
+            if self.store:
+                self.store.close()
+            raise
 
     def submit(self, management, method, parts, query, payload, request_id=None):
         if not background_allowed(method, parts):
@@ -241,6 +247,7 @@ class TaskRegistry:
                     self.running_databases.discard(task['database']);self._schedule();self.idle.notify_all()
 
     def _find(self, ident, database):
+        database = database or None
         with self.lock:
             task = self.tasks.get(ident)
             if task is None and self.store:
@@ -250,7 +257,7 @@ class TaskRegistry:
                     task.update(lock=threading.RLock(),finished=threading.Event())
                     task['changed']=threading.Condition(task['lock'])
                     task['finished'].set()
-            if task is None or task['database'] != database:
+            if task is None or (task['database'] or None) != database:
                 raise APIError(404, '任务不存在、已过期或服务已重启；请检查操作日志及数据库状态，勿直接重复提交')
             return task
 
@@ -276,6 +283,7 @@ class TaskRegistry:
             return snapshot(task)
 
     def cancel(self, ident, database):
+        database = database or None
         task = self._find(ident, database)
         cancelled_work=None
         with self.lock,task['lock']:
@@ -291,8 +299,14 @@ class TaskRegistry:
                         error=TaskCancelled()
                         task.update(status='cancelled',phase=str(error),error=str(error),error_status=409,
                                     details=error.details,cancellable=False,updated=time.monotonic())
-                persist(task,True)
-                if cancelled_work: task['finished'].set();self.idle.notify_all()
+                try:
+                    persist(task,True)
+                finally:
+                    if cancelled_work:
+                        task['finished'].set()
+                        with task['changed']:
+                            task['changed'].notify_all()
+                        self.idle.notify_all()
         if cancelled_work:
             cancelled_work[1].manager.record_operation(category='system',operation='取消排队任务',status='success',
                 http_status=200,method='POST',path='/api/manage/tasks/'+ident+'/cancel',result={'cancelled':True})
@@ -301,6 +315,23 @@ class TaskRegistry:
     def close(self):
         with self.idle:
             self.closing=True
-            self.idle.wait_for(lambda:not self.running_databases and not self.queues)
+            # 关服时主动取消尚未开始执行的排队任务，避免长时间阻塞关闭。
+            while self.queues:
+                _db, queue = self.queues.popitem(last=False)
+                while queue:
+                    task = queue.popleft()[0]
+                    with task['lock']:
+                        error = TaskCancelled()
+                        task.update(status='cancelled', phase='服务关闭，排队任务已取消', error=str(error),
+                                    error_status=409, details=error.details, cancellable=False, updated=time.monotonic())
+                        try:
+                            persist(task, True)
+                        except Exception:
+                            pass
+                        task['finished'].set()
+                        with task['changed']:
+                            task['changed'].notify_all()
+            self.idle.notify_all()
+            self.idle.wait_for(lambda:not self.running_databases and not self.queues, timeout=30)
         self.executor.shutdown(wait=True)
         if self.store: self.store.close()

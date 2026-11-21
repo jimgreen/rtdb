@@ -3,33 +3,40 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RTDB 管理终端</title><link rel="stylesheet" href="/static/app.css">
-  <script src="/static/workspace.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">R</span>
+      <button id="toggle-sidebar" type="button" class="ghost" title="折叠 / 展开左侧栏" aria-label="折叠或展开左侧栏" aria-pressed="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg></button>
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/></svg></span>
       <div>
         <h1 id="app-title" title="双击打开数据库文件管理">RTDB 管理终端</h1>
-        <button id="open-database-files" class="secondary">数据库文件</button>
+        <button id="open-database-files" class="secondary">选择 / 新建数据库</button>
         <span class="eyebrow">实时数据 · SQLite</span>
       </div>
       <span id="current-database-file" class="current-database-file" aria-live="polite">未选择数据库</span>
       <span id="connection" class="badge">连接中</span>
     </div>
-    <div class="button-row"><label class="auto-label">自动刷新 <select id="auto-refresh" aria-label="自动刷新间隔"><option value="0">关闭</option><option value="2">2 秒</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label><button id="refresh" class="secondary">刷新 F5</button></div>
+    <div class="button-row">
+      <label class="auto-label">自动刷新 <select id="auto-refresh" aria-label="自动刷新间隔"><option value="0">关闭</option><option value="2">2 秒</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label>
+      <span id="auto-refresh-status" class="auto-refresh-status" hidden></span>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <button id="toggle-bottom" type="button" class="ghost" title="折叠 / 展开底部曲线与日志" aria-label="折叠或展开底部面板" aria-pressed="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="14" x2="21" y2="14"/></svg></button>
+      <button id="toggle-theme" type="button" class="ghost" title="切换深色 / 浅色主题" aria-label="切换深色或浅色主题"><svg class="ui-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg class="ui-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+      <button id="refresh" class="secondary"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>刷新 F5</button>
+    </div>
   </header>
   <main class="layout">
     <aside id="table-sidebar" class="sidebar">
       <div class="sidebar-toolbar">
-        <div class="sidebar-toolbar-row"><select id="database-select" aria-label="当前数据库" title="先选择数据库，再管理库中的表"><option value="">选择数据库…</option></select><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
-        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名" aria-label="搜索表名" title="搜索英文 / 中文表名"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short">非空</span></label></div></div>
+        <div class="sidebar-toolbar-row"><select id="database-select" aria-label="当前数据库"><option value="">选择数据库…</option></select><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
+        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名 (Ctrl+K)" aria-label="搜索表名" title="支持英文或中文表名，Ctrl+K 快速聚焦"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short">非空</span></label></div></div>
       </div>
-      <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，右键打开操作菜单" title="右键打开表索引操作菜单"><p class="empty">正在加载…</p></div>
-      <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="拖拽调整或折叠表列表区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
-      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div id="field-list" tabindex="0" aria-label="字段列表，右键打开操作菜单" title="右键打开字段操作菜单"><p class="muted">选择表后查看字段</p></div></details>
+      <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，方向键切表，右键打开菜单"><p class="empty">正在加载…</p></div>
+      <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="调整表列表高度"></div>
+      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div id="field-list" tabindex="0" aria-label="字段列表，右键打开菜单"><p class="muted">选择表后查看字段</p></div></details>
     </aside>
-    <div id="sidebar-splitter" class="splitter splitter-vertical" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="table-sidebar" aria-label="拖拽调整或折叠表索引区域" title="向左拖到边缘收起，向右拖拽展开；方向键微调"></div>
+    <div id="sidebar-splitter" class="splitter splitter-vertical" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="table-sidebar" aria-label="调整侧边栏宽度"></div>
     <section class="workspace">
       <div class="context-bar"><h2 id="current-table">请选择或新建一张表</h2><span id="table-meta" class="muted">—</span></div>
       <nav class="tabs" role="tablist" aria-label="管理功能">
@@ -38,48 +45,67 @@
       </nav>
       <section id="tab-data" class="tab-panel data-tab active" role="tabpanel" aria-labelledby="nav-data">
         <div id="query-panel" class="panel query-panel"><div class="query-controls">
-          <div class="sql-input"><label for="sql-editor">SQL</label><div class="sql-combobox"><input id="sql-editor" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="sql-history-list" spellcheck="false" autocomplete="off" aria-label="SQL 语句" placeholder="输入 SQL，或选择历史语句" title="Enter / Ctrl+Enter 执行；方向键选择历史，Enter 填入"><button id="sql-history-toggle" type="button" aria-label="展开 SQL 历史语句" title="选择已执行的 SQL" tabindex="-1">▾</button></div></div>
+          <div class="sql-input"><label for="sql-editor">SQL</label><div class="sql-combobox"><input id="sql-editor" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="sql-history-list" spellcheck="false" autocomplete="off" aria-label="SQL 语句" placeholder="输入 SQL（Enter 执行，↓ 选择历史）"><button id="sql-history-toggle" type="button" aria-label="展开 SQL 历史语句" title="历史 SQL" tabindex="-1">▾</button></div></div>
+          <div id="quick-filter" class="quick-filter" aria-label="快捷条件筛选">
+            <select id="filter-field" aria-label="筛选字段" title="选择字段"><option value="">快捷筛选…</option></select>
+            <select id="filter-op" aria-label="筛选运算符" title="比较方式" hidden>
+              <option value="=">=</option><option value="!=">!=</option><option value=">">&gt;</option><option value=">=">&gt;=</option><option value="<">&lt;</option><option value="<=">&lt;=</option><option value="LIKE">包含</option><option value="IS NULL">为空</option><option value="IS NOT NULL">非空</option>
+            </select>
+            <span id="filter-value-host" class="filter-value-host" hidden><input id="filter-value" type="text" placeholder="值" aria-label="筛选值"></span>
+            <button id="apply-quick-filter" type="button" class="secondary small" hidden>筛选</button>
+            <button id="reset-quick-filter" type="button" class="secondary small" hidden>重置</button>
+          </div>
           <label class="page-size-label">每页<select id="page-size"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
-          <button id="query" title="执行 SQL（Enter / Ctrl+Enter）">执行</button>
+          <button id="query" title="执行 SQL（Enter / Ctrl+Enter）"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>执行</button>
           <label class="check-label"><input id="chinese-columns" type="checkbox" checked>中文列名</label></div>
         </div>
-        <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="拖拽调整或折叠查询区域" title="向上拖到边缘收起，向下拖拽展开；方向键微调"></div>
-        <div id="records-panel" class="panel records-panel"><div class="panel-title"><div class="button-row"><button id="save-cell-edits" class="small" hidden>保存改单元格</button><button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button></div></div>
-          <div id="data-grid" class="grid-wrap" tabindex="0" aria-label="查询结果表格，右键或 Shift+F10 打开操作菜单"><div class="empty"><strong>从左侧选择一张表</strong><p>查看实时记录，或新建表结构开始录入。</p></div></div>
-          <div class="pager"><span id="row-range" class="muted">0 条记录</span><span id="selection-summary" class="selection-summary muted" title="方向键移动；Shift+方向键扩选；Ctrl+A 全选当前页；双击编辑；Enter/Tab 确认并移动；Ctrl+S 保存"></span><div class="button-row"><button id="prev" class="secondary small">上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <span id="page-total">1</span> 页</label><button id="go-page" class="secondary small">跳转</button><button id="next" class="secondary small">下一页</button></div></div>
+        <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="调整查询区域高度"></div>
+        <div id="records-panel" class="panel records-panel"><div class="panel-title records-header">
+          <div class="records-title-group"><strong id="records-table-title">未选择表</strong><span id="records-table-meta" class="muted"></span></div>
+          <div class="button-row records-actions">
+            <button id="btn-add-row" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>新增</button>
+            <button id="btn-batch-edit" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>批量修改</button>
+            <button id="btn-import-data" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>导入</button>
+            <div class="export-group"><select id="export-format" aria-label="导出格式"><option value="csv">CSV</option><option value="json">JSON</option></select><button id="btn-export-data" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>导出</button></div>
+            <button id="btn-delete-rows" type="button" class="danger-outline small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除</button>
+            <button id="save-cell-edits" class="small" hidden>保存改单元格</button>
+            <button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button>
+          </div></div>
+          <div id="data-grid" class="grid-wrap" tabindex="0" aria-label="查询结果表格"><div class="empty"><strong>从左侧选择一张表</strong></div></div>
+          <div class="pager"><span id="row-range" class="muted">0 条记录</span><span id="selection-summary" class="selection-summary muted" title="方向键移动 · F2/双击编辑 · Delete 清空 · Ctrl+S 保存"></span><div class="button-row"><button id="prev" class="secondary small">上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <span id="page-total">1</span> 页</label><button id="go-page" class="secondary small">跳转</button><button id="next" class="secondary small">下一页</button></div></div>
         </div>
       </section>
       <section id="tab-schema" class="tab-panel" role="tabpanel" aria-labelledby="nav-schema">
-        <div class="panel fill-panel"><div class="panel-title"><div><h3>表结构定义</h3><p id="schema-hint" class="muted">通过表单编辑字段定义；空表可调整类型、主键和字段顺序。</p></div><div class="button-row wrap"><button id="check-table" class="secondary small">检查数据</button><button id="export-schema" class="secondary small">导出定义</button><button id="delete-schema" class="danger-outline small">删除空表结构</button><button id="save-schema" class="small">保存结构</button></div></div>
+        <div class="panel fill-panel"><div class="panel-title"><div><h3>表结构定义</h3><p id="schema-hint" class="muted"></p></div><div class="button-row wrap"><button id="check-table" class="secondary small">检查数据</button><button id="export-schema" class="secondary small">导出定义</button><button id="delete-schema" class="danger-outline small">删除空表结构</button><button id="save-schema" class="small">保存结构</button></div></div>
           <div class="schema-head"><label>英文表名<input id="schema-name" placeholder="例如 devices"></label><label>中文表名<input id="schema-label" placeholder="例如 设备表"></label><button id="add-column" class="secondary small">＋ 添加字段</button></div>
           <div id="schema-fields" class="grid-wrap"></div>
         </div>
       </section>
-      <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="拖拽调整曲线与日志区域高度" title="向上拖到顶端展开至最大，向下拖到底端收起"></div>
+      <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="调整底部区域高度"></div>
       <div id="bottom-panel" class="bottom-panel">
         <div class="bottom-bar">
           <nav class="tabs bottom-tabs" role="tablist" aria-label="曲线与日志">
             <button id="nav-chart" class="tab active" role="tab" aria-selected="true" aria-controls="tab-chart" data-bottom-tab="chart">曲线</button>
-            <button id="nav-logs" class="tab" role="tab" aria-selected="false" aria-controls="tab-logs" data-bottom-tab="logs" tabindex="-1" title="按日期查看服务端持久化操作日志">日志</button>
+            <button id="nav-logs" class="tab" role="tab" aria-selected="false" aria-controls="tab-logs" data-bottom-tab="logs" tabindex="-1">日志</button>
           </nav>
-          <div id="chart-actions" class="button-row"><span id="chart-edit-hint" class="muted">未选择修改</span><button id="follow-chart-selection" class="secondary small" title="清空当前曲线和图例" hidden>清空曲线</button><button id="save-chart" class="secondary small">导出 PNG</button></div>
+          <div id="chart-actions" class="button-row"><span id="chart-edit-hint" class="muted">未选择修改</span><button id="follow-chart-selection" class="secondary small" hidden>清空曲线</button><button id="save-chart" class="secondary small">导出 PNG</button></div>
           <div id="logs-actions" class="button-row" hidden><button id="refresh-logs" class="secondary small">刷新</button><button id="export-logs" class="secondary small">导出当前页</button></div>
         </div>
         <section id="tab-chart" class="bottom-tab-panel chart-panel active" role="tabpanel" aria-labelledby="nav-chart">
-          <div class="chart-heading"><div class="chart-controls"><label>曲线方向<select id="chart-mode" aria-label="曲线方向"><option value="columns">按列成曲线</option><option value="rows">按行成曲线（key 为曲线名）</option></select></label><label>横轴<select id="chart-x" aria-label="曲线横轴"><option value="">key / 行序号</option></select></label><div id="chart-fields" class="button-row wrap"></div><span id="chart-series-summary" class="muted" hidden></span></div><div id="chart-legend" class="button-row wrap" role="group" aria-label="曲线图例，点击名称显示或隐藏"></div></div>
-          <div id="chart-area" class="chart-area"><div id="chart-empty" class="empty">选择包含数值字段的表后查看曲线。</div><canvas id="chart" aria-label="双轴曲线，悬停显示游标，拖动曲线点修改表格" tabindex="0" hidden></canvas></div>
+          <div class="chart-heading"><div class="chart-controls"><label>曲线方向<select id="chart-mode" aria-label="曲线方向"><option value="columns">按列成曲线</option><option value="rows">按行成曲线</option></select></label><label>横轴<select id="chart-x" aria-label="曲线横轴"><option value="">key / 行序号</option></select></label><div id="chart-fields" class="button-row wrap"></div><span id="chart-series-summary" class="muted" hidden></span></div><div id="chart-legend" class="button-row wrap" role="group" aria-label="曲线图例"></div></div>
+          <div id="chart-area" class="chart-area"><div id="chart-empty" class="empty">右键表格数值选区，选择“左轴曲线”或“右轴曲线”。</div><canvas id="chart" aria-label="双轴曲线" tabindex="0" hidden></canvas></div>
         </section>
         <section id="tab-logs" class="bottom-tab-panel" role="tabpanel" aria-labelledby="nav-logs" hidden>
           <div class="log-toolbar">
             <label>日期<select id="log-date" aria-label="日志日期"><option value="">全部日期</option></select></label>
-            <label>关键词<input id="log-keyword" type="search" placeholder="操作、表名、路径或错误" aria-label="日志关键词"></label>
+            <label>关键词<input id="log-keyword" type="search" placeholder="操作、表名或错误" aria-label="日志关键词"></label>
             <label>类别<select id="log-category" aria-label="日志类别"><option value="">全部类别</option><option value="structure">结构</option><option value="data">数据</option><option value="system">系统</option></select></label>
             <label>状态<select id="log-status" aria-label="日志状态"><option value="">全部状态</option><option value="success">成功</option><option value="failure">失败</option></select></label>
             <label>每页<select id="log-page-size" aria-label="日志每页数量"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option></select></label>
             <button id="query-logs" class="secondary small" type="button">查询</button>
             <button id="task-history" class="secondary small" type="button">后台任务</button>
           </div>
-          <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数（0=永久）<input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="日志保留天数"></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
+          <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数<span class="preset-input"><select id="log-retention-preset" aria-label="日志保留天数预设"><option value="0">永久</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义…</option></select><input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="自定义日志保留天数" hidden></span></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
           <div id="logs" class="logs" tabindex="0" aria-label="日志内容"></div>
           <div class="log-pager"><button id="log-prev" class="secondary small" type="button">上一页</button><span id="log-page-label">第 1 / 1 页</span><button id="log-next" class="secondary small" type="button">下一页</button></div>
         </section>
@@ -87,21 +113,28 @@
       <footer class="statusbar" aria-label="数据库路径与刷新状态"><span id="storage-path">正在读取服务信息…</span><button id="definition-warning" class="danger small" hidden></button><button id="audit-warning" class="danger small" hidden></button><span id="last-refresh">尚未刷新</span></footer>
     </section>
   </main>
-  <dialog id="add-rows-dialog" aria-labelledby="add-rows-title"><form id="add-rows-form" method="dialog"><div class="panel-title"><h2 id="add-rows-title">新增记录</h2><button type="button" data-add-rows-cancel class="icon" aria-label="关闭新增记录">×</button></div><p class="muted">在指定位置插入新行，已设置默认值的字段会自动填入；双击修改后保存。</p><label>拟新增记录数<input id="add-row-count" type="number" min="1" max="500" step="1" value="1" required aria-label="拟新增记录数"></label><p id="add-rows-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-add-rows-cancel class="secondary">取消</button><button id="add-blank-rows" type="submit" value="add">插入新行</button></div></form></dialog>
-  <dialog id="row-dialog"><form method="dialog"><div class="panel-title"><h2 id="row-dialog-title">新增记录</h2><button value="cancel" class="icon" aria-label="关闭记录编辑">×</button></div><p id="row-hint" class="muted"></p><label class="check-label"><input id="json-mode" type="checkbox">JSON 编辑</label><div id="row-fields" class="row-fields"></div><textarea id="row-editor" class="editor" spellcheck="false" aria-label="记录 JSON" hidden></textarea><p id="row-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="save-row" type="button">保存</button></div></form></dialog>
-  <dialog id="import-dialog"><form method="dialog"><div class="panel-title"><h2>导入记录</h2><button value="cancel" class="icon" aria-label="关闭导入">×</button></div><p class="muted">支持 JSON / CSV，单表提交失败会整体回滚。CSV 须包含全部英文字段名。</p><label>选择文件<input id="import-file" type="file" accept=".json,.csv"></label><div class="schema-head"><label>文本编码<select id="import-encoding"><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label><label>导入方式<select id="import-mode"><option value="append">追加（主键冲突则回滚）</option><option value="merge">按主键合并（覆盖同主键）</option><option value="replace">替换整表</option></select></label></div><p id="import-preview" class="muted">尚未选择文件</p><p id="import-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="run-import" type="button">导入</button></div></form></dialog>
-  <dialog id="save-warning-dialog" aria-labelledby="save-warning-title"><form method="dialog"><h2 id="save-warning-title">保存前检查未通过</h2><p>当前填写内容已保留。可定位错误单元格；遇到并发修改时，逐项选择要保留的值，再重新保存。</p><ul id="save-warning-list"></ul><div id="save-conflict-grid" class="grid-wrap"></div><div class="dialog-actions"><button id="apply-conflict-choices" type="button" hidden>应用选择，返回检查</button><button value="close" autofocus>返回修改</button></div></form></dialog>
-  <dialog id="confirm-dialog"><form method="dialog"><div class="panel-title"><h2 id="confirm-title">确认操作</h2><button value="cancel" class="icon" aria-label="关闭确认">×</button></div><p id="confirm-text"></p><label id="confirm-label">输入名称确认<input id="confirm-input" autocomplete="off"></label><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="confirm-action" value="confirmed" class="danger">确认</button></div></form></dialog>
+
+  <dialog id="add-rows-dialog" aria-labelledby="add-rows-title"><form id="add-rows-form" method="dialog"><div class="panel-title"><h2 id="add-rows-title">新增记录</h2><button type="button" data-add-rows-cancel class="icon" aria-label="关闭新增记录">×</button></div><label>新增条数<span class="preset-input"><select id="add-row-preset" aria-label="新增记录条数预设"><option value="1">1 条</option><option value="5">5 条</option><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option><option value="custom">自定义…</option></select><input id="add-row-count" type="number" min="1" max="500" step="1" value="1" required aria-label="拟新增记录数" hidden></span></label><p id="add-rows-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-add-rows-cancel class="secondary">取消</button><button id="add-blank-rows" type="submit" value="add">插入新行</button></div></form></dialog>
+
+  <dialog id="row-dialog"><form method="dialog"><div class="panel-title"><h2 id="row-dialog-title">新增记录</h2><button value="cancel" class="icon" aria-label="关闭记录编辑">×</button></div><p id="row-hint" class="muted"></p><label class="check-label"><input id="json-mode" type="checkbox">JSON 编辑</label><div id="row-fields" class="row-fields"></div><div id="batch-fields-panel" class="batch-fields-panel" hidden><div class="batch-picker-row"><select id="batch-field-select" aria-label="选择待修改字段"><option value="">选择要修改的字段…</option></select><button id="batch-add-field" type="button" class="secondary small">添加字段</button></div><div id="batch-fields-list" class="batch-fields-list"></div></div><textarea id="row-editor" class="editor" spellcheck="false" aria-label="记录 JSON" hidden></textarea><p id="row-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="save-row" type="button">保存</button></div></form></dialog>
+
+  <dialog id="import-dialog"><form method="dialog"><div class="panel-title"><h2>导入记录</h2><button value="cancel" class="icon" aria-label="关闭导入">×</button></div><label>选择文件（JSON / CSV，≤16 MiB）<input id="import-file" type="file" accept=".json,.csv"></label><div class="schema-head"><label>文本编码<select id="import-encoding"><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label><label>导入方式<select id="import-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label></div><p id="import-preview" class="muted">尚未选择文件</p><p id="import-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="run-import" type="button">导入</button></div></form></dialog>
+
+  <dialog id="save-warning-dialog" aria-labelledby="save-warning-title"><form method="dialog"><div class="panel-title"><h2 id="save-warning-title">保存前检查未通过</h2><button value="close" class="icon" aria-label="关闭检查提示">×</button></div><ul id="save-warning-list"></ul><div id="save-conflict-grid" class="grid-wrap"></div><div class="dialog-actions"><button id="apply-conflict-choices" type="button" hidden>应用选择，返回检查</button><button value="close" autofocus>返回修改</button></div></form></dialog>
+
+  <dialog id="confirm-dialog"><form method="dialog"><div class="panel-title"><h2 id="confirm-title">确认操作</h2><button value="cancel" class="icon" aria-label="关闭确认">×</button></div><p id="confirm-text"></p><label id="confirm-label">输入名称确认<input id="confirm-input" autocomplete="off"></label><div class="dialog-actions"><button id="confirm-cancel" value="cancel" class="secondary">取消</button><button id="confirm-action" value="confirmed" class="danger">确认</button></div></form></dialog>
+
   <dialog id="definition-dialog"><form method="dialog">
     <div class="panel-title"><h2>加载 dbdef / E 文件</h2><button value="cancel" class="icon" aria-label="关闭定义导入">×</button></div>
     <label>选择文件<input id="definition-file" type="file" accept=".dbdef,.e"></label>
-    <div class="schema-head"><label>文本编码<select id="definition-encoding"><option value="auto">自动识别</option><option value="utf-8-sig">UTF-8 / BOM</option><option value="gb18030">GB18030 / GBK</option><option value="utf-16">UTF-16（含 BOM）</option></select></label><label>E 数据导入<select id="definition-mode"><option value="merge">按主键合并</option><option value="append">追加（主键冲突时跳过并警告）</option><option value="replace">替换整表数据</option></select></label></div>
+    <div class="schema-head"><label>文本编码<select id="definition-encoding"><option value="auto">自动识别</option><option value="utf-8-sig">UTF-8 / BOM</option><option value="gb18030">GB18030 / GBK</option><option value="utf-16">UTF-16</option></select></label><label>E 数据导入<select id="definition-mode"><option value="merge">按主键合并</option><option value="append">追加（冲突跳过）</option><option value="replace">替换整表</option></select></label></div>
     <label hidden>E 新表主键<input id="definition-keys"></label>
-    <div id="efile-transfer" hidden><p id="efile-target" class="muted"></p><div class="button-row"><progress id="efile-progress" max="1" value="0" aria-label="E 文件已确认上传进度"></progress><button id="efile-pause" type="button" class="secondary" disabled>暂停上传</button><button id="efile-discard" type="button" class="secondary" disabled>清除临时上传</button></div></div>
-    <details class="definition-help"><summary>导入规则与限制</summary><p class="muted">dbdef 更新结构并保留同名字段的数据；E 文件上限128 MiB，每表10万条，临时上传保留24小时，可暂停续传。新表按全部数据行推断类型，默认首字段为 KEY。重复主键仅警告：追加时跳过，合并/替换采用最后一条。请逐表确认字段、校验后再提交；失败可继续。结构同时写入SQLite内置定义及JSON/Python文件。</p></details>
+    <div id="efile-transfer" hidden><p id="efile-target" class="muted"></p><div class="button-row"><progress id="efile-progress" max="1" value="0" aria-label="E 文件上传进度"></progress><button id="efile-pause" type="button" class="secondary" disabled>暂停上传</button><button id="efile-discard" type="button" class="secondary" disabled>清除临时上传</button></div></div>
+    <details class="definition-help"><summary>规则与上限</summary><p class="muted">E 文件上限 128 MiB、每表 10 万条，临时上传保留 24 小时可续传；重复主键追加跳过，合并/替换取末条。</p></details>
     <div id="definition-preview" class="definition-preview">尚未预览</div><p id="efile-status" class="muted" role="status" aria-live="polite"></p><p id="definition-error" class="error-text" role="alert"></p>
     <div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="preview-definition" type="button" class="secondary">预览</button><button id="apply-definition" type="button" disabled>确认并生成/更新</button></div>
   </form></dialog>
+
   <dialog id="database-file-dialog"><form method="dialog">
     <div class="panel-title"><h2>数据库文件管理</h2><button value="cancel" class="icon" aria-label="关闭数据库文件管理">×</button></div>
     <nav class="dialog-tabs" role="tablist" aria-label="数据库文件工作模式">
@@ -119,7 +152,7 @@
       <div id="workspace-picker" popover="auto">
         <div class="workspace-picker-toolbar">
           <button id="workspace-parent" class="secondary small" type="button">上一级</button>
-          <button id="workspace-root" class="secondary small" type="button">工作区根目录</button>
+          <button id="workspace-root" class="secondary small" type="button">根目录</button>
           <button id="workspace-use-directory" class="secondary small" type="button">使用此目录</button>
           <button id="workspace-mkdir" class="secondary small" type="button">新建目录</button>
           <button id="workspace-create-database" class="secondary small" type="button">新建数据库</button>
@@ -134,53 +167,52 @@
         <p id="workspace-picker-error" class="error-text" role="alert"></p>
         <nav id="workspace-tree" class="workspace-tree" aria-label="工作区目录和数据库"></nav>
       </div>
-      <details id="database-file-create" class="database-file-create" hidden><summary>新建服务端数据库文件</summary>
+      <details id="database-file-create" class="database-file-create" hidden><summary>新建服务端数据库</summary>
         <p id="workspace-create-target" class="muted"></p>
-        <div class="schema-head"><label>数据库英文名<input id="database-file-new-name" placeholder="例如 station_a"></label><label>数据库中文名<input id="database-file-new-label" placeholder="例如 A站数据库"></label><label>首张表（可选）<input id="database-file-first-table" placeholder="留空先创建空库"></label><button id="create-database-file" type="button">新建数据库</button></div>
-        <p class="muted">可先创建空数据库，进入后逐张添加表；填写首张表时创建默认 id / name 字段。每个数据库对应一份 JSON、Python 定义。</p>
+        <div class="schema-head"><label>英文名<input id="database-file-new-name" placeholder="例如 station_a"></label><label>中文名<input id="database-file-new-label" placeholder="例如 A站数据库"></label><label>首张表（可选）<input id="database-file-first-table" placeholder="留空创建空库"></label><button id="create-database-file" type="button">新建</button></div>
       </details>
     </section>
     <section id="database-file-upload" class="database-file-panel" role="tabpanel" aria-labelledby="database-file-tab-upload" hidden>
       <p id="database-upload-directory" class="muted"></p>
-      <label>选择本地文件（数据库必选，同名 JSON 定义可选）<input id="database-file-upload-input" type="file" multiple accept=".sqlite3,.json,.sqlite3-wal,.sqlite3-shm"></label>
-      <p class="muted">单个文件不超过 16 MiB。上传前会检查 RTDB metadata、结构指纹、记录数和 SQLite 完整性；覆盖服务端同名文件需要确认。</p>
+      <label>选择本地文件（.sqlite3 必选，同名 .json 可选，≤16 MiB）<input id="database-file-upload-input" type="file" multiple accept=".sqlite3,.json,.sqlite3-wal,.sqlite3-shm"></label>
       <button id="open-chunk-upload" type="button" class="secondary">上传整库快照（大文件 / 续传）</button>
       <div id="database-file-upload-selection" class="database-file-selection">尚未选择文件</div>
       <p id="database-file-error" class="error-text" role="alert"></p>
       <div class="dialog-actions"><button id="upload-database-file" type="button" disabled>上传并更新服务端</button></div>
     </section>
   </form></dialog>
+
   <dialog id="database-repair-dialog" aria-labelledby="database-repair-title"><form method="dialog">
     <div class="panel-title"><h2 id="database-repair-title">处理数据库报警</h2><button value="cancel" class="icon" aria-label="关闭数据库报警处理">×</button></div>
     <p id="database-repair-file" class="muted"></p>
     <p id="database-repair-status" class="error-text" role="alert"></p>
     <div class="database-repair-options">
-      <button id="database-repair-embed" type="button"><strong>1. 重新生成内置定义表</strong><small>根据当前 data 表的 c0、c1……和 SQLite 类型生成内置结构，让界面停止报警。业务字段名称需要后续用正式定义更新。</small></button>
-      <button id="database-repair-delete" type="button" class="danger-outline"><strong>2. 删除未定义数据表</strong><small>删除当前未定义数据库文件。系统会先归档到 .web-archive，便于恢复。</small></button>
-      <button id="database-repair-rebuild" type="button" class="secondary"><strong>3. 重建数据表</strong><small>根据 SQLite 内置定义重新生成物理 data 表、索引和元数据。需要文件已经存在内置定义。</small></button>
+      <button id="database-repair-embed" type="button"><strong>1. 重新生成内置定义表</strong><small>按现有 data 表物理列生成内置结构。</small></button>
+      <button id="database-repair-delete" type="button" class="danger-outline"><strong>2. 删除未定义数据表</strong><small>先归档到 .web-archive 后删除。</small></button>
+      <button id="database-repair-rebuild" type="button" class="secondary"><strong>3. 重建数据表</strong><small>按内置定义重建物理表、索引与元数据。</small></button>
     </div>
     <p id="database-repair-error" class="error-text" role="alert"></p>
     <div class="dialog-actions"><button value="cancel" class="secondary">取消</button></div>
   </form></dialog>
+
   <dialog id="chart-settings-dialog" aria-labelledby="chart-settings-title"><form method="dialog">
     <div class="panel-title"><h2 id="chart-settings-title">曲线设置</h2><button value="cancel" formnovalidate class="icon" aria-label="关闭图表设置">×</button></div>
     <section id="chart-axis-settings" class="chart-settings-section" hidden>
       <p id="chart-axis-settings-hint" class="muted"></p>
       <label>坐标轴标题<input id="chart-axis-title" maxlength="80" placeholder="例如：电压 / 时间"></label>
-      <div class="schema-head chart-axis-range"><label id="chart-axis-min-label">最小值<input id="chart-axis-min" type="number" step="any" placeholder="自动"></label><label id="chart-axis-max-label">最大值<input id="chart-axis-max" type="number" step="any" placeholder="自动"></label><label id="chart-x-step-label" hidden>标签间隔<input id="chart-x-step" type="number" min="1" step="1" value="1"></label></div>
+      <div class="schema-head chart-axis-range"><label id="chart-axis-min-label">最小值<input id="chart-axis-min" type="number" step="any" placeholder="自动"></label><label id="chart-axis-max-label">最大值<input id="chart-axis-max" type="number" step="any" placeholder="自动"></label><label id="chart-x-step-label" hidden>标签间隔<select id="chart-x-step"><option value="1">自动 (1)</option><option value="2">每 2 个</option><option value="5">每 5 个</option><option value="10">每 10 个</option><option value="20">每 20 个</option><option value="50">每 50 个</option></select></label></div>
       <label id="chart-axis-grid-label" class="check-label"><input id="chart-axis-grid" type="checkbox">显示水平网格线</label>
     </section>
     <section id="chart-title-settings" class="chart-settings-section" hidden>
-      <label>标题文字<input id="chart-title-input" maxlength="120" placeholder="留空则不显示标题"></label>
+      <label>标题文字<input id="chart-title-input" maxlength="120" placeholder="留空不显示"></label>
       <div class="chart-title-options">
         <label>字体<select id="chart-title-font"><option value="Segoe UI">默认字体</option><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Arial">Arial</option></select></label>
-        <label>字号（px）<input id="chart-title-size" type="number" min="8" max="72" step="1"></label>
+        <label>字号<select id="chart-title-size"><option value="11">11 px</option><option value="12">12 px</option><option value="13">13 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select></label>
         <label>颜色<input id="chart-title-color" type="color"></label>
         <label>样式<select id="chart-title-style"><option value="normal">常规</option><option value="bold">粗体</option><option value="italic">斜体</option><option value="bold-italic">粗斜体</option></select></label>
         <label>位置<select id="chart-title-position"><option value="top-left">顶部居左</option><option value="top-center">顶部居中</option><option value="top-right">顶部居右</option><option value="bottom-left">底部居左</option><option value="bottom-center">底部居中</option><option value="bottom-right">底部居右</option></select></label>
-        <label>间距（px）<input id="chart-title-gap" type="number" min="0" max="32" step="1"></label>
+        <label>间距<select id="chart-title-gap"><option value="0">0 px</option><option value="4">4 px</option><option value="6">6 px</option><option value="8">8 px</option><option value="12">12 px</option><option value="16">16 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="32">32 px</option></select></label>
       </div>
-      <p class="muted chart-title-hint">间距用于调整标题与图表的距离。设置自动保留，并用于 PNG 导出。</p>
     </section>
     <section id="chart-series-settings" class="chart-settings-section">
       <div id="chart-series-list" class="chart-series-list"></div>
@@ -188,18 +220,23 @@
     <p id="chart-settings-error" class="error-text" role="alert"></p>
     <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">取消</button><button id="apply-chart-settings" type="button">应用</button></div>
   </form></dialog>
+
   <input id="restore-file" type="file" accept=".json" hidden>
   <div id="sql-history-list" class="sql-history-list" role="listbox" aria-label="SQL 历史语句" hidden></div>
+
   <div id="row-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表格操作" hidden>
-    <button type="button" role="menuitem" data-action="undo-edit">撤销上一步（Ctrl+Z）</button>
+    <button type="button" role="menuitem" data-action="undo-edit">撤销（Ctrl+Z）</button>
     <button type="button" role="menuitem" data-action="redo-edit">重做（Ctrl+Y）</button>
     <button type="button" role="menuitem" data-action="preview-edits">查看待保存修改</button>
     <button type="button" role="menuitem" data-action="restore-draft">恢复本地草稿</button>
     <hr>
     <button type="button" role="menuitem" data-action="add-row">新增记录</button>
-    <button type="button" role="menuitem" data-action="copy-rows" title="复制完整行，供插入复制行使用">复制选中行</button>
+    <button type="button" role="menuitem" data-action="batch-edit">批量修改选中行</button>
+    <button type="button" role="menuitem" data-action="copy-rows">复制选中行</button>
     <button type="button" role="menuitem" data-action="insert-copied-rows">插入复制行</button>
+    <button type="button" role="menuitem" data-action="import">导入 JSON / CSV</button>
     <button type="button" role="menuitem" data-action="export-csv">导出查询（CSV）</button>
+    <button type="button" role="menuitem" data-action="export-json">导出查询（JSON）</button>
     <hr>
     <button type="button" role="menuitem" data-action="copy-cells">复制选中区域</button>
     <button type="button" role="menuitem" data-action="paste-cells">粘贴到选区</button>
@@ -210,6 +247,7 @@
     <button type="button" role="menuitem" data-action="chart-left">左轴曲线</button>
     <button type="button" role="menuitem" data-action="chart-right">右轴曲线</button>
   </div>
+
   <div id="chart-context-menu" class="row-context-menu chart-context-menu" role="menu" tabindex="-1" aria-label="曲线操作" hidden>
     <button type="button" role="menuitem" data-chart-action="clear-chart" class="danger">清空曲线</button>
     <hr>
@@ -220,23 +258,27 @@
     <button type="button" role="menuitem" data-chart-action="title-settings">标题设置</button>
     <button type="button" role="menuitem" data-chart-action="series-settings">曲线设置</button>
   </div>
+
   <div id="schema-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="字段操作" hidden>
     <button type="button" role="menuitem" data-schema-action="indexes">索引设置</button>
     <button type="button" role="menuitem" data-schema-action="preview">预览结构变更</button>
-    <button type="button" role="menuitem" data-schema-action="query-plan">查看当前查询计划</button>
+    <button type="button" role="menuitem" data-schema-action="query-plan">查看查询计划</button>
     <button type="button" role="menuitem" data-schema-action="remove-column" class="danger">删除字段</button>
   </div>
+
   <dialog id="schema-index-dialog" aria-labelledby="schema-index-title">
-    <h2 id="schema-index-title">索引设置</h2>
-    <p>主键唯一索引始终保留。联合索引按选择字段的先后顺序建立。</p>
-    <label>辅助索引模式 <select id="index-mode"><option value="auto">自动：每列建立索引</option><option value="custom">手动：仅建立下列索引</option></select></label>
-    <div id="index-custom"><div id="index-rows"></div><button type="button" id="add-index">添加索引</button><p>列表为空时，仅保留主键索引。</p></div>
-    <div class="dialog-actions"><button type="button" id="cancel-indexes">取消</button><button type="button" id="apply-indexes">应用到待保存结构</button></div>
+    <div class="panel-title"><h2 id="schema-index-title">索引设置</h2><button type="button" id="close-indexes-x" class="icon" aria-label="关闭索引设置">×</button></div>
+    <label>辅助索引模式 <select id="index-mode"><option value="auto">自动（每列索引）</option><option value="custom">手动配置</option></select></label>
+    <div id="index-custom"><div id="index-rows"></div><button type="button" id="add-index" class="secondary small">＋ 添加索引</button></div>
+    <div class="dialog-actions"><button type="button" id="cancel-indexes" class="secondary">取消</button><button type="button" id="apply-indexes">应用到待保存结构</button></div>
   </dialog>
+
   <dialog id="schema-preview-dialog" aria-labelledby="schema-preview-title">
-    <h2 id="schema-preview-title">结构变更预览</h2><pre id="schema-preview-content"></pre><p id="schema-preview-status"></p>
-    <button type="button" id="close-schema-preview">关闭</button>
+    <div class="panel-title"><h2 id="schema-preview-title">结构变更预览</h2><button type="button" id="close-schema-preview-x" class="icon" aria-label="关闭结构预览">×</button></div>
+    <pre id="schema-preview-content"></pre><p id="schema-preview-status"></p>
+    <div class="dialog-actions"><button type="button" id="close-schema-preview" class="secondary">关闭</button></div>
   </dialog>
+
   <div id="sidebar-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表索引操作" hidden>
     <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="select-all-tables">全选</button>
     <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="invert-tables">反选</button>
@@ -246,7 +288,6 @@
     <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="invert-fields">反选</button>
     <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="clear-fields">取消</button>
     <hr data-sidebar-separator="fields">
-    <hr data-sidebar-separator="files">
     <button type="button" role="menuitem" data-sidebar-action="load-definition">加载 dbdef / E</button>
     <button type="button" role="menuitem" data-sidebar-action="csv-import">CSV 流式导入</button>
     <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
@@ -255,24 +296,27 @@
     <button type="button" role="menuitem" data-sidebar-action="storage-maintenance">存储维护</button>
     <button type="button" role="menuitem" data-sidebar-action="database-snapshots">整库快照 / 恢复</button>
   </div>
+
   <div id="operation-notice" class="operation-notice" role="status" aria-live="polite" aria-atomic="true" hidden><span id="operation-message"></span><button id="dismiss-notice" type="button" aria-label="关闭操作提示">×</button></div>
-  <dialog id="edit-preview-dialog"><form method="dialog"><h2>待保存修改</h2><p id="edit-preview-caption" class="muted"></p><div id="edit-preview-grid" class="grid-wrap"></div><div class="dialog-actions"><button value="close" class="secondary">继续编辑</button><button id="save-preview-edits" type="button">保存全部修改</button></div></form></dialog>
-  <dialog id="performance-dialog"><form method="dialog"><div class="panel-title"><h2>性能统计</h2><button value="close" class="icon" aria-label="关闭性能统计">×</button></div><p class="muted">最近 80 次查询和单元格保存，单位毫秒。“保存并刷新”包含提交确认及随后表格刷新；事务合计已包含校验、写入等阶段，请勿重复相加。下一帧为浏览器回调估计，不代表屏幕实际显示延迟。</p><div id="performance-results" class="grid-wrap"></div><div class="dialog-actions"><button id="export-performance" type="button">导出统计</button><button value="close" class="secondary">关闭</button></div></form></dialog>
-  <script src="/static/performance.js"></script>
-  <dialog id="task-history-dialog"><form method="dialog"><div class="panel-title"><h2>后台任务</h2><button value="close" aria-label="关闭任务列表">×</button></div><p class="muted">最近 30 项任务。任务状态永久保存，详细结果保留 7 天。中断任务请先核查日志与数据库，不会自动重执行。</p><div id="task-history-grid" class="grid-wrap"></div></form></dialog>
-  <dialog id="task-dialog" aria-labelledby="task-caption"><h2 id="task-caption">执行操作</h2><p id="task-phase" role="status" aria-live="polite"></p><progress id="task-progress" aria-label="任务进度"></progress><p id="task-completed"></p><p id="task-warning" role="status"></p><p class="muted">提交期间不可取消；取消后已提交的表会保留。刷新页面可恢复查询任务状态。</p><div class="dialog-actions"><button id="task-cancel" type="button">取消未执行部分</button></div></dialog>
-  <script src="/static/tasks.js"></script>
-  <dialog id="receipt-maintenance-dialog" aria-labelledby="receipt-maintenance-title"><h2 id="receipt-maintenance-title">日志与回执维护</h2><p id="receipt-database" class="muted"></p><p>已同步日志的旧回执可无损压缩，仍保存在当前数据库文件内。请求编号和执行结果保留，日期日志按原保留配置管理。</p><label for="receipt-days">超过多少天自动压缩（0=关闭）</label><input id="receipt-days" type="number" min="0" max="36500" value="7"><dl id="receipt-statistics"></dl><p id="receipt-status" role="status"></p><div class="dialog-actions"><button id="receipt-config" type="button">保存配置</button><button id="receipt-archive" type="button">按配置立即压缩</button><button id="receipt-close" type="button" class="secondary">关闭</button></div></dialog>
-  <script src="/static/receipt_maintenance.js"></script>
+
+  <dialog id="edit-preview-dialog"><form method="dialog"><div class="panel-title"><h2>待保存修改</h2><button value="close" class="icon" aria-label="关闭修改预览">×</button></div><p id="edit-preview-caption" class="muted"></p><div id="edit-preview-grid" class="grid-wrap"></div><div class="dialog-actions"><button value="close" class="secondary">继续编辑</button><button id="save-preview-edits" type="button">保存全部修改</button></div></form></dialog>
+
+  <dialog id="performance-dialog"><form method="dialog"><div class="panel-title"><h2>性能统计</h2><button value="close" class="icon" aria-label="关闭性能统计">×</button></div><div id="performance-results" class="grid-wrap"></div><div class="dialog-actions"><button id="export-performance" type="button">导出统计</button><button value="close" class="secondary">关闭</button></div></form></dialog>
+
+  <dialog id="task-history-dialog"><form method="dialog"><div class="panel-title"><h2>后台任务</h2><button value="close" class="icon" aria-label="关闭任务列表">×</button></div><div id="task-history-grid" class="grid-wrap"></div></form></dialog>
+
+  <dialog id="task-dialog" aria-labelledby="task-caption"><h2 id="task-caption">执行操作</h2><p id="task-phase" role="status" aria-live="polite"></p><progress id="task-progress" aria-label="任务进度"></progress><p id="task-completed"></p><p id="task-warning" role="status"></p><div class="dialog-actions"><button id="task-cancel" type="button">取消未执行部分</button></div></dialog>
+
+  <dialog id="receipt-maintenance-dialog" aria-labelledby="receipt-maintenance-title"><div class="panel-title"><h2 id="receipt-maintenance-title">日志与回执维护</h2><button id="receipt-close-x" type="button" class="icon" aria-label="关闭回执维护">×</button></div><p id="receipt-database" class="muted"></p><label>自动压缩周期<span class="preset-input"><select id="receipt-days-preset" aria-label="自动压缩周期预设"><option value="0">关闭</option><option value="1">1 天</option><option value="3">3 天</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="custom">自定义…</option></select><input id="receipt-days" type="number" min="0" max="36500" value="7" aria-label="自定义压缩天数" hidden></span></label><dl id="receipt-statistics"></dl><p id="receipt-status" role="status"></p><div class="dialog-actions"><button id="receipt-config" type="button">保存配置</button><button id="receipt-archive" type="button">立即压缩</button><button id="receipt-close" type="button" class="secondary">关闭</button></div></dialog>
+
   <dialog id="storage-maintenance-dialog" aria-labelledby="storage-maintenance-title">
-    <h2 id="storage-maintenance-title">存储维护</h2>
-    <p class="muted">管理所有数据库共用的服务存储。仅清理预览中列出的内容；业务数据库和未确认的临时文件保留。</p>
+    <div class="panel-title"><h2 id="storage-maintenance-title">存储维护</h2><button id="storage-close-x" type="button" class="icon" aria-label="关闭存储维护">×</button></div>
     <div id="storage-statistics" aria-label="存储占用统计"></div>
     <form id="storage-policy"><div class="storage-policy-fields">
-      <label>上传暂存保留天数<input name="upload_retention_days" type="number" min="0" max="36500" required></label>
-      <label>快照保留天数<input name="snapshot_retention_days" type="number" min="0" max="36500" required></label>
-      <label>任务详情保留天数<input name="task_retention_days" type="number" min="0" max="36500" required></label>
-    </div><p class="muted">0 表示不清理。上传有效期仍为 24 小时；快照仅在确认后清理。任务防重复提交记录始终保留。</p>
+      <label>上传暂存保留<span class="preset-input"><select data-retention-preset="upload_retention_days" aria-label="上传暂存保留预设"><option value="0">不清理</option><option value="1">1 天</option><option value="3">3 天</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="custom">自定义…</option></select><input name="upload_retention_days" type="number" min="0" max="36500" required hidden></span></label>
+      <label>快照保留<span class="preset-input"><select data-retention-preset="snapshot_retention_days" aria-label="快照保留预设"><option value="0">不清理</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义…</option></select><input name="snapshot_retention_days" type="number" min="0" max="36500" required hidden></span></label>
+      <label>任务详情保留<span class="preset-input"><select data-retention-preset="task_retention_days" aria-label="任务详情保留预设"><option value="0">不清理</option><option value="1">1 天</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="custom">自定义…</option></select><input name="task_retention_days" type="number" min="0" max="36500" required hidden></span></label>
+    </div>
     <button id="storage-save" type="submit" class="secondary">保存配置</button></form>
     <p id="storage-log-policy" class="muted"></p>
     <div id="storage-candidates" class="grid-wrap" aria-label="可清理内容"></div>
@@ -280,16 +324,25 @@
     <p id="storage-status" role="status" aria-live="polite"></p>
     <div class="dialog-actions"><button id="storage-refresh" type="button" class="secondary">刷新统计 / 预览</button><button id="storage-clean" type="button" disabled>确认清理</button><button id="storage-close" type="button" class="secondary">关闭</button></div>
   </dialog>
+
+  <dialog id="database-snapshots-dialog" aria-labelledby="database-snapshots-title"><div class="panel-title"><h2 id="database-snapshots-title">整库快照 / 恢复</h2><button id="snapshot-close-x" type="button" class="icon" aria-label="关闭快照管理">×</button></div><p id="snapshot-source" class="muted"></p><div class="button-row"><button id="snapshot-create" type="button">生成当前库快照</button><button id="snapshot-refresh" type="button" class="secondary">刷新列表</button></div><div id="snapshot-list" class="grid-wrap" aria-label="整库快照列表"></div><form id="snapshot-restore-form"><p id="snapshot-restore-caption">选择快照后恢复为新数据库</p><div class="snapshot-target"><label>新数据库英文名<input id="snapshot-target-name" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="例如 plant_copy"></label><label>中文名称<input id="snapshot-target-label" placeholder="留空沿用英文名"></label><button id="snapshot-restore" type="submit" disabled>恢复为新库</button></div></form><p id="snapshot-status" role="status"></p><div class="dialog-actions"><button id="snapshot-close" type="button" class="secondary">关闭</button></div></dialog>
+
+  <dialog id="chunk-upload-dialog" aria-labelledby="chunk-upload-title"><div class="panel-title"><h2 id="chunk-upload-title">上传整库快照</h2><button id="chunk-close-x" type="button" class="icon" aria-label="关闭上传快照">×</button></div><label>本地 SQLite 快照（≤2 GiB，支持续传）<input id="chunk-file" type="file" accept=".sqlite3"></label><details><summary>可选 SHA-256 校验</summary><label>预期 SHA-256<input id="chunk-sha" maxlength="64" placeholder="可留空"></label></details><p id="chunk-session" class="muted"></p><progress id="chunk-progress" aria-label="上传进度" max="1" value="0"></progress><div class="button-row"><button id="chunk-start" type="button" disabled>上传并校验</button><button id="chunk-pause" type="button" class="secondary" disabled>暂停</button><button id="chunk-discard" type="button" class="secondary" disabled>放弃临时上传</button></div><p id="chunk-preview"></p><div class="snapshot-target"><label>新数据库英文名<input id="chunk-target" disabled placeholder="例如 station_copy"></label><label>中文名称<input id="chunk-label" disabled placeholder="留空沿用英文名"></label><button id="chunk-restore" type="button" disabled>恢复为新库</button></div><p id="chunk-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="chunk-close" type="button" class="secondary">关闭</button></div></dialog>
+
+  <dialog id="csv-dialog" aria-labelledby="csv-title"><div class="panel-title"><h2 id="csv-title">CSV 流式导入</h2><button id="csv-close-x" type="button" class="icon" aria-label="关闭 CSV 导入">×</button></div><p id="csv-target" class="muted"></p><div class="schema-head"><label>CSV 文件（≤128 MiB / 10 万条）<input id="csv-file" type="file" accept=".csv"></label><label>编码<select id="csv-encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label></div><p id="csv-detail" class="muted"></p><progress id="csv-progress" aria-label="CSV 上传进度" max="1" value="0"></progress><div class="button-row"><button id="csv-start" type="button">上传并预览</button><button id="csv-pause" type="button" class="secondary">暂停</button><button id="csv-discard" type="button" class="secondary">清除临时上传</button></div><div id="csv-preview" class="grid-wrap" aria-label="CSV 样本预览"></div><div class="schema-head"><label>导入方式<select id="csv-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label><button id="csv-apply" type="button">确认导入</button></div><p id="csv-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="csv-close" type="button" class="secondary">关闭</button></div></dialog>
+
+  <dialog id="draft-recovery-dialog"><form method="dialog"><div class="panel-title"><h2>发现未保存草稿</h2><button value="later" class="icon" aria-label="稍后处理">×</button></div><select id="draft-choice" aria-label="选择草稿"></select><p id="draft-recovery-caption"></p><p id="draft-recovery-warning" class="muted"></p><div class="dialog-actions"><button id="export-local-draft" type="button" class="secondary">导出草稿</button><button id="delete-local-draft" type="button" class="secondary">删除草稿</button><button value="later" class="secondary">稍后处理</button><button id="restore-local-draft" type="button">恢复草稿</button></div></form></dialog>
+
+  <script src="/static/workspace.js"></script>
+  <script src="/static/performance.js"></script>
+  <script src="/static/tasks.js"></script>
+  <script src="/static/receipt_maintenance.js"></script>
   <script src="/static/storage_maintenance.js"></script>
-  <dialog id="database-snapshots-dialog" aria-labelledby="database-snapshots-title"><h2 id="database-snapshots-title">整库快照 / 恢复</h2><p id="snapshot-source" class="muted"></p><p class="muted">快照包含已提交的多表数据、索引、内置定义和库内回执；未保存的页面修改、服务日期日志及任务账本不包含。快照保留在服务端，可下载到本地。</p><div class="button-row"><button id="snapshot-create" type="button">生成当前数据库快照</button><button id="snapshot-refresh" type="button" class="secondary">刷新列表</button></div><div id="snapshot-list" class="grid-wrap" aria-label="整库快照列表"></div><form id="snapshot-restore-form"><p id="snapshot-restore-caption">选择一份快照，再恢复为新数据库。</p><div class="snapshot-target"><label>新数据库英文名<input id="snapshot-target-name" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="例如 plant_copy"></label><label>中文名称<input id="snapshot-target-label" placeholder="为空时使用英文名"></label><button id="snapshot-restore" type="submit" disabled>恢复为新数据库</button></div></form><p id="snapshot-status" role="status"></p><div class="dialog-actions"><button id="snapshot-close" type="button" class="secondary">关闭</button></div></dialog>
   <script src="/static/database_snapshots.js"></script>
-  <dialog id="chunk-upload-dialog" aria-labelledby="chunk-upload-title"><h2 id="chunk-upload-title">上传整库快照</h2><p class="muted">单文件最大2 GiB，分块上传，可暂停和续传。请选择“整库快照”下载的自包含文件；正在使用的数据库应先生成快照。校验通过后恢复为新数据库。</p><label>本地 SQLite 快照<input id="chunk-file" type="file" accept=".sqlite3"></label><details><summary>可选的完整文件校验值</summary><label>预期 SHA-256<input id="chunk-sha" maxlength="64" placeholder="已有校验值时填写，可留空"></label></details><p id="chunk-session" class="muted"></p><progress id="chunk-progress" aria-label="已确认上传进度" max="1" value="0"></progress><div class="button-row"><button id="chunk-start" type="button" disabled>上传并校验</button><button id="chunk-pause" type="button" class="secondary" disabled>暂停</button><button id="chunk-discard" type="button" class="secondary" disabled>放弃临时上传</button></div><p id="chunk-preview"></p><div class="snapshot-target"><label>新数据库英文名<input id="chunk-target" disabled placeholder="例如 station_copy"></label><label>中文名称<input id="chunk-label" disabled placeholder="为空时使用英文名"></label><button id="chunk-restore" type="button" disabled>恢复为新数据库</button></div><p id="chunk-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="chunk-close" type="button" class="secondary">关闭</button></div></dialog>
   <script src="/static/database_uploads.js"></script>
-  <dialog id="csv-dialog" aria-labelledby="csv-title"><h2 id="csv-title">CSV 流式导入</h2><p id="csv-target" class="muted"></p><p class="muted">最大128 MiB、10万条记录；须包含全部英文字段。先校验预览，再确认导入。单表失败整体回滚。上传可暂停，临时内容保留24小时。</p><div class="schema-head"><label>CSV 文件<input id="csv-file" type="file" accept=".csv"></label><label>编码<select id="csv-encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label></div><p id="csv-detail" class="muted"></p><progress id="csv-progress" aria-label="CSV 已确认上传进度" max="1" value="0"></progress><div class="button-row"><button id="csv-start" type="button">上传并预览</button><button id="csv-pause" type="button" class="secondary">暂停</button><button id="csv-discard" type="button" class="secondary">清除临时上传</button></div><div id="csv-preview" class="grid-wrap" aria-label="CSV 样本预览"></div><div class="schema-head"><label>导入方式<select id="csv-mode"><option value="append">追加（冲突则回滚）</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label><button id="csv-apply" type="button">确认导入</button></div><p id="csv-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="csv-close" type="button" class="secondary">关闭</button></div></dialog>
   <script src="/static/csv_imports.js"></script>
   <script src="/static/efile_imports.js"></script>
   <script src="/static/editing.js"></script>
-  <dialog id="draft-recovery-dialog"><form method="dialog"><h2>发现未保存草稿</h2><select id="draft-choice" aria-label="选择草稿"></select><p id="draft-recovery-caption"></p><p id="draft-recovery-warning" class="muted"></p><div class="dialog-actions"><button id="export-local-draft" type="button" class="secondary">导出草稿</button><button id="delete-local-draft" type="button" class="secondary">删除草稿</button><button value="later" class="secondary">稍后处理</button><button id="restore-local-draft" type="button">恢复草稿</button></div></form></dialog>
   <script src="/static/draft_store.js"></script>
   <script src="/static/drafts.js"></script>
   <script src="/static/virtual_grid.js"></script>

@@ -1,5 +1,4 @@
 """Indexed browsing must preserve the JSONL reader's exact observable results."""
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import json
 import multiprocessing

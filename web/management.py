@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import re
@@ -31,7 +32,11 @@ class SQLiteManagement:
 
     def rows(self, name, query):
         started = time.perf_counter()
-        limit, offset = int(query.get('limit', 100)), int(query.get('offset', 0))
+        try:
+            limit = int(query.get('limit') or 100)
+            offset = int(query.get('offset') or 0)
+        except (TypeError, ValueError) as error:
+            raise APIError(400, '分页参数必须为整数') from error
         if not 1 <= limit <= 500:
             raise APIError(400, '单页必须为 1–500 行')
         with self.manager.session(name) as table:
@@ -131,7 +136,7 @@ class SQLiteManagement:
                             raise APIError(400, '排序列或方向无效')
                         ordering = ' ORDER BY "' + order['column'].replace('"', '""') + '" ' + order['direction']
                     else:
-                        ordering = ' ORDER BY ' + ','.join('"' + key + '"' for key in table.primary_keys) if full_table else ''
+                        ordering = ' ORDER BY ' + ','.join('"' + key.replace('"', '""') + '"' for key in table.primary_keys) if full_table else ''
                     total = table_total if full_table else connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
                     if exporting and total > self.manager.max_rows:
                         raise APIError(413, '导出结果超过 100,000 行，请增加 SQL 过滤条件')
@@ -153,17 +158,35 @@ class SQLiteManagement:
                         values = connection.execute(f'SELECT * FROM {source}{ordering} LIMIT ? OFFSET ?', (limit, offset)).fetchall()
             timings['query_ms']=(time.perf_counter()-query_started)*1000
             decode_started=time.perf_counter()
+            # 对非全表查询中的重复列名分配唯一显示别名，防止字典键静默覆盖。
+            output_columns = columns
+            if not editable and len(set(columns)) != len(columns):
+                counts, deduped = {}, []
+                for col in columns:
+                    counts[col] = counts.get(col, 0) + 1
+                    deduped.append(col if counts[col] == 1 else f'{col}_{counts[col]}')
+                output_columns = deduped
             rows = []
             for raw in values:
                 if editable:
                     rows.append(table._decode(raw))
                     continue
                 row = {}
-                for column, value in zip(columns, raw):
-                    if isinstance(value, bytes):
-                        value = table._msgpack.unpackb(value, raw=False, strict_map_key=False) if table._types.get(column) in _OBJECT else value.hex()
-                    row[column] = value
+                for raw_col, out_col, value in zip(columns, output_columns, raw):
+                    col_kind = table._types.get(raw_col)
+                    if not table.native and col_kind in _BOOL and isinstance(value, int) and value in (0, 1):
+                        value = bool(value)
+                    elif isinstance(value, bytes):
+                        if col_kind in _OBJECT:
+                            try:
+                                value = table._msgpack.unpackb(value, raw=False, strict_map_key=False)
+                            except Exception:
+                                value = value.hex()
+                        else:
+                            value = value.hex()
+                    row[out_col] = value
                 rows.append(row)
+            columns = output_columns
             timings['decode_ms']=(time.perf_counter()-decode_started)*1000
             version_started=time.perf_counter()
             records = [{'row': row, 'ref': {'key': [row[key] for key in table.primary_keys], 'version': fingerprint(row)}}
@@ -240,7 +263,19 @@ class SQLiteManagement:
 
     @staticmethod
     def revision(table, connection):
-        return fingerprint({'definition': table.definition.to_mapping(), 'rows': table._select(connection)})
+        """流式增量计算全表版本哈希，避免大表一次性加载为巨型 JSON 字符串。"""
+        hasher = hashlib.sha256()
+        hasher.update(fingerprint(table.definition.to_mapping()).encode('ascii'))
+        fields = ','.join(table._fields.values())
+        cursor = connection.execute(f'SELECT {fields} FROM {table._data_sql} ORDER BY {table._row_order}')
+        while True:
+            batch = cursor.fetchmany(1000)
+            if not batch:
+                break
+            for raw in batch:
+                hasher.update(b'\n')
+                hasher.update(fingerprint(table._decode(raw)).encode('ascii'))
+        return hasher.hexdigest()
 
     def snapshot(self, name):
         with self.manager.session(name) as table:
@@ -326,10 +361,13 @@ class SQLiteManagement:
             if not values or set(values) & set(table.primary_keys):
                 raise APIError(422, '请选择非主键字段修改；复制记录可创建新主键')
             where = self.manager._key(table, reference.get('key'))
-            identity = fingerprint(where)
-            if identity in seen:
+            pk_tuple = tuple(
+                float(where[k]) if table._types.get(k) in _FLOAT and isinstance(where[k], (int, float)) else where[k]
+                for k in table.primary_keys
+            )
+            if pk_tuple in seen:
                 raise APIError(400, '重复选择了同一记录')
-            seen.add(identity)
+            seen.add(pk_tuple)
             references.append((reference, key_value([where[k] for k in table.primary_keys])))
             prepared.append((where, values))
         current_rows = table.kv._get_many(connection, [key for _, key in references])
@@ -377,16 +415,6 @@ class SQLiteManagement:
 
     def export(self, name, query):
         content, mime, filename = self.manager.export(name, query)
-        if query.get('format') == 'csv' and query.get('columns'):
-            fields = query['columns'].split(',')
-            reader = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
-            if set(fields) - set(reader.fieldnames or []):
-                raise APIError(400, '导出字段不存在')
-            stream = io.StringIO(newline='')
-            writer = csv.DictWriter(stream, fields, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(reader)
-            content = stream.getvalue().encode('utf-8-sig')
         return {'text': content.decode('utf-8'), 'mime': mime, 'filename': filename}
 
     def parse_import(self, table, payload):
@@ -479,7 +507,10 @@ class SQLiteManagement:
     def restore_documents(self, payload):
         if self.manager.native:
             raise APIError(403, '整批恢复不适用于原生 SQLite 库，请逐表导入记录')
-        document = json.loads(payload.get('text', '').lstrip('\ufeff'))
+        raw_text = payload.get('text')
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            raise APIError(400, '备份文件内容不能为空')
+        document = json.loads(raw_text.lstrip('\ufeff'))
         if not isinstance(document, dict) or document.get('format') != 'rtdb-web-backup-v1':
             raise APIError(422, '请选择“备份所选表”生成的备份文件')
         tables = document.get('tables')
@@ -522,27 +553,28 @@ class SQLiteManagement:
         if payload.get('confirm') != '恢复备份' or not isinstance(payload.get('versions'), dict):
             raise APIError(400, '请先预览备份并输入“恢复备份”确认')
         versions = payload['versions']
-        for document in documents:
-            name = document['table']
-            exists = self.table_exists(name)
-            current = self.snapshot(name)['version'] if exists else None
-            if name not in versions or versions[name] != current:
-                raise APIError(409, f'{name} 已变化，请重新预览；本次尚未写入')
-        results = []
-        for document in documents:
-            name = document['table']
-            try:
-                version = versions[name]
-                if version is None:
-                    self.manager.save_schema(name, {'definition': document['definition']}, creating=True)
-                    version = self.snapshot(name)['version']
-                imported = self.import_data(name, {'format': 'json', 'text': json.dumps(document),
-                    'mode': 'replace', 'confirm': name, 'version': version})
-                results.append({'name': name, 'ok': True, **imported})
-            except Exception as error:
-                results.append({'name': name, 'ok': False, 'error': str(error)})
-                return {'ok': False, 'results': results, 'pending': [item['table'] for item in documents[len(results):]]}
-        return {'ok': True, 'results': results, 'pending': []}
+        with self.manager.exclusive():
+            for document in documents:
+                name = document['table']
+                exists = self.table_exists(name)
+                current = self.snapshot(name)['version'] if exists else None
+                if name not in versions or versions[name] != current:
+                    raise APIError(409, f'{name} 已变化，请重新预览；本次尚未写入')
+            results = []
+            for document in documents:
+                name = document['table']
+                try:
+                    version = versions[name]
+                    if version is None:
+                        self.manager.save_schema(name, {'definition': document['definition']}, creating=True)
+                        version = self.snapshot(name)['version']
+                    imported = self.import_data(name, {'format': 'json', 'text': json.dumps(document),
+                        'mode': 'replace', 'confirm': name, 'version': version})
+                    results.append({'name': name, 'ok': True, **imported})
+                except Exception as error:
+                    results.append({'name': name, 'ok': False, 'error': str(error)})
+                    return {'ok': False, 'results': results, 'pending': [item['table'] for item in documents[len(results):]]}
+            return {'ok': True, 'results': results, 'pending': []}
 
     @staticmethod
     def operation_descriptor(method, parts, payload=None):
@@ -635,6 +667,10 @@ class SQLiteManagement:
         try:
             result = self._dispatch(method, parts, query, payload)
         except Exception as error:
+            if context.get('steps_written'):
+                delivery=getattr(self.manager,'audit_delivery',None)
+                if delivery:delivery.enqueue(self.manager.database_file)
+                else:write_receipts.publish(self.manager)
             self.manager.record_operation(category=category, operation=operation, status='failure',
                                           http_status=status_for_exception(error), method=method,
                                           path='/api/manage/' + '/'.join(parts), table=table,
@@ -649,7 +685,8 @@ class SQLiteManagement:
             delivery=getattr(self.manager,'audit_delivery',None)
             if delivery:
                 delivery.enqueue(self.manager.database_file)
-                result['audit_pending']=True
+                if isinstance(result, dict):
+                    result['audit_pending']=True
                 logged=True
             else:logged = write_receipts.publish(self.manager,context['id'])
         else:
@@ -666,8 +703,8 @@ class SQLiteManagement:
         if method != 'GET':
             is_table_request = len(parts) == 3 and parts[0] == 'tables'
             read_post = method == 'POST' and (
-                parts == ['backup'] or parts == ['database-files', 'select'] or
-                (is_table_request and parts[2] in ('sql', 'sql-export', 'query-plan'))
+                parts in (['backup'], ['database-files', 'select'], ['restore-preview'], ['definition-preview']) or
+                (is_table_request and parts[2] in ('sql', 'sql-export', 'query-plan', 'validate-edits', 'resolve-records', 'schema-preview'))
             )
             if not read_post:
                 self.manager.require_writable(name=parts[1] if is_table_request else None)

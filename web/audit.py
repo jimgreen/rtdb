@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,8 +33,10 @@ def _safe(value, *, depth=0):
     """Make a bounded JSON-safe value for an audit record."""
     if depth > 3:
         return "…"
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, (str, int, bool)):
         return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
     if isinstance(value, bytes):
         return f"<{len(value)} bytes>"
     if isinstance(value, dict):
@@ -118,6 +122,7 @@ class OperationAuditLog:
         self.config_lock = self.config_path.with_name(self.config_path.name + ".lock")
         self.read_limit = max(1, int(read_limit))
         self._lock = threading.RLock()
+        self._last_cleanup_check = 0.0
         self._maybe_cleanup()
 
     @property
@@ -195,10 +200,15 @@ class OperationAuditLog:
             config["retention_days"] = days
             config["last_cleanup_at"] = None
             self._write_config(config)
+        self._last_cleanup_check = 0.0
         cleanup = self.cleanup()
         return {**self.config(), **cleanup}
 
     def _maybe_cleanup(self):
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_cleanup_check < 60.0:
+            return
+        self._last_cleanup_check = now_monotonic
         config = self.config()
         if not config.get("retention_days"):
             return
@@ -345,33 +355,46 @@ class OperationAuditLog:
                     except ValueError:
                         continue
                     if log_date < cutoff:
-                        with _locked(path.with_name(path.name + ".lock")):
+                        lock_path = path.with_name(path.name + ".lock")
+                        with _locked(lock_path):
                             deleted_records += self._count_lines(path)
                             path.unlink(missing_ok=True)
                             deleted_files.append(path.name)
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                 if self.legacy_path.is_file():
-                    retained, removed = [], 0
-                    try:
-                        for line in self.legacy_path.read_text(encoding="utf-8", errors="replace").splitlines(True):
+                    legacy_lock = self.legacy_path.with_name(self.legacy_path.name + ".lock")
+                    with _locked(legacy_lock):
+                        retained, removed = [], 0
+                        try:
+                            for line in self.legacy_path.read_text(encoding="utf-8", errors="replace").splitlines(True):
+                                try:
+                                    record = json.loads(line)
+                                except json.JSONDecodeError:
+                                    retained.append(line)
+                                    continue
+                                if _record_date(record) and _record_date(record) < cutoff.isoformat():
+                                    removed += 1
+                                else:
+                                    retained.append(line)
+                        except OSError:
+                            retained = []
+                        if removed:
+                            temporary = self.legacy_path.with_name(f".{self.legacy_path.name}.{uuid.uuid4().hex}.tmp")
                             try:
-                                record = json.loads(line)
-                            except json.JSONDecodeError:
-                                retained.append(line)
-                                continue
-                            if _record_date(record) and _record_date(record) < cutoff.isoformat():
-                                removed += 1
-                            else:
-                                retained.append(line)
-                    except OSError:
-                        retained = []
-                    if removed:
-                        temporary = self.legacy_path.with_name(f".{self.legacy_path.name}.{uuid.uuid4().hex}.tmp")
-                        temporary.write_text("".join(retained), encoding="utf-8")
-                        os.replace(temporary, self.legacy_path)
-                        deleted_records += removed
-                        if not retained:
-                            self.legacy_path.unlink(missing_ok=True)
-                            deleted_files.append(self.legacy_path.name)
+                                with temporary.open("w", encoding="utf-8") as stream:
+                                    stream.write("".join(retained))
+                                    stream.flush()
+                                    os.fsync(stream.fileno())
+                                os.replace(temporary, self.legacy_path)
+                            finally:
+                                temporary.unlink(missing_ok=True)
+                            deleted_records += removed
+                            if not retained:
+                                self.legacy_path.unlink(missing_ok=True)
+                                deleted_files.append(self.legacy_path.name)
         now = _local_now().isoformat(timespec="seconds")
         with self._lock, _locked(self.config_lock):
             config = self._read_config()
@@ -410,7 +433,7 @@ class OperationAuditLog:
             self._maybe_cleanup()
             groups = {}
             for record in records:
-                day = date.fromisoformat(record['timestamp'][:10]).isoformat()
+                day = _record_date(record) or _local_now().date().isoformat()
                 line = (json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode('utf-8')
                 groups.setdefault(day, []).append((record['id'], line))
             for day, entries in groups.items():

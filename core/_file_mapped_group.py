@@ -105,7 +105,7 @@ class FixedWriteGroup:
         for source in rows:
             if not isinstance(source, Mapping):
                 raise TypeError('rows must be mappings')
-            row = copy.deepcopy(dict(source))
+            row = self.store.definition.apply_defaults(copy.deepcopy(dict(source)))
             self.store._validate_row(row)
             self._validate_finite(row)
             if self.count >= self.store.max_records:
@@ -261,11 +261,31 @@ class FixedWriteGroup:
                     start = _FIXED_SLOT_HEADER.size + field.offset
                     if raw[start:start + field.width] != before[start:start + field.width]:
                         changed.add(field.name)
+        if inserts:
+            # 按槽位单调顺序排列，避免槽位复用导致二级索引桶顺序错乱。
+            entries.sort(key=lambda item: _FIXED_SLOT_HEADER.unpack_from(item[1])[1])
         with store._key_cache_guard.read():
             cached = {c: index for c, (generation, index) in store._key_cache.items()
                       if generation == header['generation']}
-        additions = {c: [(self._key(raw, c), slot) for slot, raw in entries] for c in cached} if inserts else None
-        preserve = inserts or deletes or updates and not reordered and all(not set(c).intersection(changed) for c in cached)
+        additions = None
+        additions_safe = True
+        if inserts:
+            additions = {}
+            for c in cached:
+                bucket_entries = []
+                for slot, raw in entries:
+                    k = self._key(raw, c)
+                    try:
+                        hash(k)
+                    except TypeError:
+                        additions_safe = False
+                        break
+                    bucket_entries.append((k, slot))
+                if not additions_safe:
+                    additions = None
+                    break
+                additions[c] = bucket_entries
+        preserve = (inserts and additions_safe) or deletes or updates and not reordered and all(not set(c).intersection(changed) for c in cached)
         # Many insert/delete cycles in a tiny table can consume more than one
         # insertion-order stride. Reserve the required generations explicitly.
         generation = header['generation'] + 1 + max(0, self.insertions - 1) // (store.max_records + 1)

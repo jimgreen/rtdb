@@ -16,6 +16,7 @@ let sqlHistoryItems = [], sqlHistoryActive = -1;
 state.database = null; state.databases = []; state.queryVersion = null;
 let gridCells = new WeakMap(), gridCellEntries = [], gridRowEntries = [], gridColumnEntries = [];
 let selectionFrame = null, chartDrawFrame = null, legendSignature = null, renderedQueryStamp = null, noticeTimer;
+let chartStaticCanvas = null, chartStaticKey = null, chartStaticHits = [];
 function scheduleGridSelection() {
   if (selectionFrame === null) selectionFrame = requestAnimationFrame(paintGridSelection);
 }
@@ -26,9 +27,53 @@ const integerTypes = new Set(["int", "integer", "long"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
 const boolTypes = new Set(["bool", "boolean"]);
 const objectTypes = new Set(["list", "array", "dict", "object", "json"]);
-const colors = ["#2869d5", "#19a186", "#e3922e", "#9764d0", "#dc607b", "#268eac"];
+const themeStorageKey = "rtdb.ui.theme";
+// 色盲友好 6 色工程序列（浅色：科研日间；深色：控制室暗底降纯度提明度）
+const chartPalettes = {
+  light: ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
+  dark: ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"]
+};
+function isDarkTheme() { return document.documentElement.dataset.theme === "dark"; }
+function currentChartPalette() { return isDarkTheme() ? chartPalettes.dark : chartPalettes.light; }
+function chartThemeTokens() {
+  if (isDarkTheme()) {
+    return {
+      canvasBg: "#111827", gridLine: "rgba(255, 255, 255, 0.08)", axisLine: "rgba(255, 255, 255, 0.20)",
+      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#94A3B8",
+      tooltipBg: "rgba(15, 23, 42, 0.94)", tooltipBorder: "rgba(148, 163, 184, 0.32)",
+      tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+    };
+  }
+  return {
+    canvasBg: "#FFFFFF", gridLine: "#E2E8F0", axisLine: "#CBD5E1",
+    axisText: "#64748B", titleColor: "#0F172A", cursorLine: "#475569",
+    tooltipBg: "rgba(255, 255, 255, 0.96)", tooltipBorder: "#CBD5E1",
+    tooltipTitle: "#0F172A", tooltipLabel: "#475569", tooltipValue: "#0F172A"
+  };
+}
+function applyTheme(theme, persist = true) {
+  const mode = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = mode;
+  const toggle = el("toggle-theme");
+  if (toggle) {
+    const dark = mode === "dark";
+    toggle.querySelector(".theme-icon-moon")?.toggleAttribute("hidden", dark);
+    toggle.querySelector(".theme-icon-sun")?.toggleAttribute("hidden", !dark);
+    toggle.title = dark ? "切换为浅色模式" : "切换为深色控制室模式";
+    toggle.setAttribute("aria-pressed", String(dark));
+  }
+  if (persist) { try { localStorage.setItem(themeStorageKey, mode); } catch { /* 主题持久化失败不影响使用 */ } }
+  chartStaticKey = null;
+  legendSignature = null;
+  if (typeof drawChart === "function" && el("tab-chart")) requestAnimationFrame(drawChart);
+}
+try {
+  const savedTheme = localStorage.getItem(themeStorageKey);
+  if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme, false);
+  else applyTheme("light", false);
+} catch { applyTheme("light", false); }
 const chartSettingsStorageKey = "rtdb.chart.settings";
-const chartTitleDefaults = { color: "#314c70", fontSize: 13, fontFamily: "Segoe UI", fontStyle: "bold", position: "top-center", gap: 6 };
+const chartTitleDefaults = { color: "#0F172A", fontSize: 13, fontFamily: "Segoe UI", fontStyle: "bold", position: "top-center", gap: 6 };
 const chartTitleFonts = ["Segoe UI", "Microsoft YaHei", "SimSun", "SimHei", "Arial"];
 const chartTitleStyles = ["normal", "bold", "italic", "bold-italic"];
 const chartTitlePositions = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
@@ -87,6 +132,7 @@ function setupSplitter({ id, panelId, axis, defaultSize, minimum, maximum, colla
     if (value === 0 && panel.contains(document.activeElement)) splitter.focus({ preventScroll: true });
     root.style.setProperty(cssVariable, `${value}px`);
     root.classList.toggle(collapsedClass, value === 0);
+    if (typeof syncLayoutToggleButtons === "function") syncLayoutToggleButtons();
     panel.inert = value === 0;
     splitter.setAttribute("aria-valuemin", "0");
     splitter.setAttribute("aria-valuemax", String(Math.round(max)));
@@ -157,6 +203,46 @@ function chineseName(item) {
 function action(text, handler, className = "link") {
   const button = node("button", text, className); button.type = "button"; button.onclick = handler; return button;
 }
+function syncPresetControl(selectEl, inputEl, value) {
+  if (!selectEl || !inputEl) return;
+  const text = String(value ?? "");
+  const matched = [...selectEl.options].some((option) => option.value !== "custom" && option.value === text);
+  if (matched) {
+    selectEl.value = text;
+    inputEl.value = text;
+    inputEl.hidden = true;
+  } else {
+    selectEl.value = "custom";
+    inputEl.value = text;
+    inputEl.hidden = false;
+  }
+}
+function bindPresetControl(selectEl, inputEl, onChange = null) {
+  if (!selectEl || !inputEl) return;
+  selectEl.onchange = () => {
+    if (selectEl.value === "custom") {
+      inputEl.hidden = false;
+      inputEl.focus({ preventScroll: true });
+      if (inputEl.select) inputEl.select();
+    } else {
+      inputEl.hidden = true;
+      inputEl.value = selectEl.value;
+    }
+    if (onChange) onChange();
+  };
+  inputEl.oninput = () => { if (onChange) onChange(); };
+}
+function setSelectValueWithFallback(selectEl, value, suffix = "") {
+  if (!selectEl) return;
+  selectEl.querySelectorAll('option[data-fallback="true"]').forEach((option) => option.remove());
+  const text = String(value);
+  if (![...selectEl.options].some((option) => option.value === text)) {
+    const option = new Option(suffix ? `${text}${suffix}` : text, text);
+    option.dataset.fallback = "true";
+    selectEl.append(option);
+  }
+  selectEl.value = text;
+}
 function renderLogs() {
   const target = el("logs"); if (!target) return;
   target.replaceChildren();
@@ -174,7 +260,8 @@ function renderLogs() {
 }
 function log(message, error = false) {
   state.logs.unshift(`${new Date().toLocaleString()} [${error ? "失败" : "操作"}] ${message}`);
-  state.logs.length = Math.min(state.logs.length, 500); renderLogs();
+  state.logs.length = Math.min(state.logs.length, 500);
+  if (!state.auditLoaded) renderLogs();
 }
 function formatAuditLog(record) {
   const time = record.timestamp ? new Date(record.timestamp).toLocaleString() : "未知时间";
@@ -189,13 +276,14 @@ function formatAuditLog(record) {
   return parts.join(" | ");
 }
 async function loadAuditLogs() {
-  state.auditLoadSequence=(state.auditLoadSequence||0)+1;
+  const sequence = (state.auditLoadSequence = (state.auditLoadSequence || 0) + 1);
   const query = state.logQuery;
   const params = new URLSearchParams({ page: String(query.page), page_size: String(query.pageSize) });
   for (const [key, value] of Object.entries({ date: query.date, keyword: query.keyword, category: query.category, status: query.status })) {
     if (value) params.set(key, value);
   }
   const payload = await request(`logs?${params}`);
+  if (sequence !== state.auditLoadSequence) return;
   state.auditRecords = Array.isArray(payload.logs) ? payload.logs : [];
   state.auditLoaded = true;
   state.logDates = Array.isArray(payload.dates) ? payload.dates : [];
@@ -219,7 +307,7 @@ function renderLogSummary() {
   el("log-page-label").textContent = `第 ${query.page} / ${query.pages} 页`;
   el("log-prev").disabled = query.page <= 1;
   el("log-next").disabled = query.page >= query.pages;
-  if (state.logConfig) el("log-retention-days").value = state.logConfig.retention_days ?? 0;
+  if (state.logConfig) syncPresetControl(el("log-retention-preset"), el("log-retention-days"), state.logConfig.retention_days ?? 0);
 }
 async function loadLogConfig() {
   const config = await request("log-config");
@@ -247,12 +335,13 @@ async function run(work, errorTarget = null) {
   try { await work(); }
   catch (error) { failed=true;log(error.message, true); if (errorTarget) el(errorTarget).textContent = error.message; else notice(error.message, true); }
   finally {
-    if (!failed && !backgroundTasks.pending() && (state.auditLoadSequence||0)===auditSequence && el("tab-logs")?.classList.contains("active")) {
-      try { await loadAuditLogs(); } catch { /* Keep the last visible log when the log endpoint is unavailable. */ }
-    }
     state.busy = false; document.body.dataset.busy = "false";
     el("data-grid").setAttribute("aria-busy", "false");
     editingControls.forEach((control) => { if (control.isConnected) control.disabled = false; });
+    // 将审计日志刷新移出 state.busy 全局锁，避免用户操作完成后被日志拉取阻塞交互。
+    if (!failed && !backgroundTasks.pending() && (state.auditLoadSequence || 0) === auditSequence && el("tab-logs")?.classList.contains("active")) {
+      void loadAuditLogs().catch(() => { /* Keep the last visible log when the log endpoint is unavailable. */ });
+    }
   }
 }
 async function request(path, method = "GET", body, timing = null, { allowBackground = true } = {}) {
@@ -274,7 +363,16 @@ async function request(path, method = "GET", body, timing = null, { allowBackgro
     body: body === undefined ? undefined : JSON.stringify(body) }); }
   catch(error) { if(taskSubmission)throw Error('提交响应未确认，已保留请求编号。请刷新恢复任务查询，勿重复提交。');throw error; }
   const text = await response.text(), receivedAt = performance.now();
-  const payload = JSON.parse(text);
+  let payload = null;
+  if (text) {
+    try { payload = JSON.parse(text); } catch { payload = null; }
+  }
+  if (payload === null) {
+    if (taskSubmission && response.status !== 202) backgroundTasks.clear();
+    const error = new Error(response.ok ? "服务端返回了非 JSON 响应" : `请求失败 ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   if (timing) {
     timing.request_ms += receivedAt-requestedAt; timing.parse_ms += performance.now()-receivedAt;
     const server = response.headers.get("Server-Timing")?.match(/app;dur=([\d.]+)/);
@@ -442,6 +540,9 @@ function confirmAction(title, message, expected = "") {
   el("confirm-action").disabled = Boolean(expected);
   el("confirm-input").oninput = () => { el("confirm-action").disabled = el("confirm-input").value !== expected; };
   dialog.returnValue = ""; dialog.showModal();
+  // 需名称确认时聚焦输入框，纯高危确认默认聚焦取消按钮防误按回车。
+  if (expected) el("confirm-input").focus({ preventScroll: true });
+  else el("confirm-cancel")?.focus({ preventScroll: true });
   return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirmed"), { once: true }));
 }
 function draftRecords() { return state.records.filter((record) => record.draftId); }
@@ -489,6 +590,8 @@ function updateEditActions() {
   el("discard-cell-edits").hidden = !count && !drafts;
   el("save-cell-edits").textContent = drafts ? `保存修改（新增 ${drafts} 条）` : `保存改单元格（${count}）`;
   el("chart-edit-hint").textContent = [drafts ? `${drafts} 条新增记录待保存` : "", count ? `${count} 个单元格已修改` : ""].filter(Boolean).join(" · ") || "未选择修改";
+  updateRecordsToolbar();
+  updateAutoRefreshStatus();
 }
 function setPendingCell(record, column, raw, updateActions = true) {
   if (isReadOnlyKey(record, column)) return;
@@ -504,8 +607,16 @@ function setPendingCell(record, column, raw, updateActions = true) {
   }
   if (updateActions) updateEditActions();
 }
+function isNumericColumn(column) {
+  const kind = columnKind(column);
+  return integerTypes.has(kind) || floatTypes.has(kind);
+}
 function renderGridCellValue(record, column, cell) {
-  const pending = pendingCell(record, column.eng_name), value = pending ? pending.raw : record.draftId ? cellText(record.row[column.eng_name]) : display(record.row[column.eng_name]);
+  const pending = pendingCell(record, column.eng_name);
+  const rawVal = record.row[column.eng_name];
+  const isNull = !pending && !record.draftId && rawVal == null;
+  const value = pending ? pending.raw : record.draftId ? cellText(rawVal) : display(rawVal);
+  cell.classList.toggle("is-numeric", isNumericColumn(column));
   if (state.editable && boolTypes.has(columnKind(column)) && !isReadOnlyKey(record, column)) {
     const input = node("input"); input.type = "checkbox"; input.className = "cell-toggle";
     input.checked = value === "true" || value === true; input.indeterminate = value === "NULL" || value === "";
@@ -520,7 +631,10 @@ function renderGridCellValue(record, column, cell) {
       scheduleChartDraw();
     };
     cell.replaceChildren(input);
-  } else cell.replaceChildren(node("span", value, "cell-value"));
+  } else {
+    const span = node("span", value, isNull ? "cell-value cell-null" : "cell-value");
+    cell.replaceChildren(span);
+  }
   cell.classList.toggle("cell-modified", Boolean(pending));
   cell.title = isReadOnlyKey(record, column) ? "KEY 主键列：可选择，不可修改，冻结在左侧" : record.draftId ? "待新增记录：双击填写，KEY 必填；保存后写入数据库" : pending ? "已修改，保存前仅保留在当前页面" : value;
 }
@@ -536,19 +650,36 @@ function syncGridCell(record, field) {
   input.closest("td")?.classList.toggle("cell-modified", Boolean(pending));
   input.closest("td")?.setAttribute("title", pending ? "已修改，保存前仅保留在当前页面" : value || "NULL");
 }
-function inlineCellInput(record, column, index, cell) {
+function columnMenuOptions(column) {
+  return column?.disp_menu ? String(column.disp_menu).split("|").map((item) => item.trim()).filter(Boolean) : [];
+}
+function inlineCellInput(record, column, index, cell, initialText = null) {
   const kind = columnKind(column);
   if (isReadOnlyKey(record, column) || objectTypes.has(kind) && !record.draftId) return false;
   if (cell.querySelector(".cell-toggle")) { cell.querySelector(".cell-toggle").focus({ preventScroll: true }); return true; }
   if (cell.querySelector(".cell-editor")) return true;
-  const input = node("input"); input.className = "cell-editor"; input.dataset.rowIndex = String(index); input.dataset.field = column.eng_name;
-  input.setAttribute("aria-label", `${record.draftId ? `新增${record.draftId}` : record.ref.key.join(" / ")} ${column.eng_name}`);
+  const menu = columnMenuOptions(column);
+  const useSelect = menu.length > 0 || boolTypes.has(kind);
   const pending = pendingCell(record, column.eng_name), raw = pending?.raw ?? cellText(record.row[column.eng_name]);
   const before = structuredClone(record.row[column.eng_name]), history = editSnapshot();
-  if (boolTypes.has(kind)) { input.type = "checkbox"; input.checked = raw === "true" || raw === true; }
-  else { input.type = "text"; input.value = raw; input.spellcheck = false; }
+  const input = node(useSelect ? "select" : "input"); input.className = "cell-editor"; input.dataset.rowIndex = String(index); input.dataset.field = column.eng_name;
+  input.setAttribute("aria-label", `${record.draftId ? `新增${record.draftId}` : record.ref.key.join(" / ")} ${column.eng_name}`);
+  if (useSelect) {
+    if (!column.primary_key) input.append(new Option("（空）", ""));
+    if (boolTypes.has(kind)) {
+      input.append(new Option("true（是）", "true"), new Option("false（否）", "false"));
+    } else {
+      for (const item of menu) input.append(new Option(item, item));
+    }
+    if (raw !== "" && ![...input.options].some((option) => option.value === raw)) {
+      input.append(new Option(`${raw}（当前）`, raw));
+    }
+    input.value = raw;
+  } else {
+    input.type = "text"; input.value = initialText !== null ? initialText : raw; input.spellcheck = false;
+  }
   const change = () => {
-    const next = input.type === "checkbox" ? String(input.checked) : input.value;
+    const next = input.value;
     setPendingCell(record, column, next); input.setCustomValidity("");
     if (!rawMatchesBaseline(column, next, record.baseline?.[column.eng_name])) cell.classList.add("cell-modified"); else cell.classList.remove("cell-modified");
     scheduleChartDraw();
@@ -569,10 +700,16 @@ function inlineCellInput(record, column, index, cell) {
     if (event.key !== "Escape") moveGridFocus(index, Number(cell.dataset.cellColumn), event.key, event.shiftKey, false, false);
   };
   const placeholder = cell.querySelector(".cell-value");
-  placeholder.classList.add("cell-editor-placeholder");
-  cell.replaceChildren(placeholder, input); cell.classList.toggle("cell-modified", Boolean(pending));
+  if (placeholder) placeholder.classList.add("cell-editor-placeholder");
+  cell.replaceChildren(...(placeholder ? [placeholder, input] : [input])); cell.classList.toggle("cell-modified", Boolean(pending));
   cell.title = pending ? "已修改，保存前仅保留在当前页面" : raw || "NULL";
-  input.focus({ preventScroll: true }); if (input.type !== "checkbox") input.select();
+  input.focus({ preventScroll: true });
+  if (!useSelect) {
+    if (initialText !== null) {
+      change();
+      input.setSelectionRange(initialText.length, initialText.length);
+    } else input.select();
+  }
   return true;
 }
 async function discardSchema() {
@@ -646,6 +783,149 @@ function renderCurrentDatabaseFile() {
   target.title = filename ? `当前数据库：${directory ? directory + separator : ""}${filename}` : "请先选择或新建数据库";
   target.setAttribute("aria-label", filename ? `当前数据库文件：${filename}` : "未选择数据库");
 }
+function updateRecordsToolbar() {
+  const title = el("records-table-title"), meta = el("records-table-meta");
+  if (title) {
+    title.textContent = state.table && state.definition ? `${chineseName(state.definition.head)} / ${state.table}` : "未选择表";
+  }
+  if (meta) {
+    meta.textContent = state.table && state.definition
+      ? `${state.definition.columns.length} 字段 · 共 ${Number(state.tableTotal || 0).toLocaleString()} 条`
+      : "";
+  }
+  const hasTable = Boolean(state.table), readOnly = isReadOnlyDatabase(), pending = hasPendingData();
+  const rowIndexes = selectedRowIndexes(null, null);
+  const savedSelectedCount = rowIndexes.filter((idx) => state.records[idx] && !state.records[idx].draftId).length;
+  const format = el("export-format")?.value || "csv";
+  if (el("btn-add-row")) el("btn-add-row").disabled = !hasTable || readOnly || draftRecords().length >= 500;
+  if (el("btn-batch-edit")) el("btn-batch-edit").disabled = !hasTable || !state.editable || readOnly || pending || !savedSelectedCount;
+  if (el("btn-import-data")) el("btn-import-data").disabled = !hasTable || readOnly || pending;
+  if (el("export-format")) el("export-format").disabled = !hasTable || !state.lastQuery;
+  if (el("btn-export-data")) el("btn-export-data").disabled = !hasTable || !state.lastQuery || (format === "csv" && !state.fields.size);
+  if (el("btn-delete-rows")) el("btn-delete-rows").disabled = !hasTable || !state.editable || readOnly || !rowIndexes.length;
+}
+function autoRefreshPauseReason() {
+  const seconds = Number(el("auto-refresh")?.value || 0);
+  if (!seconds) return "";
+  if (state.busy) return "操作执行中";
+  if (document.hidden) return "页面处于后台";
+  if (document.querySelector("dialog[open]")) return "弹窗打开中";
+  if (state.contextRecord) return "右键菜单打开中";
+  if (state.schemaDirty) return "表结构有未保存修改";
+  if (hasPendingData()) return "存在未保存的单元格或新行";
+  if (state.selected.size || state.selectedColumns.size || state.selectedCells.size) return "当前存在选区（Esc 取消）";
+  return "";
+}
+function updateAutoRefreshStatus() {
+  const badge = el("auto-refresh-status"); if (!badge) return;
+  const reason = autoRefreshPauseReason();
+  badge.hidden = !reason;
+  if (reason) {
+    badge.textContent = "已暂停";
+    badge.title = `自动刷新已暂停：${reason}`;
+  } else {
+    badge.textContent = "";
+    badge.title = "";
+  }
+}
+function quickFilterColumns() {
+  return state.definition?.columns?.length ? state.definition.columns : state.resultColumns;
+}
+function syncQuickFilterValueControl() {
+  const fieldEl = el("filter-field"), opEl = el("filter-op"), host = el("filter-value-host");
+  const applyBtn = el("apply-quick-filter"), resetBtn = el("reset-quick-filter");
+  if (!fieldEl || !opEl || !host) return;
+  const fieldName = fieldEl.value, op = opEl.value;
+  const hasField = Boolean(fieldName);
+  const needsValue = hasField && !["IS NULL", "IS NOT NULL"].includes(op);
+  opEl.hidden = !hasField;
+  host.hidden = !needsValue;
+  if (applyBtn) applyBtn.hidden = !hasField;
+  const customSql = Boolean(state.table && el("sql-editor").value.trim() && normalizeSqlText(el("sql-editor").value) !== normalizeSqlText(defaultSql()));
+  if (resetBtn) resetBtn.hidden = !hasField && !customSql;
+  if (!needsValue) return;
+  const column = quickFilterColumns().find((item) => item.eng_name === fieldName);
+  const kind = columnKind(column), menu = columnMenuOptions(column);
+  const previous = el("filter-value")?.value ?? "";
+  let control;
+  if (boolTypes.has(kind)) {
+    control = node("select"); control.id = "filter-value"; control.setAttribute("aria-label", "筛选值");
+    control.append(new Option("true（是）", "true"), new Option("false（否）", "false"));
+    if (["true", "false"].includes(previous)) control.value = previous;
+  } else if (menu.length && op !== "LIKE") {
+    control = node("select"); control.id = "filter-value"; control.setAttribute("aria-label", "筛选值");
+    control.append(new Option("选择值…", ""));
+    for (const item of menu) control.append(new Option(item, item));
+    if (menu.includes(previous)) control.value = previous;
+  } else {
+    control = node("input"); control.id = "filter-value"; control.type = "text"; control.placeholder = op === "LIKE" ? "包含关键词" : "筛选值";
+    control.setAttribute("aria-label", "筛选值"); control.value = previous;
+    control.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); run(applyQuickFilter); } };
+  }
+  host.replaceChildren(control);
+}
+function configureQuickFilter() {
+  const fieldEl = el("filter-field"); if (!fieldEl) return;
+  const previous = fieldEl.value;
+  const columns = quickFilterColumns();
+  fieldEl.replaceChildren(new Option("快捷筛选…", ""));
+  for (const column of columns) {
+    fieldEl.append(new Option(`${chineseName(column)} / ${column.eng_name}`, column.eng_name));
+  }
+  fieldEl.disabled = !state.table || !columns.length;
+  fieldEl.value = columns.some((column) => column.eng_name === previous) ? previous : "";
+  if (!fieldEl.value) el("filter-op").value = "=";
+  syncQuickFilterValueControl();
+}
+function quoteSqlIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+function quoteSqlString(text) {
+  return `'${String(text).replace(/'/g, "''")}'`;
+}
+async function applyQuickFilter() {
+  requireTable();
+  const fieldName = el("filter-field").value;
+  if (!fieldName) throw new Error("请先选择筛选字段");
+  const op = el("filter-op").value;
+  const column = quickFilterColumns().find((item) => item.eng_name === fieldName);
+  const ident = quoteSqlIdent(fieldName), tableIdent = quoteSqlIdent(state.table);
+  let clause;
+  if (op === "IS NULL" || op === "IS NOT NULL") {
+    clause = `${ident} ${op}`;
+  } else {
+    const raw = el("filter-value")?.value ?? "";
+    if (!raw.length) throw new Error("请输入或选择筛选值");
+    const kind = columnKind(column);
+    if (op === "LIKE") {
+      clause = `CAST(${ident} AS TEXT) LIKE ${quoteSqlString(`%${raw}%`)}`;
+    } else if (boolTypes.has(kind)) {
+      clause = `${ident} ${op} ${raw === "true" ? 1 : 0}`;
+    } else if (integerTypes.has(kind)) {
+      if (!/^-?\d+$/.test(raw.trim())) throw new Error(`${fieldName} 必须是整数`);
+      clause = `${ident} ${op} ${raw.trim()}`;
+    } else if (floatTypes.has(kind)) {
+      const num = Number(raw.trim());
+      if (!raw.trim() || !Number.isFinite(num)) throw new Error(`${fieldName} 必须是有限数值`);
+      clause = `${ident} ${op} ${num}`;
+    } else {
+      clause = `${ident} ${op} ${quoteSqlString(raw)}`;
+    }
+  }
+  el("sql-editor").value = `SELECT * FROM ${tableIdent} WHERE ${clause}`;
+  await executeSql();
+  syncQuickFilterValueControl();
+}
+async function resetQuickFilter() {
+  el("filter-field").value = "";
+  el("filter-op").value = "=";
+  syncQuickFilterValueControl();
+  if (!state.table) return;
+  const sql = defaultSql();
+  el("sql-editor").value = sql;
+  await queryRows({ sql, order: null, reset: true });
+  syncQuickFilterValueControl();
+}
 async function selectTable(name) {
   if (!state.database) throw new Error("请先选择或新建数据库");
   state.queryVersion = null;
@@ -663,7 +943,9 @@ async function selectTable(name) {
   el("sql-editor").value = defaultSql();
   el("current-table").textContent = `${chineseName(state.definition.head)} / ${name}`;
   el("table-meta").textContent = `${state.definition.columns.length} 个字段 · 主键 ${state.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name).join(" + ")}`;
+  configureQuickFilter();
   renderTables(); renderFields(); renderSchema(state.definition); await queryRows();
+  updateRecordsToolbar();
   if (!isReadOnlyDatabase()) await localDrafts.offer();
 }
 async function refresh() {
@@ -682,7 +964,7 @@ function resetSelection() {
   resetEditHistory();
   state.queryVersion = null;
   renderedQueryStamp = null;
-  state.table = null; state.definition = null; state.version = null; state.records = []; state.total = 0; state.tableTotal = 0;
+  state.table = null; state.definition = null; state.version = null; state.schemaIndexes = null; state.records = []; state.total = 0; state.tableTotal = 0;
   renderCurrentDatabaseFile();
   state.history = []; closeSqlHistory();
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear(); state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
@@ -691,7 +973,8 @@ function resetSelection() {
   clearAddedChartSeries(); state.chartQueryKey = null;
   el("current-table").textContent = "请选择或新建一张表"; el("table-meta").textContent = "—";
   el("schema-fields").replaceChildren(); el("schema-name").value = ""; el("schema-label").value = "";
-  renderGrid(); renderFields(); configureChart(); renderTables();
+  configureQuickFilter();
+  renderGrid(); renderFields(); configureChart(); renderTables(); updateRecordsToolbar();
 }
 function renderFields() {
   keepKeyFieldsVisible();
@@ -783,8 +1066,10 @@ async function queryRowsData({ reset = false, silent = false, sql = state.lastQu
     resetChartCursor();
     uiPerformance.measure(timing,"grid_ms",()=>{renderFields();renderGrid();});
   } else { timing.mode = "patch"; updateGridPager(); }
-  if (JSON.stringify(previousColumns) !== JSON.stringify(state.resultColumns)) configureChart();
+  if (JSON.stringify(previousColumns) !== JSON.stringify(state.resultColumns)) { configureChart(); configureQuickFilter(); }
+  else syncQuickFilterValueControl();
   updateQueryFeedback(result, sql);
+  updateRecordsToolbar();
   if (!silent) log(`查询 ${state.table}：${result.total} 条，当前页 ${state.records.length} 条；${sql}`);
   uiPerformance.measure(timing,"chart_ms",()=>drawChart());
 }
@@ -818,9 +1103,13 @@ function openRowContextMenu(event, record, index) {
   setDisabled("restore-draft",hasPendingData()||!localDrafts.candidates().length);
   setDisabled("add-row", !hasTable || isReadOnlyDatabase() || draftRecords().length >= 500);
   const rowIndexes = selectedRowIndexes(record, index);
+  const savedSelected = rowIndexes.some((idx) => state.records[idx] && !state.records[idx].draftId);
+  setDisabled("batch-edit", !hasTable || !state.editable || isReadOnlyDatabase() || pending || !savedSelected);
   setDisabled("copy-rows", !state.editable || !rowIndexes.length);
   setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
+  setDisabled("import", !hasTable || isReadOnlyDatabase() || pending);
   setDisabled("export-csv", !hasTable || !hasQuery || !state.fields.size);
+  setDisabled("export-json", !hasTable || !hasQuery);
   const hasCellSelection = Boolean(gridSelectionModel());
   setDisabled("copy-cells", !hasCellSelection);
   setDisabled("paste-cells", !hasTable || !state.editable || !hasCellSelection);
@@ -1039,7 +1328,12 @@ function clipboardCellValue(record, column) {
   return pendingCell(record, column.eng_name)?.raw ?? cellText(record.row[column.eng_name]);
 }
 function gridSelectionClipboardText(model) {
-  return model.rows.map((rowIndex) => model.columns.map((column) => clipboardCellValue(state.records[rowIndex], column)).join("\t")).join("\r\n");
+  const useCellSet = state.selectedCells.size > 0;
+  return model.rows.map((rowIndex) => model.columns.map((column) => (
+    useCellSet && !state.selectedCells.has(cellSelectionKey(rowIndex, column.eng_name))
+      ? ""
+      : clipboardCellValue(state.records[rowIndex], column)
+  )).join("\t")).join("\r\n");
 }
 function writeClipboardText(text) {
   const textarea = node("textarea"); textarea.value = text; textarea.setAttribute("readonly", "");
@@ -1116,25 +1410,41 @@ function syncChartFieldsToGridSelection() {
 function paintGridSelection() {
   if (selectionFrame !== null) cancelAnimationFrame(selectionFrame);
   selectionFrame = null;
+  const columns = visibleGridColumns();
   const boxModel = (state.selectedCells.size || state.selectedColumns.size) ? gridSelectionModel() : null;
   const boxRows = new Set(boxModel?.rows || []), boxColumns = new Set(boxModel?.columnIndexes || []);
   const firstRow = boxModel?.rows[0], lastRow = boxModel ? boxModel.rows[boxModel.rows.length - 1] : undefined, firstColumn = boxModel?.columnIndexes[0], lastColumn = boxModel ? boxModel.columnIndexes[boxModel.columnIndexes.length - 1] : undefined;
+  const nonContiguousCells = state.selectedCells.size > 0 && boxModel && state.selectedCells.size < boxModel.rows.length * boxModel.columns.length;
   gridRowEntries.forEach(({ element, index }) => element.classList.toggle("selected", state.selected.has(index)));
   gridColumnEntries.forEach(({ element, field }) => element.classList.toggle("selected-header", state.selectedColumns.has(field)));
   gridCellEntries.forEach((entry) => {
     const { cell, row, column, field, key } = entry, selected = state.selectedColumns.has(field) || state.selectedCells.has(key);
     if (entry.selected !== selected) { cell.classList.toggle("cell-selected", selected); entry.selected = selected; }
-    const boxed = Boolean(boxModel && boxRows.has(row) && boxColumns.has(column)), shadows = [];
-    if (boxed && row === firstRow) shadows.push("inset 0 2px #4e8fec");
-    if (boxed && row === lastRow) shadows.push("inset 0 -2px #4e8fec");
-    if (boxed && column === firstColumn) shadows.push("inset 2px 0 #4e8fec");
-    if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
+    const shadows = [];
+    if (nonContiguousCells) {
+      // 不连续 Ctrl 多选按各选中格的四邻精确绘制外框，避免圈入未选单元格。
+      if (selected) {
+        if (!state.selectedCells.has(cellSelectionKey(row - 1, field))) shadows.push("inset 0 2px #4e8fec");
+        if (!state.selectedCells.has(cellSelectionKey(row + 1, field))) shadows.push("inset 0 -2px #4e8fec");
+        const prevField = columns[column - 1]?.eng_name, nextField = columns[column + 1]?.eng_name;
+        if (!prevField || !state.selectedCells.has(cellSelectionKey(row, prevField))) shadows.push("inset 2px 0 #4e8fec");
+        if (!nextField || !state.selectedCells.has(cellSelectionKey(row, nextField))) shadows.push("inset -2px 0 #4e8fec");
+      }
+    } else {
+      const boxed = Boolean(boxModel && boxRows.has(row) && boxColumns.has(column));
+      if (boxed && row === firstRow) shadows.push("inset 0 2px #4e8fec");
+      if (boxed && row === lastRow) shadows.push("inset 0 -2px #4e8fec");
+      if (boxed && column === firstColumn) shadows.push("inset 2px 0 #4e8fec");
+      if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
+    }
     const shadow = shadows.join(", ");
     if (entry.shadow !== shadow) { cell.style.boxShadow = shadow; entry.shadow = shadow; }
   });
   const model = boxModel || gridSelectionModel();
   const count = state.selectedCells.size || (model ? model.rows.length * model.columns.length : 0);
-  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "方向键移动 · Shift 扩选 · Ctrl+S 保存";
+  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "方向键移动 · F2/双击编辑 · Ctrl+S 保存";
+  updateRecordsToolbar();
+  updateAutoRefreshStatus();
 }
 function renderGrid(windowOnly=false) {
   if(!windowOnly)finishCellSelection();
@@ -1149,8 +1459,9 @@ function renderGrid(windowOnly=false) {
   const focus=document.activeElement?.closest('#data-grid td[data-cell-row]');
   const focused=focus?{row:Number(focus.dataset.cellRow),field:focus.dataset.cellField}:null;
   if(windowOnly&&document.activeElement?.classList.contains('cell-editor'))document.activeElement.blur();
-  gridCells = new WeakMap(); gridCellEntries = []; gridRowEntries = []; gridColumnEntries = [];
+  const existingGrid = windowOnly ? target.querySelector("table.virtual-grid") : null;
   if (!state.resultColumns.length) {
+    gridCells = new WeakMap(); gridCellEntries = []; gridRowEntries = []; gridColumnEntries = [];
     const empty = node("div", null, "empty");
     empty.append(node("p", state.database ? "已选择数据库，可从左侧选择表或新建表。" : "先选择或新建数据库，再管理数据表和记录。"));
     if (!state.database) empty.append(action("选择 / 新建数据库", () => run(openDatabaseFileDialog), "secondary"));
@@ -1159,44 +1470,65 @@ function renderGrid(windowOnly=false) {
   else {
     const columns = visibleGridColumns();
     const viewport=virtualGrid.plan(columns);
-    const grid = node("table"), head = node("tr"), thead = node("thead");
-    grid.setAttribute("aria-label", state.table || "查询结果");
-    grid.classList.toggle('virtual-grid',virtualGrid.active);grid.setAttribute('aria-rowcount',String(state.records.length+1));grid.setAttribute('aria-colcount',String(columns.length+1));
-    if(virtualGrid.active){
-      grid.style.width=(36+columns.length*virtualGrid.columnWidth)+'px';
-      const group=node('colgroup'),corner=node('col');corner.style.width='36px';group.append(corner);
-      for(const segment of viewport.segments){const col=node('col');col.style.width=segment.width+'px';group.append(col);}
-      grid.append(group);
-    }
-    {
-      const corner = node("th", "↖", "row-corner"); corner.scope = "col"; corner.title = "选择当前页全部行和列"; corner.setAttribute("aria-label", "选择当前页全部单元格");
-      corner.onclick = () => { state.selected = new Set(state.records.map((_record, index) => index)); state.selectedColumns = new Set(columns.map((column) => column.eng_name)); state.selectedCells.clear(); state.rowAnchor = state.records.length - 1; state.columnAnchor = columns.length - 1; state.cellAnchor = null; paintGridSelection(); };
-      head.append(corner);
-    }
-    viewport.segments.forEach(({column,index:columnIndex,gap,width}) => {
-      if(gap){const spacer=node('th',null,'virtual-gap');spacer.style.width=width+'px';spacer.setAttribute('aria-hidden','true');head.append(spacer);return;}
-      const header = node("th", null, `column-header${state.selectedColumns.has(column.eng_name) ? " selected-header" : ""}`); header.scope = "col"; header.dataset.gridColumn = column.eng_name; header.tabIndex = 0;
-      gridColumnEntries.push({ element: header, field: column.eng_name });
-      const sorted = state.lastQuery?.order?.column === column.eng_name, direction = state.lastQuery?.order?.direction;
-      const sorting = sorted ? direction === "ASC" ? " ↑" : " ↓" : "";
-      header.setAttribute("aria-sort", sorted ? direction === "ASC" ? "ascending" : "descending" : "none");
-      header.title = `${chineseName(column)} / ${column.eng_name} · ${displayColumnType(column)}；单击选择，双击排序`;
-      header.append(node("span", (el("chinese-columns").checked ? chineseName(column) : column.eng_name) + sorting));
-      if (column.primary_key) {
-        markFrozenKey(header, columnIndex);
-        header.append(node("span", "KEY", "key-column-badge"));
+    // 虚拟滚动纯垂直移动时复用已有 <table> 与 <thead>，仅增量替换 <tbody> 消除表头重建与回流抖动。
+    const reuseTable = Boolean(
+      windowOnly && virtualGrid.active && existingGrid &&
+      existingGrid.dataset.columnSignature === viewport.columnSignature
+    );
+    gridCells = new WeakMap(); gridCellEntries = []; gridRowEntries = [];
+    if (!reuseTable) gridColumnEntries = [];
+    let grid, body;
+    if (reuseTable) {
+      grid = existingGrid;
+      body = grid.querySelector("tbody");
+      body.replaceChildren();
+    } else {
+      grid = node("table");
+      const head = node("tr"), thead = node("thead");
+      grid.setAttribute("aria-label", state.table || "查询结果");
+      grid.classList.toggle('virtual-grid',virtualGrid.active);
+      grid.dataset.columnSignature = viewport.columnSignature;
+      grid.setAttribute('aria-rowcount',String(state.records.length+1));grid.setAttribute('aria-colcount',String(columns.length+1));
+      if(virtualGrid.active){
+        grid.style.width=(36+columns.length*virtualGrid.columnWidth)+'px';
+        const group=node('colgroup'),corner=node('col');corner.style.width='36px';group.append(corner);
+        for(const segment of viewport.segments){const col=node('col');col.style.width=segment.width+'px';group.append(col);}
+        grid.append(group);
       }
-      header.onclick = (event) => selectGridColumn(columnIndex, event);
-      header.oncontextmenu = (event) => {
-        if (!state.selectedColumns.has(column.eng_name)) selectGridColumn(columnIndex, {});
-        openRowContextMenu(event, null, null);
-      };
-      header.ondblclick = () => run(async () => {
-        await queryRows({ reset: true, order: { column: column.eng_name, direction: sorted && direction === "ASC" ? "DESC" : "ASC" } });
+      {
+        const corner = node("th", "↖", "row-corner"); corner.scope = "col"; corner.title = "选择当前页全部行和列"; corner.setAttribute("aria-label", "选择当前页全部单元格");
+        corner.onclick = () => { state.selected = new Set(state.records.map((_record, index) => index)); state.selectedColumns = new Set(columns.map((column) => column.eng_name)); state.selectedCells.clear(); state.rowAnchor = state.records.length - 1; state.columnAnchor = columns.length - 1; state.cellAnchor = null; paintGridSelection(); };
+        head.append(corner);
+      }
+      viewport.segments.forEach(({column,index:columnIndex,gap,width}) => {
+        if(gap){const spacer=node('th',null,'virtual-gap');spacer.style.width=width+'px';spacer.setAttribute('aria-hidden','true');head.append(spacer);return;}
+        const header = node("th", null, `column-header${state.selectedColumns.has(column.eng_name) ? " selected-header" : ""}${isNumericColumn(column) ? " is-numeric" : ""}`); header.scope = "col"; header.dataset.gridColumn = column.eng_name; header.tabIndex = 0;
+        gridColumnEntries.push({ element: header, field: column.eng_name });
+        const sorted = state.lastQuery?.order?.column === column.eng_name, direction = state.lastQuery?.order?.direction;
+        const sorting = sorted ? direction === "ASC" ? " ↑" : " ↓" : "";
+        header.setAttribute("aria-sort", sorted ? direction === "ASC" ? "ascending" : "descending" : "none");
+        header.title = `${chineseName(column)} / ${column.eng_name} · ${displayColumnType(column)}；单击选择，双击排序`;
+        header.append(node("span", (el("chinese-columns").checked ? chineseName(column) : column.eng_name) + sorting));
+        if (column.primary_key) {
+          markFrozenKey(header, columnIndex);
+          header.append(node("span", "KEY", "key-column-badge"));
+        }
+        header.onclick = (event) => selectGridColumn(columnIndex, event);
+        header.oncontextmenu = (event) => {
+          if (!state.selectedColumns.has(column.eng_name)) selectGridColumn(columnIndex, {});
+          openRowContextMenu(event, null, null);
+        };
+        header.ondblclick = () => run(async () => {
+          // 列头双击按 升序 -> 降序 -> 取消排序 三态循环。
+          const nextOrder = !sorted ? { column: column.eng_name, direction: "ASC" }
+            : direction === "ASC" ? { column: column.eng_name, direction: "DESC" } : null;
+          await queryRows({ reset: true, order: nextOrder });
+        });
+        if (el("chinese-columns").checked && chineseName(column) !== column.eng_name) header.append(node("small", column.eng_name)); head.append(header);
       });
-      if (el("chinese-columns").checked && chineseName(column) !== column.eng_name) header.append(node("small", column.eng_name)); head.append(header);
-    });
-    thead.append(head); grid.append(thead); const body = node("tbody");
+      thead.append(head); grid.append(thead);
+      body = node("tbody");
+    }
     const spacerRow=height=>{if(!height)return;const row=node('tr',null,'virtual-spacer'),cell=node('td');cell.colSpan=viewport.segments.length+1;cell.style.height=height+'px';row.setAttribute('aria-hidden','true');row.append(cell);body.append(row);};
     spacerRow(viewport.first*virtualGrid.rowHeight);
     state.records.slice(viewport.first,viewport.last).forEach((record, offset) => {
@@ -1233,12 +1565,14 @@ function renderGrid(windowOnly=false) {
     });
     spacerRow((state.records.length-viewport.last)*virtualGrid.rowHeight);
     if (!state.records.length) { const row = node("tr"), cell = node("td", "当前 SQL 查询没有记录。", "empty"); cell.colSpan = columns.length + 1; row.append(cell); body.append(row); }
-    grid.append(body); target.replaceChildren(grid);
-    if(virtualGrid.active){for(let i=0;i<viewport.keys;i++)grid.style.setProperty(`--key-left-${i}`,`${36+i*virtualGrid.columnWidth}px`);}
-    else{frozenKeyObserver.observe(grid);grid.querySelectorAll("thead .key-column, .row-corner").forEach((header) => frozenKeyObserver.observe(header));updateFrozenKeyOffsets();}
+    if (!reuseTable) {
+      grid.append(body); target.replaceChildren(grid);
+      if(virtualGrid.active){for(let i=0;i<viewport.keys;i++)grid.style.setProperty(`--key-left-${i}`,`${36+i*virtualGrid.columnWidth}px`);}
+      else{frozenKeyObserver.observe(grid);grid.querySelectorAll("thead .key-column, .row-corner").forEach((header) => frozenKeyObserver.observe(header));updateFrozenKeyOffsets();}
+    }
   }
   paintGridSelection();
-  target.scrollTop = scrollTop; target.scrollLeft = scrollLeft;
+  if (!windowOnly) { target.scrollTop = scrollTop; target.scrollLeft = scrollLeft; }
   if(windowOnly&&focused)gridCells.get(state.records[focused.row])?.get(focused.field)?.focus({preventScroll:true});
   if(!windowOnly){updateEditActions();updateGridPager();}
 }
@@ -1277,9 +1611,19 @@ function openAddRows(record, index) {
   const remaining = 500 - draftRecords().length;
   if (remaining <= 0) throw new Error("一次最多暂存 500 条新增记录，请先保存或撤销");
   state.addRowIndex = record ? index + 1 : null;
-  el("add-row-count").value = "1"; el("add-row-count").max = String(remaining);
+  const preset = el("add-row-preset"), countInput = el("add-row-count");
+  countInput.max = String(remaining);
+  if (preset) {
+    for (const option of preset.options) {
+      if (option.value !== "custom") option.disabled = Number(option.value) > remaining;
+    }
+    syncPresetControl(preset, countInput, 1);
+  } else {
+    countInput.value = "1";
+  }
   el("add-rows-error").textContent = ""; el("add-rows-dialog").showModal();
-  el("add-row-count").focus(); el("add-row-count").select();
+  if (preset && !preset.hidden) preset.focus({ preventScroll: true });
+  else { countInput.focus(); countInput.select(); }
 }
 function selectedRowIndexes(record, index) {
   const indexes = state.selected.size ? [...state.selected] : state.selectedCells.size
@@ -1358,36 +1702,138 @@ async function addBlankRows() {
 function fieldDefault(column) {
   return structuredClone(column.default_value ?? null);
 }
+const ROW_NULL_SENTINEL = "__RTDB_NULL__";
+function createFieldEditorControl(column, initialValue, { allowNullOption = false } = {}) {
+  const kind = column.data_type.toLowerCase();
+  const menu = columnMenuOptions(column);
+  const isSelect = boolTypes.has(kind) || menu.length > 0;
+  const input = node(isSelect ? "select" : objectTypes.has(kind) ? "textarea" : "input");
+  input.dataset.field = column.eng_name;
+  input.setAttribute("aria-label", `字段 ${column.eng_name}`);
+  if (isSelect) {
+    if (allowNullOption) input.append(new Option("（空值 NULL）", ROW_NULL_SENTINEL));
+    if (boolTypes.has(kind)) {
+      input.append(new Option("是 / true", "true"), new Option("否 / false", "false"));
+    } else {
+      const options = new Set(menu);
+      if (initialValue != null && String(initialValue) !== "") options.add(String(initialValue));
+      for (const item of options) input.append(new Option(item, item));
+    }
+    if (initialValue == null) {
+      input.value = allowNullOption ? ROW_NULL_SENTINEL : (input.options[0]?.value ?? "");
+    } else {
+      const text = String(initialValue);
+      if (![...input.options].some((option) => option.value === text)) input.append(new Option(`${text}（当前）`, text));
+      input.value = text;
+    }
+  } else {
+    input.value = initialValue == null ? "" : objectTypes.has(kind) ? JSON.stringify(initialValue) : String(initialValue);
+  }
+  return { input, isSelect };
+}
+function parseDialogFieldValue(column, input, nullable) {
+  const kind = column.data_type.toLowerCase();
+  if (nullable?.checked || (input.tagName === "SELECT" && input.value === ROW_NULL_SENTINEL)) return null;
+  const value = input.value;
+  if (integerTypes.has(kind)) { if (!/^-?\d+$/.test(value.trim())) throw new Error(`${column.eng_name} 必须是整数`); return value.trim(); }
+  if (floatTypes.has(kind)) { if (!value.trim() || !Number.isFinite(Number(value))) throw new Error(`${column.eng_name} 必须是有限数值`); return Number(value); }
+  if (boolTypes.has(kind)) return value === "true";
+  if (objectTypes.has(kind)) return JSON.parse(value);
+  return value;
+}
+function batchEditableColumns() {
+  return (state.dialog?.definition?.columns || []).filter((column) => !column.primary_key);
+}
+function refreshBatchFieldPicker() {
+  const select = el("batch-field-select"), addBtn = el("batch-add-field");
+  if (!select) return;
+  const used = new Set([...el("batch-fields-list").querySelectorAll(".batch-field-row")].map((row) => row.dataset.batchField));
+  const available = batchEditableColumns().filter((column) => !used.has(column.eng_name));
+  select.replaceChildren(new Option(available.length ? "选择要修改的字段…" : "已添加全部可编辑字段", ""));
+  for (const column of available) select.append(new Option(`${chineseName(column)} / ${column.eng_name}`, column.eng_name));
+  select.disabled = !available.length;
+  if (addBtn) addBtn.disabled = !available.length;
+}
+function addBatchFieldRow(fieldName, initialValue = undefined) {
+  const column = batchEditableColumns().find((item) => item.eng_name === fieldName);
+  if (!column) return;
+  const list = el("batch-fields-list");
+  if (list.querySelector(`.batch-field-row[data-batch-field="${CSS.escape(fieldName)}"]`)) return;
+  const row = node("div", null, "batch-field-row");
+  row.dataset.batchField = fieldName;
+  const header = node("div", null, "batch-field-head");
+  header.append(node("strong", `${chineseName(column)} / ${column.eng_name}`));
+  const remove = action("×", () => { row.remove(); refreshBatchFieldPicker(); }, "icon");
+  remove.setAttribute("aria-label", `移除字段 ${column.eng_name}`);
+  header.append(remove);
+  const value = initialValue === undefined ? fieldDefault(column) : initialValue;
+  const { input, isSelect } = createFieldEditorControl(column, value, { allowNullOption: true });
+  row.append(header, input);
+  if (!isSelect) {
+    const nullLabel = node("label", null, "check-label"), checkbox = node("input");
+    checkbox.type = "checkbox"; checkbox.dataset.nullField = column.eng_name;
+    checkbox.checked = value == null; input.disabled = checkbox.checked;
+    checkbox.onchange = () => { input.disabled = checkbox.checked; };
+    nullLabel.append(checkbox, node("span", "空值 NULL"));
+    row.append(nullLabel);
+  }
+  list.append(row);
+  refreshBatchFieldPicker();
+  if (!input.disabled) input.focus({ preventScroll: true });
+}
+function buildBatchFields(values = {}) {
+  const list = el("batch-fields-list");
+  list.replaceChildren();
+  for (const [field, value] of Object.entries(values || {})) {
+    addBatchFieldRow(field, value);
+  }
+  refreshBatchFieldPicker();
+}
+function readBatchFields() {
+  const result = {};
+  const columns = new Map(batchEditableColumns().map((column) => [column.eng_name, column]));
+  for (const row of el("batch-fields-list").querySelectorAll(".batch-field-row")) {
+    const field = row.dataset.batchField, column = columns.get(field);
+    if (!column) continue;
+    const input = row.querySelector("[data-field]"), nullable = row.querySelector("[data-null-field]");
+    result[field] = parseDialogFieldValue(column, input, nullable);
+  }
+  if (!Object.keys(result).length) throw new Error("请至少添加一个要修改的字段");
+  return result;
+}
 function openRow(mode, record = null) {
   requireTable();
   if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改");
   if (mode !== "add" && !state.editable) throw new Error("请使用 SQL 修改，或重置后选择原始记录");
-  const rows = mode === "batch" ? [...state.selected].map((index) => state.records[index]) : record ? [record] : [];
-  if (mode === "batch" && !rows.length) throw new Error("请先选择记录");
+  const rows = mode === "batch"
+    ? selectedRowIndexes(record, null).map((index) => state.records[index]).filter((item) => item && !item.draftId)
+    : record ? [record] : [];
+  if (mode === "batch" && !rows.length) throw new Error("请先选择已保存的记录");
   state.dialog = { mode, table: state.table, records: structuredClone(rows), definition: structuredClone(state.definition) };
   el("row-dialog-title").textContent = ({ add: "新增记录", edit: "编辑记录", copy: "复制记录", batch: "批量修改" })[mode];
-  el("row-hint").textContent = mode === "batch" ? `修改 ${rows.length} 条选中记录。JSON 只填写需要修改的非主键字段。` : mode === "copy" ? "请设置新的主键，原记录保持不变。" : "字段按定义类型校验；主键不可为空。";
+  el("row-hint").textContent = mode === "batch" ? `修改 ${rows.length} 条选中记录，选择要统一更新的字段。` : mode === "copy" ? "请设置新的主键，原记录保持不变。" : "字段按定义类型校验；主键不可为空。";
   el("row-error").textContent = "";
   const values = mode === "batch" ? {} : record ? structuredClone(record.row) : Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, fieldDefault(column)]));
-  el("row-editor").value = JSON.stringify(values, null, 2); el("json-mode").checked = mode === "batch"; el("json-mode").disabled = mode === "batch";
-  buildRowFields(values); el("row-fields").hidden = mode === "batch"; el("row-editor").hidden = mode !== "batch"; el("row-dialog").showModal();
+  el("row-editor").value = JSON.stringify(values, null, 2);
+  el("json-mode").checked = false; el("json-mode").disabled = false;
+  if (mode === "batch") {
+    buildBatchFields(values);
+    el("row-fields").hidden = true; el("batch-fields-panel").hidden = false; el("row-editor").hidden = true;
+  } else {
+    buildRowFields(values);
+    el("row-fields").hidden = false; el("batch-fields-panel").hidden = true; el("row-editor").hidden = true;
+  }
+  el("row-dialog").showModal();
 }
 function buildRowFields(values) {
   el("row-fields").replaceChildren();
   for (const column of state.dialog.definition.columns) {
-    const kind = column.data_type.toLowerCase(), label = node("label", `${chineseName(column)} / ${column.eng_name}${column.primary_key ? " · 主键" : ""}`);
-    const menu = column.disp_menu ? column.disp_menu.split("|").filter(Boolean) : [];
-    const input = node(boolTypes.has(kind) || menu.length ? "select" : objectTypes.has(kind) ? "textarea" : "input");
-    input.dataset.field = column.eng_name; input.setAttribute("aria-label", `字段 ${column.eng_name}`);
-    if (boolTypes.has(kind)) input.append(new Option("是 / true", "true"), new Option("否 / false", "false"));
-    else if (menu.length) {
-      const options = new Set([...menu, values[column.eng_name] == null ? "" : String(values[column.eng_name])]);
-      for (const item of options) input.append(new Option(item, item));
-    }
-    input.value = values[column.eng_name] == null ? "" : objectTypes.has(kind) ? JSON.stringify(values[column.eng_name]) : String(values[column.eng_name]);
+    const label = node("label", `${chineseName(column)} / ${column.eng_name}${column.primary_key ? " · 主键" : ""}`);
+    const allowNullOption = !column.primary_key;
+    const { input, isSelect } = createFieldEditorControl(column, values[column.eng_name], { allowNullOption });
     input.disabled = state.dialog.mode === "edit" && column.primary_key;
     label.append(input);
-    if (!column.primary_key) {
+    if (!column.primary_key && !isSelect) {
       const nullLabel = node("label", null, "check-label"), checkbox = node("input"); checkbox.type = "checkbox";
       checkbox.dataset.nullField = column.eng_name; checkbox.checked = values[column.eng_name] == null; input.disabled = checkbox.checked;
       checkbox.onchange = () => { input.disabled = checkbox.checked; }; nullLabel.append(checkbox, node("span", "空值 NULL")); label.append(nullLabel);
@@ -1396,17 +1842,12 @@ function buildRowFields(values) {
   }
 }
 function readRowFields() {
+  if (state.dialog?.mode === "batch") return readBatchFields();
   const result = {};
   for (const column of state.dialog.definition.columns) {
     const input = [...el("row-fields").querySelectorAll("[data-field]")].find((field) => field.dataset.field === column.eng_name);
     const nullable = [...el("row-fields").querySelectorAll("[data-null-field]")].find((field) => field.dataset.nullField === column.eng_name);
-    const kind = column.data_type.toLowerCase(); let value = input.value;
-    if (nullable?.checked) value = null;
-    else if (integerTypes.has(kind)) { if (!/^-?\d+$/.test(value.trim())) throw new Error(`${column.eng_name} 必须是整数`); value = value.trim(); }
-    else if (floatTypes.has(kind)) { if (!value.trim() || !Number.isFinite(Number(value))) throw new Error(`${column.eng_name} 必须是有限数值`); value = Number(value); }
-    else if (boolTypes.has(kind)) value = value === "true";
-    else if (objectTypes.has(kind)) value = JSON.parse(value);
-    result[column.eng_name] = value;
+    result[column.eng_name] = parseDialogFieldValue(column, input, nullable);
   }
   return result;
 }
@@ -1495,14 +1936,19 @@ function schemaFormValue(withMeta = false) {
   return { head, ...(state.schemaIndexes!=null?{indexes:state.schemaIndexes.map(fields=>fields.map(name=>renames[name]||name))}:{}),
     columns: [...el("schema-fields").querySelectorAll("tbody tr")].map((row) => {
       const column = Object.fromEntries([...row.querySelectorAll("[data-property]")].map((input) => [input.dataset.property, input.type === "checkbox" ? input.checked : input.value]));
+      const defaultControl = row.querySelector('[data-property="default_value"]');
+      const isSelectDefault = defaultControl?.tagName === "SELECT";
       column.chn_name = chineseName(column);
       const rawDefault = column.default_value;
       delete column.default_value;
       if (rawDefault.trim()) {
         try {
           const kind = columnKind(column);
-          const value = !integerTypes.has(kind) && !floatTypes.has(kind) && !boolTypes.has(kind) && !objectTypes.has(kind) && rawDefault.trim().startsWith('"')
-            ? JSON.parse(rawDefault) : parseCellValue(column, rawDefault);
+          const isStringKind = !integerTypes.has(kind) && !floatTypes.has(kind) && !boolTypes.has(kind) && !objectTypes.has(kind);
+          const value = isSelectDefault && isStringKind
+            ? rawDefault
+            : isStringKind && rawDefault.trim().startsWith('"')
+              ? JSON.parse(rawDefault) : parseCellValue(column, rawDefault);
           if (column.primary_key && (value == null || typeof value === "string" && !value.trim())) throw new Error("主键默认值不能为空");
           column.default_value = value;
         } catch (error) { throw new Error(`${column.eng_name} 默认值：${error.message}`); }
@@ -1511,7 +1957,7 @@ function schemaFormValue(withMeta = false) {
       return column;
     }) };
 }
-function schemaChanged() { state.schemaDirty = true; localDrafts.schedule(); }
+function schemaChanged() { state.schemaDirty = true; localDrafts.schedule(); updateAutoRefreshStatus(); }
 function schemaDefaultDisplayType(kind) {
   const type = String(kind || "str").toLowerCase();
   return integerTypes.has(type) ? "整数" : floatTypes.has(type) ? "浮点数" : "文本";
@@ -1532,14 +1978,21 @@ function updateSchemaLocks() {
   for (const id of ["new-table", "save-schema", "add-column", "schema-name", "schema-label", "delete-schema"]) {
     el(id).disabled = !state.database || readOnly;
   }
+  const deleteSchemaButton = el("delete-schema");
+  if (!deleteSchemaButton.disabled && (!state.table || state.tableTotal > 0)) {
+    deleteSchemaButton.disabled = true;
+    deleteSchemaButton.title = !state.table ? "请先选择已有表" : "仅允许删除空表结构，当前表有数据";
+  } else {
+    deleteSchemaButton.title = "";
+  }
   const hint = el("schema-hint");
   if (readOnly) hint.textContent = "当前数据库只读。";
   else if (isNativeDatabase() && state.table) {
     hint.textContent = "可修改表名和显示信息、增删或重命名字段。已有字段的类型、主键和默认值由原表定义。";
   } else if (state.table) {
-    hint.textContent = "表名和字段属性均可修改；下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。";
+    hint.textContent = "下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。";
   } else {
-    hint.textContent = "下拉框和主键单击修改，文本字段双击后编辑；默认值留空表示未设置，空字符串填 \"\"，对象/数组填 JSON。";
+    hint.textContent = "下拉框和主键单击修改，文本字段双击后编辑；默认值留空不设置，空字符串填 \"\"。";
   }
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
@@ -1551,6 +2004,7 @@ function updateSchemaLocks() {
     }
     row.classList.toggle("schema-editing", editing);
   }
+  updateRecordsToolbar();
 }
 function renderSchema(definition) {
   const originalIndexNames=Object.fromEntries(definition.columns.map(column=>[column.eng_name,column.__original_name||column.eng_name]));
@@ -1561,13 +2015,78 @@ function renderSchema(definition) {
   thead.append(head); grid.append(thead);
   for (const column of definition.columns) {
     const row = node("tr"); row.addEventListener("contextmenu", (event) => openSchemaContextMenu(event, row));
+    // 保持文本格双击编辑、单击选中，同时允许 Tab 在同一编辑行内切换而不失焦锁死。
+    row.addEventListener("focusout", (event) => {
+      if (row.dataset.editing === "true" && !row.contains(event.relatedTarget)) {
+        row.dataset.editing = "false";
+        updateSchemaLocks();
+      }
+    });
     let previousKind = column.data_type;
     const defaultDisplay = schemaDefaultDisplayType(previousKind);
     const displayType = !column.disp_type || (column.disp_type === "数字" && defaultDisplay !== "文本") ? defaultDisplay : column.disp_type;
     const originalName = column.__original_name || (state.table && state.definition?.columns.some((item) => item.eng_name === column.eng_name) ? column.eng_name : "");
     if (originalName) row.dataset.originalName = originalName;
+    let defaultCell = null;
+    const initialDefaultRaw = column.default_value == null ? "" : cellText(column.default_value);
+    const initialDefaultText = column.default_value == null ? "" : typeof column.default_value === "string" && !integerTypes.has(columnKind(column)) ? JSON.stringify(column.default_value) : cellText(column.default_value);
+    const renderDefaultControl = (rawValue, isInitial = false) => {
+      if (!defaultCell) return;
+      const typeValue = row.querySelector('[data-property="data_type"]')?.value || column.data_type;
+      const menuRaw = row.querySelector('[data-property="disp_menu"]')?.value ?? column.disp_menu ?? "";
+      const kind = String(typeValue || "str").toLowerCase();
+      const menu = menuRaw ? menuRaw.split("|").map((item) => item.trim()).filter(Boolean) : [];
+      const useSelect = boolTypes.has(kind) || menu.length > 0;
+      const existing = defaultCell.querySelector('[data-property="default_value"]');
+      const originalValue = existing ? existing.dataset.originalValue : (useSelect ? initialDefaultRaw : initialDefaultText);
+      const input = node(useSelect ? "select" : "input");
+      input.dataset.property = "default_value";
+      input.setAttribute("aria-label", `${column.eng_name || "新字段"} default_value`);
+      let normalized = rawValue ?? "";
+      if (useSelect && typeof normalized === "string" && normalized.startsWith('"') && normalized.endsWith('"')) {
+        try { normalized = String(JSON.parse(normalized)); } catch { /* 保持原文本 */ }
+      }
+      if (useSelect) {
+        input.append(new Option("未设置", ""));
+        if (boolTypes.has(kind)) {
+          input.append(new Option("true（是）", "true"), new Option("false（否）", "false"));
+        } else {
+          for (const item of menu) input.append(new Option(item, item));
+        }
+        if (normalized !== "" && ![...input.options].some((option) => option.value === normalized)) {
+          input.append(new Option(`${normalized}（当前）`, normalized));
+        }
+        input.value = normalized;
+        defaultCell.title = "单击选择默认值";
+      } else {
+        input.value = isInitial ? initialDefaultText : normalized;
+        input.placeholder = "未设置";
+        defaultCell.title = '双击编辑默认值；留空不设置，空字符串填 ""，对象/数组填 JSON';
+      }
+      input.dataset.originalValue = originalValue;
+      const onDefaultChange = () => {
+        schemaChanged();
+        defaultCell.classList.toggle("schema-modified", String(input.value) !== input.dataset.originalValue);
+      };
+      input.oninput = onDefaultChange; input.onchange = onDefaultChange;
+      defaultCell.replaceChildren(input);
+      defaultCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
+    };
     for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "default_value", "disp_type", "disp_menu"]) {
-      const cell = node("td"), input = node(["data_type", "disp_type"].includes(property) ? "select" : "input"); input.dataset.property = property;
+      const cell = node("td");
+      if (property === "default_value") {
+        defaultCell = cell;
+        cell.ondblclick = (event) => {
+          event.preventDefault(); event.stopPropagation();
+          const currentInput = cell.querySelector('[data-property="default_value"]');
+          if (!currentInput || currentInput.tagName === "SELECT" || isReadOnlyDatabase() || isLockedNativeField(row, property)) return;
+          row.dataset.editing = "true"; updateSchemaLocks(); currentInput.disabled = false; currentInput.focus({ preventScroll: true });
+          if (currentInput.select) currentInput.select();
+        };
+        row.append(cell);
+        continue;
+      }
+      const input = node(["data_type", "disp_type"].includes(property) ? "select" : "input"); input.dataset.property = property;
       const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
       cell.title = directEdit ? "单击修改" : "双击此单元格编辑";
       input.setAttribute("aria-label", `${column.eng_name || "新字段"} ${property}`);
@@ -1579,12 +2098,6 @@ function renderSchema(definition) {
       }
       if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
-      else if (property === "default_value") {
-        const value = column.default_value;
-        input.value = value == null ? "" : typeof value === "string" && !integerTypes.has(columnKind(column)) ? JSON.stringify(value) : cellText(value);
-        input.placeholder = "未设置";
-        cell.title = '双击编辑默认值；留空不设置，空字符串填 ""，对象/数组填 JSON';
-      }
       else input.value = property === "chn_name" ? chineseName(column) : property === "disp_type" ? displayType : column[property] ?? "";
       input.dataset.originalValue = input.type === "checkbox" ? String(input.checked) : input.value;
       const update = () => {
@@ -1596,6 +2109,13 @@ function renderSchema(definition) {
             displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
           }
           previousKind = input.value;
+          const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
+          renderDefaultControl(prevDefault, false);
+          updateSchemaLocks();
+        } else if (property === "disp_menu") {
+          const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
+          renderDefaultControl(prevDefault, false);
+          updateSchemaLocks();
         }
         const current = input.type === "checkbox" ? String(input.checked) : String(input.value);
         cell.classList.toggle("schema-modified", current !== input.dataset.originalValue);
@@ -1607,9 +2127,9 @@ function renderSchema(definition) {
         row.dataset.editing = "true"; updateSchemaLocks(); input.disabled = false; input.focus({ preventScroll: true });
         if (input.select && input.type !== "checkbox") input.select();
       };
-      input.onblur = () => { row.dataset.editing = "false"; updateSchemaLocks(); };
       cell.append(input); row.append(cell);
     }
+    renderDefaultControl(initialDefaultRaw, true);
     body.append(row);
   }
   grid.append(body); el("schema-fields").replaceChildren(grid); updateSchemaLocks();
@@ -1635,7 +2155,7 @@ function openSchemaContextMenu(event, row) {
 }
 function handleSchemaContextAction(actionName) {
   const row = state.schemaContextRow; closeSchemaContextMenu();
-  if(actionName==='indexes'){schemaTools.openIndexes();return;}
+  if(actionName==='indexes'){void run(()=>schemaTools.openIndexes());return;}
   if(actionName==='preview'){void run(()=>schemaTools.preview());return;}
   if(actionName==='query-plan'){void run(()=>schemaTools.queryPlan());return;}
   if (!row || actionName !== "remove-column") return;
@@ -1643,14 +2163,26 @@ function handleSchemaContextAction(actionName) {
 }
 function closeSidebarContextMenu(restoreFocus = false) {
   const menu = el("sidebar-context-menu"), trigger = state.sidebarContextTrigger;
-  menu.hidden = true; state.sidebarContextTrigger = null;
+  menu.hidden = true; state.sidebarContextTrigger = null; state.sidebarContextScope = null;
   if (restoreFocus) (trigger?.isConnected ? trigger : el("table-list")).focus({ preventScroll: true });
 }
-function openSidebarContextMenu(event) {
+function openSidebarContextMenu(event, scope = "tables") {
   event.preventDefault(); event.stopPropagation();
   if (state.busy) return;
-  state.sidebarContextTrigger = event.target.closest("[tabindex]") || el("table-list");
+  state.sidebarContextScope = scope;
+  state.sidebarContextTrigger = event.target.closest("[tabindex]") || el(scope === "fields" ? "field-list" : "table-list");
   const menu = el("sidebar-context-menu");
+  menu.setAttribute("aria-label", scope === "fields" ? "字段操作" : "表索引操作");
+  menu.querySelectorAll("[data-sidebar-scope]").forEach((button) => {
+    button.hidden = button.dataset.sidebarScope !== scope;
+  });
+  menu.querySelectorAll("[data-sidebar-separator]").forEach((separator) => {
+    separator.hidden = separator.dataset.sidebarSeparator !== scope;
+  });
+  const hasFields = state.resultColumns.length > 0;
+  for (const name of ["select-all-fields", "invert-fields", "clear-fields"]) {
+    menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = !hasFields;
+  }
   menu.querySelector('[data-sidebar-action="backup"]').disabled = !state.checkedTables.size;
   const unavailable = !state.database || isReadOnlyDatabase();
   for (const name of ["load-definition", "restore"]) menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = unavailable || isNativeDatabase();
@@ -1660,7 +2192,7 @@ function openSidebarContextMenu(event) {
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
-  (menu.querySelector("button:not(:disabled)") || menu).focus({ preventScroll: true });
+  (menu.querySelector("button:not([hidden]):not(:disabled)") || menu).focus({ preventScroll: true });
 }
 function handleSidebarContextAction(actionName) {
   closeSidebarContextMenu();
@@ -1723,6 +2255,12 @@ function closeSqlHistory() {
   el("sql-history-list").hidden = true; el("sql-editor").setAttribute("aria-expanded", "false");
   el("sql-editor").removeAttribute("aria-activedescendant"); sqlHistoryActive = -1;
 }
+function clearSqlHistory() {
+  state.history = [];
+  try { localStorage.removeItem(sqlHistoryKey()); } catch { /* Optional storage cleanup. */ }
+  closeSqlHistory();
+  notice("已清空当前表 SQL 历史");
+}
 function openSqlHistory(filter = "") {
   const list = el("sql-history-list"), input = el("sql-editor");
   sqlHistoryItems = state.history.filter((item) => item.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -1733,6 +2271,13 @@ function openSqlHistory(filter = "") {
     option.onpointerdown = (event) => event.preventDefault(); list.append(option);
   });
   if (!sqlHistoryItems.length) list.append(node("p", state.history.length ? "没有匹配的历史语句" : "执行成功后，语句会记录在这里", "muted"));
+  if (state.history.length) {
+    const footer = node("div", null, "sql-history-footer");
+    const clearBtn = action("清空历史", clearSqlHistory, "secondary small");
+    clearBtn.onpointerdown = (event) => event.preventDefault();
+    footer.append(clearBtn);
+    list.append(footer);
+  }
   const rect = input.getBoundingClientRect(), below = innerHeight - rect.bottom - 8, above = rect.top - 8;
   list.style.width = `${Math.min(rect.width, innerWidth - 16)}px`;
   list.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - rect.width - 8))}px`;
@@ -1813,7 +2358,7 @@ function chartKeyLabel(record, index) {
   return keys.length ? keys.map(display).join(" / ") : `第 ${state.offset + index + 1} 行`;
 }
 function chartStyle(key, index = 0) {
-  const color = colors[index % colors.length], saved = state.chartStyles.get(key) || {};
+  const palette = currentChartPalette(), color = palette[index % palette.length], saved = state.chartStyles.get(key) || {};
   return { name: "", lineColor: color, lineStyle: "solid", lineWidth: 2,
     pointColor: color, pointShape: "circle", pointSize: 3.5, ...saved };
 }
@@ -1889,11 +2434,12 @@ function addSelectionCurves(selection, axis) {
 }
 function buildChartModel() {
   if (state.chartCleared || !state.chartPinned) return { mode: state.chartMode, labels: [], series: [] };
+  const columnMap = new Map(state.resultColumns.map((column) => [column.eng_name, column]));
   const series = state.chartSeries.map((item, index) => {
-    const field = state.resultColumns.find((column) => column.eng_name === item.field);
+    const field = columnMap.get(item.field);
     const style = chartStyle(item.key, index);
     return { key: item.key, name: style.name || (field ? chartColumnLabel(field) : item.name), style, axis: state.chartAxes.get(item.key) || "left", color: style.lineColor, mode: item.mode, points: preferFloatChartPoints(item.points.map((point) => {
-      const column = state.resultColumns.find((candidate) => candidate.eng_name === point.field);
+      const column = columnMap.get(point.field);
       const label = item.mode === "rows" && column ? chartColumnLabel(column) : point.record ? chartKeyLabel(point.record, point.rowIndex) : point.label;
       return { ...point, column: column || point.column, label, value: point.selected && point.record && column ? chartNumber(point.record.row[point.field]) : null };
     })) };
@@ -1988,9 +2534,11 @@ function chartMinimumHeight() {
 function drawChartTitle(context, width, height) {
   if (!state.chartTitle) return;
   const settings = state.chartTitleSettings, [vertical, align] = settings.position.split("-"), lineHeight = Math.ceil(settings.fontSize * 1.3);
+  const theme = chartThemeTokens();
+  const titleFill = isDarkTheme() && settings.color.toLowerCase() === chartTitleDefaults.color.toLowerCase() ? theme.titleColor : settings.color;
   context.save();
   context.font = `${settings.fontStyle.includes("italic") ? "italic " : ""}${settings.fontStyle.includes("bold") ? "bold " : ""}${settings.fontSize}px "${settings.fontFamily}", "Microsoft YaHei", sans-serif`;
-  context.fillStyle = settings.color; context.textAlign = align; context.textBaseline = "middle";
+  context.fillStyle = titleFill; context.textAlign = align; context.textBaseline = "middle";
   const metrics = context.measureText(state.chartTitle), availableWidth = Math.max(1, width - 24);
   const scale = Math.min(1, availableWidth / Math.max(1, metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight));
   const anchor = align === "left" ? 12 : align === "right" ? width - 12 : width / 2;
@@ -2011,7 +2559,7 @@ function drawChart() {
   const visibleSeries = model.series.filter((series) => !state.chartHidden.has(series.key));
   const values = visibleSeries.flatMap((series) => series.points.map((point) => point.value)).filter(Number.isFinite);
   const available = visibleSeries.length && model.labels.length && values.length;
-  el("chart-empty").textContent = model.series.length && !visibleSeries.length ? "全部曲线已隐藏，点击右上角图例恢复显示。" : "选中表格数据，右键选择“左轴曲线”或“右轴曲线”添加曲线。";
+  el("chart-empty").textContent = model.series.length && !visibleSeries.length ? "全部曲线已隐藏，点击右上角图例恢复显示。" : "右键表格数值选区，选择“左轴曲线”或“右轴曲线”。";
   el("chart-empty").hidden = Boolean(available); canvas.hidden = !available;
   if (!available) { state.chartFrame = null; state.chartHits = []; return; }
   // Keep the chosen font size and a usable plot when a large title needs more height.
@@ -2021,8 +2569,11 @@ function drawChart() {
   const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  const theme = chartThemeTokens(), dark = isDarkTheme();
+  const axisFont = '11px "JetBrains Mono", "Consolas", "Microsoft YaHei", monospace';
+  const uiFont = '11px "Inter", "PingFang SC", "Microsoft YaHei", sans-serif';
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.fillStyle = "white"; context.fillRect(0, 0, width, height); context.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
+  context.font = uiFont;
   const titleSpace = chartTitleSpace();
   const titleAtTop = state.chartTitleSettings.position.startsWith("top-");
   const left = 68, right = 68, top = 30 + (titleAtTop ? titleSpace : 0), bottom = 46 + (titleAtTop ? 0 : titleSpace), plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
@@ -2032,41 +2583,102 @@ function drawChart() {
   const pointX = (index) => left + index / Math.max(1, model.labels.length - 1) * plotWidth;
   const pointY = (value, axis) => chartY(value, ranges[axis] || ranges.left, top, plotHeight);
   state.chartFrame = { model: { ...model, series: visibleSeries }, labels: model.labels, left, right, top, bottom, plotWidth, plotHeight, width, height, ranges, xAt: pointX, yAt: pointY };
-  context.strokeStyle = "#e8edf4"; context.lineWidth = 1;
-  for (let tick = 0; tick <= 5; tick++) {
-    const value = ranges.left.min + (ranges.left.max - ranges.left.min) * tick / 5, y = pointY(value, "left");
-    if (state.chartAxisSettings.left.showGrid !== false && state.chartAxisSettings.right.showGrid !== false) { context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); }
-    context.fillStyle = "#718198"; context.textAlign = "right"; context.fillText(Number(value.toPrecision(6)).toString(), left - 9, y + 4);
-    if (ranges.right) { const rightValue = ranges.right.min + (ranges.right.max - ranges.right.min) * tick / 5; context.textAlign = "left"; context.fillText(Number(rightValue.toPrecision(6)).toString(), width - right + 9, y + 4); }
-  }
-  context.strokeStyle = "#b8c5d5"; context.beginPath(); context.moveTo(left, top); context.lineTo(left, height - bottom); context.lineTo(width - right, height - bottom); context.lineTo(width - right, top); context.stroke();
-  context.fillStyle = "#6e7f95"; context.textAlign = "center";
-  const labelStep = Math.max(1, Math.round(Number(state.chartAxisSettings.x.labelStep) || 1), Math.ceil(model.labels.length / Math.max(1, plotWidth / 80)));
-  const ticks = [...new Set([...Array.from({ length: model.labels.length }, (_unused, index) => index).filter((index) => index % labelStep === 0), Math.max(0, model.labels.length - 1)])];
-  ticks.forEach((index) => context.fillText(String(model.labels[index]).slice(0, 18), pointX(index), height - bottom + 26));
-  context.textAlign = "center"; if (state.chartAxisSettings.x.title) context.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - bottom + 42);
-  drawChartTitle(context, width, height);
-  context.textAlign = "left"; context.fillText(state.chartAxisSettings.left.title || "左轴", 7, top - 12); context.textAlign = "right"; context.fillText(state.chartAxisSettings.right.title || "右轴", width - 7, top - 12);
-  state.chartHits = [];
-  visibleSeries.forEach((series, seriesIndex) => {
-    const style = series.style || chartStyle(series.key, seriesIndex);
-    context.strokeStyle = style.lineColor || series.color; context.fillStyle = style.pointColor || style.lineColor || series.color; context.lineWidth = Math.max(1, Number(style.lineWidth) || 2); context.setLineDash(chartLineDash(style)); context.beginPath(); let connected = false;
-    series.points.forEach((point, index) => {
-      if (!Number.isFinite(point.value)) { connected = false; return; }
-      const x = pointX(index), y = pointY(point.value, series.axis); if (connected) context.lineTo(x, y); else context.moveTo(x, y); connected = true;
-      state.chartHits.push({ x, y, point, seriesKey: series.key, seriesIndex, axis: series.axis, index });
+  // 静态底图层（坐标轴、虚线水平网格、折线、数据点、标题）离屏缓存，游标移动时直接贴图零重绘。
+  const staticKey = JSON.stringify([
+    dark, pixelWidth, pixelHeight, ratio, state.chartTitle, state.chartTitleSettings, state.chartAxisSettings,
+    ranges, model.labels,
+    visibleSeries.map((series) => [series.key, series.axis, series.style, series.points.map((point) => point.value)])
+  ]);
+  if (!chartStaticCanvas) chartStaticCanvas = document.createElement("canvas");
+  if (staticKey !== chartStaticKey || chartStaticCanvas.width !== pixelWidth || chartStaticCanvas.height !== pixelHeight) {
+    chartStaticCanvas.width = pixelWidth;
+    chartStaticCanvas.height = pixelHeight;
+    const offscreen = chartStaticCanvas.getContext("2d");
+    offscreen.setTransform(ratio, 0, 0, ratio, 0, 0);
+    offscreen.fillStyle = theme.canvasBg; offscreen.fillRect(0, 0, width, height);
+    offscreen.font = axisFont;
+    offscreen.strokeStyle = theme.gridLine; offscreen.lineWidth = 1;
+    const hasLeftAxis = visibleSeries.some((series) => series.axis === "left");
+    const hasRightAxis = visibleSeries.some((series) => series.axis === "right");
+    const showHorizontalGrid = (hasLeftAxis && state.chartAxisSettings.left.showGrid !== false) ||
+      (hasRightAxis && state.chartAxisSettings.right.showGrid !== false);
+    for (let tick = 0; tick <= 5; tick++) {
+      const value = ranges.left.min + (ranges.left.max - ranges.left.min) * tick / 5, y = pointY(value, "left");
+      if (showHorizontalGrid) {
+        offscreen.save();
+        offscreen.setLineDash([3, 3]);
+        offscreen.beginPath(); offscreen.moveTo(left, y); offscreen.lineTo(width - right, y); offscreen.stroke();
+        offscreen.restore();
+      }
+      offscreen.fillStyle = theme.axisText; offscreen.textAlign = "right"; offscreen.fillText(Number(value.toPrecision(6)).toString(), left - 9, y + 4);
+      if (ranges.right) { const rightValue = ranges.right.min + (ranges.right.max - ranges.right.min) * tick / 5; offscreen.textAlign = "left"; offscreen.fillText(Number(rightValue.toPrecision(6)).toString(), width - right + 9, y + 4); }
+    }
+    offscreen.strokeStyle = theme.axisLine; offscreen.beginPath(); offscreen.moveTo(left, top); offscreen.lineTo(left, height - bottom); offscreen.lineTo(width - right, height - bottom); offscreen.lineTo(width - right, top); offscreen.stroke();
+    offscreen.fillStyle = theme.axisText; offscreen.textAlign = "center";
+    const labelStep = Math.max(1, Math.round(Number(state.chartAxisSettings.x.labelStep) || 1), Math.ceil(model.labels.length / Math.max(1, plotWidth / 80)));
+    const ticks = [...new Set([...Array.from({ length: model.labels.length }, (_unused, index) => index).filter((index) => index % labelStep === 0), Math.max(0, model.labels.length - 1)])];
+    ticks.forEach((index) => offscreen.fillText(String(model.labels[index]).slice(0, 18), pointX(index), height - bottom + 24));
+    offscreen.font = uiFont;
+    offscreen.textAlign = "center"; if (state.chartAxisSettings.x.title) offscreen.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - bottom + 40);
+    drawChartTitle(offscreen, width, height);
+    offscreen.fillStyle = theme.axisText;
+    offscreen.textAlign = "left"; offscreen.fillText(state.chartAxisSettings.left.title || "左轴", 8, top - 12);
+    offscreen.textAlign = "right"; offscreen.fillText(state.chartAxisSettings.right.title || "右轴", width - 8, top - 12);
+    chartStaticHits = [];
+    visibleSeries.forEach((series, seriesIndex) => {
+      const style = series.style || chartStyle(series.key, seriesIndex);
+      offscreen.strokeStyle = style.lineColor || series.color; offscreen.fillStyle = style.pointColor || style.lineColor || series.color; offscreen.lineWidth = Math.max(1, Number(style.lineWidth) || 2); offscreen.setLineDash(chartLineDash(style)); offscreen.beginPath(); let connected = false;
+      series.points.forEach((point, index) => {
+        if (!Number.isFinite(point.value)) { connected = false; return; }
+        const x = pointX(index), y = pointY(point.value, series.axis); if (connected) offscreen.lineTo(x, y); else offscreen.moveTo(x, y); connected = true;
+        chartStaticHits.push({ x, y, point, seriesKey: series.key, seriesIndex, axis: series.axis, index });
+      });
+      if (style.lineStyle !== "none") offscreen.stroke();
+      offscreen.setLineDash([]); series.points.forEach((point, index) => { if (!Number.isFinite(point.value)) return; drawChartPoint(offscreen, pointX(index), pointY(point.value, series.axis), style); });
     });
-    if (style.lineStyle !== "none") context.stroke();
-    context.setLineDash([]); series.points.forEach((point, index) => { if (!Number.isFinite(point.value)) return; drawChartPoint(context, pointX(index), pointY(point.value, series.axis), style); });
-  });
+    chartStaticKey = staticKey;
+  }
+  context.drawImage(chartStaticCanvas, 0, 0, width, height);
+  state.chartHits = chartStaticHits;
   const cursor = state.chartCursor;
   if (cursor.index >= 0 && cursor.index < model.labels.length) {
-    const x = pointX(cursor.index); context.strokeStyle = "#536b8b"; context.setLineDash([4, 4]); context.beginPath(); context.moveTo(x, top); context.lineTo(x, height - bottom); context.stroke(); context.setLineDash([]);
+    const x = pointX(cursor.index);
+    context.strokeStyle = theme.cursorLine; context.setLineDash([4, 4]); context.beginPath(); context.moveTo(x, top); context.lineTo(x, height - bottom); context.stroke(); context.setLineDash([]);
     const rows = visibleSeries.map((series) => ({ series, point: series.points[cursor.index] })).filter(({ point }) => point && Number.isFinite(point.value));
-    const lines = [`${state.chartDrag ? "拖拽" : cursor.pinned ? "已固定" : "游标"} · ${model.labels[cursor.index]}`, ...rows.map(({ series, point }) => `${series.name} [${series.axis === "right" ? "右轴" : "左轴"}]${model.ordinal ? ` ${point.label}` : ""}  ${display(point.record.row[point.field])}`)];
-    const boxWidth = Math.min(310, Math.max(150, ...lines.map((line) => context.measureText(line).width + 20))), boxHeight = lines.length * 17 + 10, boxX = x + 12 + boxWidth < width ? x + 12 : x - boxWidth - 12, boxY = Math.min(Math.max(6, cursor.y || top + 8), Math.max(6, height - bottom - boxHeight));
-    context.fillStyle = "#ffffffee"; context.strokeStyle = "#b9c8da"; context.fillRect(boxX, boxY, boxWidth, boxHeight); context.strokeRect(boxX, boxY, boxWidth, boxHeight);
-    lines.forEach((line, lineIndex) => { context.fillStyle = lineIndex === 0 ? "#314c70" : "#5b6f88"; context.textAlign = "left"; context.fillText(line, boxX + 10, boxY + 19 + lineIndex * 17); });
+    const headerLine = `${state.chartDrag ? "拖拽" : cursor.pinned ? "已固定" : "游标"} · ${model.labels[cursor.index]}`;
+    const entries = rows.map(({ series, point }) => ({
+      color: series.style?.lineColor || series.color,
+      label: `${series.name} [${series.axis === "right" ? "右" : "左"}]${model.ordinal ? ` ${point.label}` : ""}`,
+      value: display(point.record.row[point.field])
+    }));
+    context.font = `600 ${uiFont}`;
+    const headerW = context.measureText(headerLine).width;
+    let maxRowW = 0;
+    for (const entry of entries) {
+      context.font = uiFont; const lw = context.measureText(entry.label).width;
+      context.font = axisFont; const vw = context.measureText(entry.value).width;
+      maxRowW = Math.max(maxRowW, 14 + lw + 16 + vw);
+    }
+    const boxWidth = Math.min(340, Math.max(168, headerW + 22, maxRowW + 22));
+    const boxHeight = (entries.length + 1) * 18 + 12;
+    const boxX = x + 12 + boxWidth < width ? x + 12 : Math.max(6, x - boxWidth - 12);
+    const boxY = Math.min(Math.max(6, cursor.y || top + 8), Math.max(6, height - bottom - boxHeight));
+    context.fillStyle = theme.tooltipBg; context.strokeStyle = theme.tooltipBorder;
+    context.beginPath();
+    if (context.roundRect) context.roundRect(boxX, boxY, boxWidth, boxHeight, 6);
+    else context.rect(boxX, boxY, boxWidth, boxHeight);
+    context.fill(); context.stroke();
+    context.font = `600 ${uiFont}`; context.fillStyle = theme.tooltipTitle; context.textAlign = "left";
+    context.fillText(headerLine, boxX + 10, boxY + 18, boxWidth - 20);
+    entries.forEach((entry, rowIndex) => {
+      const y = boxY + 36 + rowIndex * 18;
+      context.fillStyle = entry.color; context.beginPath(); context.arc(boxX + 14, y - 3, 3.5, 0, Math.PI * 2); context.fill();
+      context.font = axisFont; context.fillStyle = theme.tooltipValue; context.textAlign = "right";
+      context.fillText(entry.value, boxX + boxWidth - 10, y);
+      const valW = context.measureText(entry.value).width;
+      context.font = uiFont; context.fillStyle = theme.tooltipLabel; context.textAlign = "left";
+      context.fillText(entry.label, boxX + 23, y, Math.max(20, boxWidth - 40 - valW));
+    });
   }
 }
 function chartCanvasPoint(event) {
@@ -2112,7 +2724,8 @@ function finishChartDrag(cancel = false) {
     const key = cellKey(change.record, change.column.eng_name); if (change.pending === undefined) state.pendingEdits.delete(key); else state.pendingEdits.set(key, { record: change.record, column: change.column, raw: change.pending });
     syncGridCell(change.record, change.column.eng_name);
   }
-  rememberEdit(drag.history); updateEditActions(); drawChart();
+  if (!cancel && drag.moved) rememberEdit(drag.history);
+  updateEditActions(); drawChart();
   if (drag.moved && !cancel) notice(`已拖拽修改 ${drag.changes.size} 个曲线点，保存后写入数据库`);
 }
 function chartPointerMove(event) {
@@ -2166,10 +2779,14 @@ function renderChartSeriesSettings(model) {
     const axis = node("select"); axis.dataset.setting = "axis"; axis.append(new Option("左轴", "left"), new Option("右轴", "right")); axis.value = series.axis;
     const lineColor = node("input"); lineColor.type = "color"; lineColor.value = style.lineColor; lineColor.dataset.setting = "lineColor";
     const lineStyle = node("select"); lineStyle.dataset.setting = "lineStyle"; [["实线", "solid"], ["虚线", "dashed"], ["点线", "dotted"], ["点划线", "dashdot"], ["隐藏", "none"]].forEach(([label, value]) => lineStyle.append(new Option(label, value))); lineStyle.value = style.lineStyle;
-    const lineWidth = node("input"); lineWidth.type = "number"; lineWidth.min = "1"; lineWidth.max = "8"; lineWidth.step = "0.5"; lineWidth.value = style.lineWidth; lineWidth.dataset.setting = "lineWidth";
+    const lineWidth = node("select"); lineWidth.dataset.setting = "lineWidth";
+    [1, 1.5, 2, 2.5, 3, 4, 5, 6].forEach((value) => lineWidth.append(new Option(`${value} px`, String(value))));
+    setSelectValueWithFallback(lineWidth, style.lineWidth, " px");
     const pointColor = node("input"); pointColor.type = "color"; pointColor.value = style.pointColor; pointColor.dataset.setting = "pointColor";
     const pointShape = node("select"); pointShape.dataset.setting = "pointShape"; [["圆点", "circle"], ["方点", "square"], ["菱形", "diamond"], ["三角形", "triangle"], ["隐藏", "none"]].forEach(([label, value]) => pointShape.append(new Option(label, value))); pointShape.value = style.pointShape;
-    const pointSize = node("input"); pointSize.type = "number"; pointSize.min = "2"; pointSize.max = "12"; pointSize.step = "0.5"; pointSize.value = style.pointSize; pointSize.dataset.setting = "pointSize";
+    const pointSize = node("select"); pointSize.dataset.setting = "pointSize";
+    [2, 3, 3.5, 4, 5, 6, 8, 10].forEach((value) => pointSize.append(new Option(`${value} px`, String(value))));
+    setSelectValueWithFallback(pointSize, style.pointSize, " px");
     [text, axis, lineColor, lineStyle, lineWidth, pointColor, pointShape, pointSize].forEach((control) => { const cell = node("td"); cell.append(control); row.append(cell); }); table.append(row);
   });
   target.append(table);
@@ -2186,13 +2803,14 @@ function openChartSettings(kind, axis = "left") {
     el("chart-axis-min").value = axis === "x" ? "" : axisSettings.min ?? "";
     el("chart-axis-max").value = axis === "x" ? "" : axisSettings.max ?? "";
     el("chart-axis-min-label").hidden = axis === "x"; el("chart-axis-max-label").hidden = axis === "x"; el("chart-x-step-label").hidden = axis !== "x"; el("chart-axis-grid-label").hidden = axis === "x";
-    el("chart-x-step").value = Math.max(1, Math.round(Number(axisSettings.labelStep) || 1)); el("chart-axis-grid").checked = axisSettings.showGrid !== false;
+    setSelectValueWithFallback(el("chart-x-step"), Math.max(1, Math.round(Number(axisSettings.labelStep) || 1)), "");
+    el("chart-axis-grid").checked = axisSettings.showGrid !== false;
   } else if (kind === "title") {
     el("chart-title-input").value = state.chartTitle;
     const settings = state.chartTitleSettings;
-    el("chart-title-color").value = settings.color; el("chart-title-size").value = settings.fontSize;
+    el("chart-title-color").value = settings.color; setSelectValueWithFallback(el("chart-title-size"), settings.fontSize, " px");
     el("chart-title-font").value = settings.fontFamily; el("chart-title-style").value = settings.fontStyle;
-    el("chart-title-position").value = settings.position; el("chart-title-gap").value = settings.gap;
+    el("chart-title-position").value = settings.position; setSelectValueWithFallback(el("chart-title-gap"), settings.gap, " px");
   } else renderChartSeriesSettings(buildChartModel());
   dialog.showModal();
 }
@@ -2392,7 +3010,14 @@ function chooseRestoreBackup() {
   if (!state.busy) { el("restore-file").value = ""; el("restore-file").click(); }
 }
 
-const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel", axis: "y", direction: -1, defaultSize: 240,
+function syncLayoutToggleButtons() {
+  const sidebarOpen = !document.documentElement.classList.contains("sidebar-collapsed");
+  const bottomOpen = !document.documentElement.classList.contains("chart-collapsed");
+  const sidebarBtn = el("toggle-sidebar"), bottomBtn = el("toggle-bottom");
+  if (sidebarBtn) { sidebarBtn.classList.toggle("is-active", sidebarOpen); sidebarBtn.setAttribute("aria-pressed", String(sidebarOpen)); }
+  if (bottomBtn) { bottomBtn.classList.toggle("is-active", bottomOpen); bottomBtn.setAttribute("aria-pressed", String(bottomOpen)); }
+}
+const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel", axis: "y", direction: -1, defaultSize: 248,
   minimum: chartMinimumHeight, maximum: () => {
     const workspace = document.querySelector(".workspace"), mainTabs = document.querySelector(".workspace > .tabs"), statusbar = document.querySelector(".statusbar");
     const mainPanel = el("tab-data").classList.contains("active") ? el("query-panel").getBoundingClientRect().height + el("query-splitter").getBoundingClientRect().height + 80 : 80;
@@ -2402,12 +3027,16 @@ const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel
 setupSplitter({ id: "table-list-splitter", panelId: "table-list", axis: "y", defaultSize: 180,
   minimum: () => 72, maximum: () => Math.max(120, el("table-sidebar").clientHeight - 250),
   collapseThreshold: 44, cssVariable: "--table-list-height", collapsedClass: "table-list-collapsed" });
-setupSplitter({ id: "sidebar-splitter", panelId: "table-sidebar", axis: "x", defaultSize: window.innerWidth <= 720 ? 0 : 244,
+const sidebarLayout = setupSplitter({ id: "sidebar-splitter", panelId: "table-sidebar", axis: "x", defaultSize: window.innerWidth <= 720 ? 0 : 248,
   minimum: () => 176, maximum: () => Math.min(480, document.querySelector(".layout").clientWidth - 320),
   collapseThreshold: 56, cssVariable: "--sidebar-width", collapsedClass: "sidebar-collapsed" });
-setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", defaultSize: 44,
-  minimum: () => 40, maximum: () => 44,
+setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", defaultSize: 48,
+  minimum: () => 44, maximum: () => 52,
   collapseThreshold: 16, cssVariable: "--query-height", collapsedClass: "query-collapsed" });
+syncLayoutToggleButtons();
+if (el("toggle-sidebar")) el("toggle-sidebar").onclick = () => { sidebarLayout.toggle(); syncLayoutToggleButtons(); };
+if (el("toggle-bottom")) el("toggle-bottom").onclick = () => { chartLayout.toggle(); syncLayoutToggleButtons(); requestAnimationFrame(drawChart); };
+if (el("toggle-theme")) el("toggle-theme").onclick = () => applyTheme(isDarkTheme() ? "light" : "dark");
 
 document.querySelectorAll("[data-tab]").forEach((button) => { button.onclick = () => tab(button.dataset.tab); });
 const bottomTabs = [...document.querySelectorAll("[data-bottom-tab]")];
@@ -2443,12 +3072,34 @@ el("chart-context-menu").addEventListener("keydown", (event) => {
 });
 el("chart-area").addEventListener("contextmenu", openChartContextMenu);
 el("records-panel").addEventListener("contextmenu", (event) => openRowContextMenu(event, null, null));
-el("table-list").addEventListener("contextmenu", openSidebarContextMenu);
+el("table-list").addEventListener("contextmenu", (event) => openSidebarContextMenu(event, "tables"));
+el("field-list").addEventListener("contextmenu", (event) => openSidebarContextMenu(event, "fields"));
 el("data-grid").addEventListener("keydown", (event) => {
   if (event.target.closest(".cell-editor") || !(event.ctrlKey || event.metaKey) || event.altKey) return;
   if (event.key.toLowerCase() !== "c") return;
   event.preventDefault(); event.stopPropagation(); void run(copySelectedCells);
 });
+function clearSelectedCells() {
+  if (!state.editable || isReadOnlyDatabase()) return;
+  const model = gridSelectionModel(); if (!model) return;
+  const useCellSet = state.selectedCells.size > 0;
+  const targets = [];
+  for (const rowIndex of model.rows) {
+    const record = state.records[rowIndex]; if (!record) continue;
+    for (const column of model.columns) {
+      if (useCellSet && !state.selectedCells.has(cellSelectionKey(rowIndex, column.eng_name))) continue;
+      if (isReadOnlyKey(record, column)) continue;
+      targets.push({ record, column });
+    }
+  }
+  if (!targets.length) return;
+  const history = editSnapshot();
+  targets.forEach(({ record, column }) => setPendingCell(record, column, "", false));
+  rememberEdit(history);
+  targets.forEach(({ record, column }) => syncGridCell(record, column.eng_name));
+  paintGridSelection(); drawChart(); updateEditActions();
+  notice(`已清空 ${targets.length} 个单元格，Ctrl+S 保存或 Ctrl+Z 撤销`);
+}
 el("data-grid").addEventListener("keydown", (event) => {
   if (state.busy || event.isComposing || event.altKey || event.target.matches("input, select, textarea")) return;
   const control = event.ctrlKey || event.metaKey;
@@ -2457,10 +3108,29 @@ el("data-grid").addEventListener("keydown", (event) => {
   }
   if (control && !["Home", "End"].includes(event.key)) return;
   if (event.key === "Escape") { clearGridSelection(); paintGridSelection(); return; }
-  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Tab"].includes(event.key)) return;
   const cell = event.target.closest("[data-cell-row][data-cell-column]");
   const row = cell ? Number(cell.dataset.cellRow) : state.cellAnchor?.row || 0;
   const column = cell ? Number(cell.dataset.cellColumn) : state.cellAnchor?.column || 0;
+  if (event.key === "F2" && cell && state.editable && !isReadOnlyDatabase()) {
+    const record = state.records[row], col = visibleGridColumns()[column];
+    if (record && col && !isReadOnlyKey(record, col)) {
+      event.preventDefault();
+      if (!inlineCellInput(record, col, row, cell)) run(() => openRow("edit", record));
+    }
+    return;
+  }
+  if ((event.key === "Delete" || event.key === "Backspace") && !control && state.editable && !isReadOnlyDatabase()) {
+    event.preventDefault(); clearSelectedCells(); return;
+  }
+  if (!control && event.key.length === 1 && cell && state.editable && !isReadOnlyDatabase()) {
+    const record = state.records[row], col = visibleGridColumns()[column];
+    if (record && col && !isReadOnlyKey(record, col) && !boolTypes.has(columnKind(col)) && !objectTypes.has(columnKind(col)) && !columnMenuOptions(col).length) {
+      event.preventDefault();
+      inlineCellInput(record, col, row, cell, event.key);
+      return;
+    }
+  }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Tab"].includes(event.key)) return;
   if (event.key === "Tab" && ((event.shiftKey && row === 0 && column === 0) ||
       (!event.shiftKey && row === state.records.length - 1 && column === visibleGridColumns().length - 1))) return;
   event.preventDefault();
@@ -2495,12 +3165,14 @@ el("records-panel").addEventListener("keydown", (event) => {
   const bounds = event.target.getBoundingClientRect();
   event.target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
 });
-el("table-list").addEventListener("keydown", (event) => {
-  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-  event.preventDefault();
-  const bounds = event.currentTarget.getBoundingClientRect();
-  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
-});
+for (const id of ["table-list", "field-list"]) {
+  el(id).addEventListener("keydown", (event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
+  });
+}
 el("row-context-menu").addEventListener("keydown", (event) => {
   if (event.key === "Tab") { closeRowContextMenu(true); return; }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -2524,7 +3196,7 @@ document.addEventListener("keydown", (event) => { if (event.key === "Escape" && 
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("chart-context-menu").hidden) { event.preventDefault(); closeChartContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("schema-context-menu").hidden) { event.preventDefault(); closeSchemaContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("sidebar-context-menu").hidden) { event.preventDefault(); closeSidebarContextMenu(true); } });
-document.addEventListener("contextmenu", (event) => { if (!event.target.closest("#records-panel, #row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-area, #chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-fields, #schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#table-list, #sidebar-context-menu")) closeSidebarContextMenu(); });
+document.addEventListener("contextmenu", (event) => { if (!event.target.closest("#records-panel, #row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-area, #chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-fields, #schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#table-list, #field-list, #sidebar-context-menu")) closeSidebarContextMenu(); });
 document.addEventListener("scroll", (event) => { if (!el("row-context-menu").contains(event.target)) closeRowContextMenu(); if (!el("chart-context-menu").contains(event.target)) closeChartContextMenu(); if (!el("schema-context-menu").contains(event.target)) closeSchemaContextMenu(); if (!el("sidebar-context-menu").contains(event.target)) closeSidebarContextMenu(); }, true);
 document.addEventListener("pointermove", updateCellSelectionFromPointer);
 document.addEventListener("pointerup", finishCellSelection);
@@ -2533,8 +3205,43 @@ window.addEventListener("blur", finishCellSelection);
 window.addEventListener("blur", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
 window.addEventListener("resize", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
 for (const id of ["table-filter", "exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
+el("table-list").addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "ArrowUp"].includes(event.key) || state.busy) return;
+  const selectable = filteredTables().filter((item) => !item.orphan && item.selectable !== false);
+  if (!selectable.length) return;
+  event.preventDefault();
+  const current = selectable.findIndex((item) => item.name === state.table);
+  const delta = event.key === "ArrowDown" ? 1 : -1;
+  const nextIndex = current < 0 ? (delta > 0 ? 0 : selectable.length - 1) : Math.max(0, Math.min(selectable.length - 1, current + delta));
+  const target = selectable[nextIndex];
+  if (target && target.name !== state.table) {
+    run(async () => {
+      if (await discardSchema() && await discardCellEdits()) {
+        await selectTable(target.name);
+        el("table-list").querySelector(".table-entry.active")?.scrollIntoView({ block: "nearest" });
+      }
+    });
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && !event.altKey && !event.isComposing && !document.querySelector("dialog[open]")) {
+    event.preventDefault();
+    el("table-filter").focus({ preventScroll: true });
+    el("table-filter").select();
+  }
+});
 el("refresh").onclick = () => run(refresh);
 el("query").onclick = () => run(executeSql);
+el("filter-field").onchange = syncQuickFilterValueControl;
+el("filter-op").onchange = syncQuickFilterValueControl;
+el("apply-quick-filter").onclick = () => run(applyQuickFilter);
+el("reset-quick-filter").onclick = () => run(resetQuickFilter);
+el("btn-add-row").onclick = () => run(() => openAddRows(null, null));
+el("btn-batch-edit").onclick = () => run(() => openRow("batch"));
+el("btn-import-data").onclick = () => run(openImportDialog);
+el("export-format").onchange = updateRecordsToolbar;
+el("btn-export-data").onclick = () => run(() => exportQuery(el("export-format").value));
+el("btn-delete-rows").onclick = () => run(() => deleteSelectedRows(null, null));
 el("page-size").onchange = () => {
   if (state.busy) { el("page-size").value = String(state.pageSize || 100); return; }
   run(async () => {
@@ -2545,6 +3252,7 @@ el("page-size").onchange = () => {
 el("chinese-columns").onchange = () => { renderGrid(); drawChart(); };
 el("prev").onclick = () => run(() => queryRows({ offset: Math.max(0, state.offset - Number(el("page-size").value)), pageCursor:state.previousCursor }));
 el("next").onclick = () => run(() => queryRows({ offset: state.offset + Number(el("page-size").value), pageCursor:state.nextCursor }));
+el("page-number").onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); el("go-page").click(); } };
 el("go-page").onclick = () => run(async () => { const page = Number(el("page-number").value), size = Number(el("page-size").value);
   try {
     if (!Number.isInteger(page) || page < 1 || page > Math.max(1, Math.ceil(state.total / size))) throw new Error("页码超出范围");
@@ -2553,14 +3261,44 @@ el("go-page").onclick = () => run(async () => { const page = Number(el("page-num
 });
 el("save-cell-edits").onclick = () => run(saveCellEdits);
 el("discard-cell-edits").onclick = () => run(discardCellEdits);
+bindPresetControl(el("add-row-preset"), el("add-row-count"));
 el("add-rows-form").onsubmit = (event) => {
   event.preventDefault(); run(addBlankRows, "add-rows-error");
 };
 document.querySelectorAll("[data-add-rows-cancel]").forEach((button) => { button.onclick = () => el("add-rows-dialog").close(); });
+el("batch-add-field").onclick = () => {
+  const field = el("batch-field-select").value;
+  if (!field) { el("row-error").textContent = "请先从下拉框选择要修改的字段"; return; }
+  el("row-error").textContent = "";
+  addBatchFieldRow(field);
+};
+el("batch-field-select").onkeydown = (event) => { if (event.key === "Enter" && el("batch-field-select").value) { event.preventDefault(); el("batch-add-field").click(); } };
 el("save-row").onclick = () => run(saveRow, "row-error");
 el("json-mode").onchange = () => {
-  try { if (el("json-mode").checked) el("row-editor").value = JSON.stringify(readRowFields(), null, 2); else buildRowFields(JSON.parse(el("row-editor").value));
-    el("row-fields").hidden = el("json-mode").checked; el("row-editor").hidden = !el("json-mode").checked; el("row-error").textContent = "";
+  const isBatch = state.dialog?.mode === "batch";
+  try {
+    if (el("json-mode").checked) {
+      let currentValues = {};
+      if (isBatch) {
+        const list = el("batch-fields-list");
+        currentValues = list.querySelectorAll(".batch-field-row").length ? readBatchFields() : {};
+      } else {
+        currentValues = readRowFields();
+      }
+      el("row-editor").value = JSON.stringify(currentValues, null, 2);
+      el("row-fields").hidden = true; el("batch-fields-panel").hidden = true; el("row-editor").hidden = false;
+    } else {
+      const parsed = JSON.parse(el("row-editor").value || "{}");
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("记录须为 JSON 对象");
+      if (isBatch) {
+        buildBatchFields(parsed);
+        el("row-fields").hidden = true; el("batch-fields-panel").hidden = false; el("row-editor").hidden = true;
+      } else {
+        buildRowFields(parsed);
+        el("row-fields").hidden = false; el("batch-fields-panel").hidden = true; el("row-editor").hidden = true;
+      }
+    }
+    el("row-error").textContent = "";
   } catch (error) { el("json-mode").checked = !el("json-mode").checked; el("row-error").textContent = error.message; }
 };
 el("new-table").onclick = () => run(async () => {
@@ -2618,16 +3356,23 @@ el("database-file-upload-input").onchange = renderDatabaseUploadSelection;
 el("upload-database-file").onclick = () => run(uploadDatabaseFile, "database-file-error");
 el("create-database-file").onclick = () => run(createDatabaseFile);
 el("schema-name").oninput = schemaChanged; el("schema-label").oninput = schemaChanged;
-el("add-column").onclick = () => {
+el("add-column").onclick = () => run(() => {
   const definition = schemaFormValue(true), names = new Set(definition.columns.map((column) => column.eng_name));
   let number = definition.columns.length + 1;
   while (names.has(`field_${number}`)) number++;
   definition.columns.push({ eng_name: `field_${number}`, chn_name: "新字段", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" });
   renderSchema(definition); schemaChanged();
-};
+});
 el("save-schema").onclick = () => run(saveSchema);
 el("export-schema").onclick = () => run(() => { const definition = schemaFormValue(); download(JSON.stringify(definition, null, 2), `${definition.head.eng_name || "table"}.schema.json`, "application/json"); });
-el("check-table").onclick = () => run(async () => { requireTable(); const result = await request(tablePath("check")); const message = `${state.table}：${result.ok ? "完整性检查通过" : "检查失败"}，${result.actual_count} 条，WAL / FULL`; notice(message, !result.ok); log(message, !result.ok); });
+el("check-table").onclick = () => run(async () => {
+  requireTable();
+  const result = await request(tablePath("check"));
+  const storage = result.storage || {};
+  const modeText = `${String(storage.journal_mode || "WAL").toUpperCase()} / ${storage.synchronous ?? "FULL"}`;
+  const message = `${state.table}：${result.ok ? "完整性检查通过" : "检查失败"}，${result.actual_count} 条，${modeText}`;
+  notice(message, !result.ok); log(message, !result.ok);
+});
 el("delete-schema").onclick = () => run(async () => {
   requireTable(); const name = state.table;
   if (!await confirmAction("删除空表", `仅允许删除空表 ${name}，数据库与定义将归档保存。`, name)) return;
@@ -2635,9 +3380,8 @@ el("delete-schema").onclick = () => run(async () => {
 });
 el("sql-history-toggle").onpointerdown = (event) => event.preventDefault();
 el("sql-history-toggle").onclick = () => { if (!el("sql-history-list").hidden) closeSqlHistory(); else { el("sql-editor").focus(); openSqlHistory(); } };
-el("sql-editor").onfocus = () => { if (state.history.length) openSqlHistory(); };
 el("sql-editor").onblur = closeSqlHistory;
-el("sql-editor").oninput = () => { if (state.history.length) openSqlHistory(el("sql-editor").value); };
+el("sql-editor").oninput = () => { if (!el("sql-history-list").hidden && state.history.length) openSqlHistory(el("sql-editor").value); syncQuickFilterValueControl(); };
 el("sql-editor").onpaste = (event) => {
   const pasted = event.clipboardData?.getData("text/plain"); if (!pasted || !/[\r\n]/.test(pasted)) return;
   event.preventDefault();
@@ -2689,12 +3433,15 @@ el("chart").addEventListener("keydown", (event) => {
   state.chartCursor.index = event.key === "Home" ? 0 : event.key === "End" ? last : Math.max(0, Math.min(last, current + (event.key === "ArrowLeft" ? -1 : 1))); state.chartCursor.pinned = true; drawChart();
 });
 el("save-chart").onclick = () => run(() => { drawChart(); if (el("chart").hidden) throw new Error("没有可导出的曲线"); const anchor = node("a"); anchor.href = el("chart").toDataURL("image/png"); anchor.download = `${state.table}-chart.png`; anchor.click(); });
-el("query-logs").onclick = () => run(async () => {
+const queryAuditLogsFromControls = () => run(async () => {
   state.logQuery = { ...state.logQuery, date: el("log-date").value, keyword: el("log-keyword").value.trim(),
     category: el("log-category").value, status: el("log-status").value,
     pageSize: Number(el("log-page-size").value), page: 1 };
   await loadAuditLogs();
 });
+el("query-logs").onclick = queryAuditLogsFromControls;
+for (const id of ["log-date", "log-category", "log-status", "log-page-size"]) el(id).onchange = queryAuditLogsFromControls;
+bindPresetControl(el("log-retention-preset"), el("log-retention-days"));
 el("task-history").onclick = () => run(()=>backgroundTasks.history());
 el("log-keyword").onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); el("query-logs").click(); } };
 el("refresh-logs").onclick = () => run(async () => { await loadLogConfig(); await loadAuditLogs(); });
@@ -2720,8 +3467,13 @@ el("cleanup-logs").onclick = () => run(async () => {
 });
 el("auto-refresh").onchange = () => {
   clearInterval(state.timer); const seconds = Number(el("auto-refresh").value);
-  if (seconds) state.timer = setInterval(() => { if (!state.busy && !document.hidden && !document.querySelector("dialog[open]") && !state.contextRecord && !state.schemaDirty && !state.selected.size && !state.selectedColumns.size && !state.selectedCells.size && !hasPendingData()) run(() => queryRows({ silent: true })); }, seconds * 1000);
+  updateAutoRefreshStatus();
+  if (seconds) state.timer = setInterval(() => {
+    updateAutoRefreshStatus();
+    if (!autoRefreshPauseReason()) run(() => queryRows({ silent: true }));
+  }, seconds * 1000);
 };
+document.addEventListener("visibilitychange", updateAutoRefreshStatus);
 document.addEventListener("keydown", (event) => { if (event.key === "F5") { event.preventDefault(); if (!document.querySelector("dialog[open]")) run(refresh); } });
 window.addEventListener("beforeunload", (event) => { void localDrafts.flush(true);if (state.schemaDirty || hasPendingData()) { event.preventDefault(); event.returnValue = ""; } });
 window.addEventListener('pagehide',()=>{void localDrafts.flush(true);localDrafts.announce('bye');});
@@ -2755,7 +3507,7 @@ run(async () => {
   await localDrafts.init();
   state.dataDir = info.data_dir || "";
   el("storage-path").textContent = info.data_dir; el("storage-path").title = `数据：${info.data_dir}\n定义：${info.schema_dir}`;
-  log("管理终端已连接 SQLite"); await refreshTables(); if (state.tables.length) await selectTable(state.tables[0].name); else resetSelection();
+  log("管理终端已连接 SQLite");
   await backgroundTasks.resume();
   const parameters = new URLSearchParams(location.search);
   const requestedDatabase = parameters.get("database");
@@ -2769,11 +3521,13 @@ run(async () => {
     } catch (error) {
       if (![400, 403, 404, 409, 422].includes(error.status)) throw error;
       if (filename === previousDatabase) rememberWorkspaceSelection(null);
+      await refreshTables(); if (state.tables.length) await selectTable(state.tables[0].name); else resetSelection();
       await openDatabaseFileDialog();
       el("workspace-path-error").textContent = `无法打开 ${filename}，请选择其他数据库。`;
       return;
     }
   }
+  await refreshTables(); if (state.tables.length) await selectTable(state.tables[0].name); else resetSelection();
   if (chooseDatabase === "1" || chooseDatabase === "upload") {
     rememberWorkspaceSelection();
     await openDatabaseFileDialog(chooseDatabase === "upload" ? "upload" : "server");

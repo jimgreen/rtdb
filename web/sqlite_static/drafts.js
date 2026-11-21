@@ -76,7 +76,7 @@ const localDrafts={
     el('draft-recovery-warning').textContent=compatible?'恢复后先核对服务器版本；本操作不会写入数据库。':'表结构已变化，不能直接恢复。可导出草稿后核对，或删除草稿。';
     el('restore-local-draft').disabled=!compatible;
     el('restore-local-draft').onclick=()=>{el('draft-recovery-dialog').close();run(()=>this.restore(saved));};
-    el('export-local-draft').onclick=()=>download(JSON.stringify(saved,null,2),`${saved.table}-draft.json`,'application/json');
+    el('export-local-draft').onclick=()=>download(JSON.stringify(saved,null,2),`${saved.table||'new-table'}-draft.json`,'application/json');
     el('delete-local-draft').disabled=this.activePeer(saved.owner);
     el('delete-local-draft').onclick=()=>run(async()=>{await this.dropKey(saved.key,saved.revision);el('draft-recovery-dialog').close();notice('所选历史草稿已删除');});
     };select.onchange=()=>show(entries[Number(select.value)]);show(entries[0]);
@@ -88,7 +88,18 @@ const localDrafts={
       const raw=saved.rawSchema;
       renderSchema({indexes:raw.indexes,head:{eng_name:raw.name,chn_name:raw.label},columns:raw.rows.map(row=>({...row.fields,__original_name:row.original,default_value:undefined}))});
       el('schema-name').value=raw.name;el('schema-label').value=raw.label;
-      [...el('schema-fields').querySelectorAll('tbody tr')].forEach((row,index)=>row.querySelectorAll('[data-property]').forEach(input=>{const value=raw.rows[index].fields[input.dataset.property];if(input.type==='checkbox')input.checked=value;else input.value=value;}));
+      const baselineByName=new Map((state.definition?.columns||[]).map(col=>[col.eng_name,col]));
+      [...el('schema-fields').querySelectorAll('tbody tr')].forEach((row,index)=>row.querySelectorAll('[data-property]').forEach(input=>{
+        const prop=input.dataset.property, value=raw.rows[index].fields[prop];
+        const baseline=baselineByName.get(raw.rows[index].original);
+        if(baseline){
+          const baseVal=prop==='primary_key'?String(Boolean(baseline.primary_key)):prop==='chn_name'?chineseName(baseline):prop==='default_value'?(baseline.default_value==null?'':typeof baseline.default_value==='string'&&!integerTypes.has(columnKind(baseline))?JSON.stringify(baseline.default_value):cellText(baseline.default_value)):String(baseline[prop]??'');
+          input.dataset.originalValue=baseVal;
+        }
+        if(input.type==='checkbox')input.checked=value;else input.value=value;
+        const current=input.type==='checkbox'?String(input.checked):String(input.value);
+        input.closest('td')?.classList.toggle('schema-modified', !baseline || current!==input.dataset.originalValue);
+      }));
       state.schemaDirty=true;tab('schema');const persisted=await this.flush();
       if(!persisted)return;
       if(!this.activePeer(saved.owner)&&saved.key!==this.key('schema'))await this.dropKey(saved.key,saved.revision);
@@ -110,7 +121,9 @@ const localDrafts={
         state.records.push(record);
         for(const edit of item.edits||[]){const column=state.definition.columns.find(c=>c.eng_name===edit.field);if(!column)throw Error('草稿字段已不存在');setPendingCell(record,column,edit.raw,false);}
       }
-      state.offset=saved.offset;state.lastQuery=saved.query;state.pageSize=saved.pageSize;el('page-size').value=String(saved.pageSize);
+      const validSizes=[...el('page-size').options].map(option=>Number(option.value));
+      const restoredPageSize=validSizes.includes(Number(saved.pageSize))?Number(saved.pageSize):(Number(el('page-size').value)||100);
+      state.offset=saved.offset;state.lastQuery=saved.query;state.pageSize=restoredPageSize;el('page-size').value=String(restoredPageSize);
       el('sql-editor').value=saved.query?.sql||defaultSql();state.queryVersion=null;
       resetEditHistory();clearGridSelection();clearAddedChartSeries();renderGrid();drawChart();
     }finally{this.suspended=false;}

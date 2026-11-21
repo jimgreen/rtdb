@@ -198,10 +198,11 @@ local function candidates(q)
             if #touched > 0 then
                 local seen = {}; for _,id in ipairs(ids) do seen[id]=true end
                 for _,id in ipairs(touched) do if not seen[id] then ids[#ids+1]=id end end
-                table.sort(ids,function(a,b)
-                    return (scores[a] or tonumber(redis.call('ZSCORE', order,a)) or math.huge)
-                         < (scores[b] or tonumber(redis.call('ZSCORE', order,b)) or math.huge)
-                end)
+                local score_map = {}
+                for _,id in ipairs(ids) do
+                    score_map[id] = scores[id] or tonumber(redis.call('ZSCORE', order, id)) or math.huge
+                end
+                table.sort(ids,function(a,b) return score_map[a] < score_map[b] end)
             end
         end
     end
@@ -225,6 +226,18 @@ if p.op == 'read' then
         groups[#groups+1]=rows
     end
     return {1,generation,groups}
+end
+if p.op == 'count' then
+    local q = p.query
+    if not q.id and #(q.eq or {}) == 0 then
+        return {1, redis.call('ZCARD', order)}
+    end
+    if not q.id and #(q.eq or {}) == 1 then
+        local cond = q.eq[1]
+        local k = ik(cond[1], cond[2]); typ(k, 'zset')
+        return {1, redis.call('ZCARD', k)}
+    end
+    return {1, #candidates(q)}
 end
 if p.op == 'commit' and p.generation ~= generation then return {0,'conflict'} end
 local nextscore=tonumber(redis.call('HGET',meta,'next')) or 0
@@ -373,6 +386,8 @@ class RedisTable(MutableSequence):
         unknown = set(value) - set(self.columns)
         if unknown:
             raise SchemaError(f'unknown columns: {unknown}')
+        if complete:
+            value = self.definition.apply_defaults(value)
         for field, item in value.items():
             _canonical(item)
             if item is not None:
@@ -459,7 +474,12 @@ class RedisTable(MutableSequence):
         return self.select()
 
     def count(self, where=None):
-        return len(self) if where is None else len(self.select(where))
+        if where is None:
+            return len(self)
+        q = self._query(where)
+        if q is not None:
+            return int(self._call({'op': 'count', 'query': q})[1])
+        return len(self.select(where))
 
     def insert_many(self, rows):
         rows = [self._normalise_row(row, complete=True) for row in rows]
@@ -530,7 +550,7 @@ class RedisTable(MutableSequence):
             commands.append({'query': q})
         return self._commands('delete', commands)
 
-    def _mutate(self, callback):
+    def _mutate(self, callback, *, copy_rows=True, new_columns=()):
         # Generic/list operations may be O(N); the callback is reevaluated on
         # contention. No data is removed before the replacement is validated.
         for _ in range(self.database.transaction_retries):
@@ -906,14 +926,22 @@ class RedisDatabase:
         self.schema_directory = Path(schema_directory) if schema_directory else self.directory.parent / 'def' / 'table'
         self.schema_registry = SchemaRegistry(self.schema_directory)
         self._tables, self._lock = {}, threading.RLock()
-        if check_connection:
-            self.redis.ping()
-        if durability == 'always':
-            config = self.server_config()
-            required = {'appendonly': 'yes', 'appendfsync': 'always',
-                        'no-appendfsync-on-rewrite': 'no', 'maxmemory-policy': 'noeviction'}
-            if any(config.get(k) != v for k,v in required.items()):
-                raise RedisStorageError(f'durable Redis requires {required}; actual {config}')
+        try:
+            if check_connection:
+                self.redis.ping()
+            if durability == 'always':
+                config = self.server_config()
+                required = {'appendonly': 'yes', 'appendfsync': 'always',
+                            'no-appendfsync-on-rewrite': 'no', 'maxmemory-policy': 'noeviction'}
+                if any(config.get(k) != v for k,v in required.items()):
+                    raise RedisStorageError(f'durable Redis requires {required}; actual {config}')
+        except BaseException:
+            if self._owns_client:
+                try:
+                    self.redis.close()
+                except Exception:
+                    pass
+            raise
         self.durability = durability
 
     def server_config(self):

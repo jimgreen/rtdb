@@ -14,7 +14,7 @@ from core.definition_files import normalize_definition_labels
 from core.stream_efile import events
 from core.sqlite_db import _OBJECT, _BOOL, _FLOAT
 from core.sqlite_schema import _read_embedded_database, write_embedded_definition
-from .atomic_import import create_layout, encode, quote
+from .atomic_import import create_layout, encode, finalize_layout, quote, rename_ddl_object
 from .csv_imports import file_hash
 from .definition_import import convert, DefinitionImporter
 from .errors import APIError
@@ -114,10 +114,16 @@ def prepare(manager, value):
             staging.execute('CREATE TABLE rows (table_no INTEGER, line INTEGER, cells TEXT)')
             staging.execute('CREATE INDEX row_table ON rows(table_no)')
             definitions = {t['name']:t['definition'] for t in scoped.tables()['tables'] if not t.get('orphan')}
+            seen_names = set()
             with (folder/'payload.sqlite3').open('r', encoding=encoding, newline='') as source:
                 for event, line, item in events(source):
                     if event == 'start':
                         name = scoped.name(item['name']); count = 0; samples = []; masks = []; present = []
+                        if name.casefold() in seen_names:
+                            raise SchemaError(f'重复表名（忽略大小写）：{name}')
+                        seen_names.add(name.casefold())
+                        if len(seen_names) > 200:
+                            raise SchemaError('一次导入应包含 1–200 张表')
                     elif event == 'columns':
                         masks = [15]*len(item['columns']); present = [False]*len(masks)
                     elif event == 'row':
@@ -139,6 +145,8 @@ def prepare(manager, value):
                                 data_type=kind, primary_key=not old and i==0, disp_type={'int':'整数','float':'浮点数','bool':'布尔'}.get(kind,'文本'), disp_menu=''))
                         definition = TableDefinition.from_mapping(normalize_definition_labels(desired), scoped.schema_dir, name)
                         tables.append(dict(name=name, definition=definition.to_mapping(), incoming=count, source_fields=item['columns'], sample=samples, old=old))
+            if not tables:
+                raise SchemaError('一次导入应包含 1–200 张表')
             staging.commit()
         result = dict(kind='e', id=value['id'], database=value['database'], encoding=encoding, tables=tables, sha256=checksum)
         value.update(state='ready', result=result, raw_sha256=file_hash(raw_path))
@@ -163,8 +171,9 @@ def session(manager, ident):
 def validate(manager, payload):
     from . import database_uploads as uploads
     ident = payload.get('upload_id')
-    with uploads.lock(manager,ident), manager.exclusive():
-        manager._recover(); value, folder = session(manager,ident)
+    # 校验阶段仅读取业务库快照，改用共享 read_scope 避免长时间阻塞并发查询与写入。
+    with uploads.lock(manager,ident), manager.read_scope():
+        value, folder = session(manager,ident)
         if value.get('apply_started'): raise APIError(409,'该计划已开始提交，请继续未完成步骤；更改选项需重新上传')
         mode = payload.get('mode','merge')
         if mode not in ('append','merge','replace'): raise APIError(400,'未知导入方式')
@@ -261,7 +270,7 @@ def apply_table(manager,plan,prepared,ident,signature):
     name=plan['summary']['name'];path=manager.data_dir/manager.database_file
     manager.require_writable(path=path)
     desired=TableDefinition.from_mapping(plan['summary']['definition'],manager.schema_dir,name)
-    with closing(sqlite3.connect(path,timeout=10,isolation_level=None)) as connection:
+    with closing(sqlite3.connect(path.as_uri(),uri=True,timeout=10,isolation_level=None)) as connection:
         connection.execute('PRAGMA journal_mode=WAL');connection.execute('PRAGMA synchronous=FULL')
         connection.execute('ATTACH DATABASE ? AS incoming',(prepared.as_uri()+'?mode=ro',))
         connection.execute('BEGIN IMMEDIATE')
@@ -274,6 +283,7 @@ def apply_table(manager,plan,prepared,ident,signature):
             document=_read_embedded_database(connection,path)
             if document is None:raise APIError(409,'数据库缺少内置定义')
             old=next((table for table in document.tables if table.eng_name.casefold()==name.casefold()),None)
+            if old is not None and old.eng_name != name:raise APIError(409,f'目标表名与已有表仅大小写不同：{old.eng_name}')
             if (old.to_mapping() if old else None)!=plan['old']:raise APIError(409,f'{name} 结构已变化，请重新上传预览')
             data_name='rtdb_data_'+name if document.is_grouped or old is None else 'data'
             meta_name='rtdb_metadata_'+name if document.is_grouped or old is None else 'metadata'
@@ -284,32 +294,35 @@ def apply_table(manager,plan,prepared,ident,signature):
                 connection.execute(f'ALTER TABLE data RENAME TO {quote(promoted)}')
                 connection.execute(f'ALTER TABLE metadata RENAME TO {quote("rtdb_metadata_"+legacy)}')
                 for kind,obj,sql in connection.execute("SELECT type,name,sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL",(promoted,)).fetchall():
-                    connection.execute(f'DROP {kind} {quote(obj)}');connection.execute(sql.replace(quote(obj),quote(promoted+'_'+obj),1))
+                    connection.execute(f'DROP {kind} {quote(obj)}');connection.execute(rename_ddl_object(sql, kind, obj, promoted + '_' + obj))
             layout=lambda definition:[(c.eng_name,c.data_type,c.primary_key) for c in definition.columns]
             structural=not old or layout(old)!=layout(desired)
             data=quote(data_name);metadata=quote(meta_name);source='incoming.'+quote(plan['data'])
             if structural:
                 if old:connection.execute(f'DROP TABLE {data}');connection.execute(f'DROP TABLE {metadata}')
-                create_layout(connection,desired,data_name,meta_name)
+                create_layout(connection,desired,data_name,meta_name,defer_indexes=True)
                 connection.execute(f'INSERT INTO {data} (_pos,{fields(desired)}) SELECT _pos,{fields(desired)} FROM {source} ORDER BY _pos')
+                finalize_layout(connection,desired,data_name,meta_name)
             else:
                 connection.execute(f'DELETE FROM {data} WHERE _pos NOT IN (SELECT _pos FROM {source})')
                 assignments=','.join(f'c{i}=excluded.c{i}' for i in range(len(desired.columns)))
                 changed=' OR '.join(f'{data}.c{i} IS NOT excluded.c{i}' for i in range(len(desired.columns)))
                 connection.execute(f'INSERT INTO {data} (_pos,{fields(desired)}) SELECT _pos,{fields(desired)} FROM {source} WHERE 1 ON CONFLICT(_pos) DO UPDATE SET {assignments} WHERE {changed}')
+                from core.sqlite_indexes import reconcile_indexes
+                reconcile_indexes(connection,data_name,desired)
             if connection.execute('SELECT 1 FROM sqlite_sequence WHERE name=?',(data_name,)).fetchone():
                 connection.execute('UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name=?',(plan['high'],data_name))
             else:connection.execute('INSERT INTO sqlite_sequence VALUES(?,?)',(data_name,plan['high']))
             connection.execute(f'UPDATE {metadata} SET fingerprint=?',(fingerprint(desired.to_mapping()),))
             write_embedded_definition(connection,desired,path.stem,document.chn_name)
-            from core.sqlite_indexes import reconcile_indexes
-            reconcile_indexes(connection,data_name,desired)
             summary=plan['summary'];result=dict(name=name,ok=True,rows=summary['after'],replayed=False,
                 **{k:summary[k] for k in ('incoming','inserted','updated','duplicates','skipped','warnings')})
             connection.execute(f'INSERT INTO {RECEIPTS} VALUES(?,?,?,?)',(ident,name,signature,json.dumps(result,ensure_ascii=False)))
             record_step(connection,name,result);connection.commit()
         except BaseException:
-            connection.rollback();raise
+            connection.rollback()
+            manager._journal.unlink(missing_ok=True)
+            raise
     try:manager._recover()
     except Exception as error:result['export_warning']=f'{name} 已提交，定义导出待恢复：{error}'
     return result

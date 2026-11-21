@@ -61,14 +61,17 @@ def _relative_metadata(payload, root):
     """Format server metadata without visiting database rows or definitions."""
     root_forms = (str(root), root.as_posix(), root.as_uri())
     prefixes = {form.rstrip('/\\') for form in root_forms} - {''}
+    # 同时脱敏带斜杠的子路径和无尾斜杠的根目录本身，防止路径泄露。
     root_prefix = re.compile(
-        r'(?:' + '|'.join(re.escape(prefix) for prefix in prefixes) + r')[/\\]',
+        r'(?:' + '|'.join(re.escape(prefix) for prefix in sorted(prefixes, key=len, reverse=True)) + r')(?:[/\\]|(?=$|[\s\'",;:)\]}]))',
         re.IGNORECASE if os.name == 'nt' else 0,
     )
 
-    def format_item(value):
+    def format_item(value, *, diagnostic=False):
+        if isinstance(value, str):
+            return root_prefix.sub('', value) if diagnostic else value
         if isinstance(value, list):
-            return [format_item(item) for item in value]
+            return [format_item(item, diagnostic=diagnostic) for item in value]
         if not isinstance(value, dict):
             return value
         formatted = {}
@@ -80,7 +83,9 @@ def _relative_metadata(payload, root):
             elif key in _DIAGNOSTIC_FIELDS and isinstance(item, str):
                 item = root_prefix.sub('', item)
             elif key in _METADATA_CONTAINERS:
-                item = format_item(item)
+                item = format_item(item, diagnostic=diagnostic or key == 'details')
+            elif diagnostic:
+                item = format_item(item, diagnostic=True)
             formatted[key] = item
         return formatted
 
@@ -146,27 +151,50 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def _route(self):
         self._request_context = None
+        if hasattr(self, '_server_ms'):
+            delattr(self, '_server_ms')
+        self._task_timings = {}
         # Keep the default local administration service off unrelated origins.
         host = self.headers.get('Host', '')
         if self.server.server_address[0] in ('127.0.0.1', '::1'):
             if urlsplit('http://' + host).hostname not in ('127.0.0.1', 'localhost', '::1'):
                 raise APIError(403, '不允许的 Host')
         origin = self.headers.get('Origin')
-        if origin and urlsplit(origin).netloc != host:
+        # 同时拒绝 Origin: null 或空 Host 绕过。
+        if origin and (not host or urlsplit(origin).netloc != host):
             raise APIError(403, '不允许跨站访问管理接口')
         parsed = urlsplit(self.path)
         return parsed.path, [unquote(part) for part in parsed.path.split('/') if part], parse_qs(parsed.query, keep_blank_values=True)
 
-    def _body(self):
-        if self.headers.get_content_type() != 'application/json':
-            raise APIError(415, '请使用 application/json')
-        length = int(self.headers.get('Content-Length', '0'))
+    def _body(self, *, optional=False):
+        raw_length = self.headers.get('Content-Length')
+        if raw_length is None:
+            if optional:
+                return {}
+            length = 0
+        else:
+            try:
+                length = int(raw_length)
+            except (ValueError, TypeError) as exc:
+                raise APIError(400, 'Content-Length 必须为非负整数') from exc
         if length < 0:
             raise APIError(400, 'Content-Length 必须为非负整数')
+        if optional and length == 0:
+            return {}
+        if self.headers.get_content_type() != 'application/json':
+            raise APIError(415, '请使用 application/json')
         if length > MAX_BODY:
             raise APIError(413, '请求体超过 32 MiB')
+        old_timeout = self.connection.gettimeout()
         try:
-            payload = json.loads((self.rfile.read(length) if length else b'{}').decode('utf-8'))
+            self.connection.settimeout(30)
+            raw = self.rfile.read(length) if length else b'{}'
+        finally:
+            self.connection.settimeout(old_timeout)
+        if length and len(raw) != length:
+            raise APIError(400, '请求体传输中断，未完整接收')
+        try:
+            payload = json.loads(raw.decode('utf-8'))
             if not isinstance(payload, dict):
                 raise APIError(400, '请求体必须是 JSON 对象')
             return payload
@@ -201,20 +229,24 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     def _recorded(self, method, parts, payload, callback, *, status_code=200):
         category, operation, table = self._direct_descriptor(method, parts, payload)
         started = time.perf_counter()
+        recorder = None
         try:
+            recorder = self.manager
             result = callback()
         except Exception as error:
-            self.manager.record_operation(category=category, operation=operation, status='failure',
-                                          http_status=status_for_exception(error), method=method,
-                                          path=urlsplit(self.path).path, table=table,
-                                          duration_ms=(time.perf_counter() - started) * 1000,
-                                          error=error)
+            target = recorder or (self._request_context.sqlite_manager if self._request_context is not None else None)
+            if target is not None:
+                target.record_operation(category=category, operation=operation, status='failure',
+                                        http_status=status_for_exception(error), method=method,
+                                        path=urlsplit(self.path).path, table=table,
+                                        duration_ms=(time.perf_counter() - started) * 1000,
+                                        error=error)
             raise
-        self.manager.record_operation(category=category, operation=operation, status='success',
-                                      http_status=status_code, method=method,
-                                      path=urlsplit(self.path).path, table=table,
-                                      duration_ms=(time.perf_counter() - started) * 1000,
-                                      result=result)
+        recorder.record_operation(category=category, operation=operation, status='success',
+                                  http_status=status_code, method=method,
+                                  path=urlsplit(self.path).path, table=table,
+                                  duration_ms=(time.perf_counter() - started) * 1000,
+                                  result=result)
         return result
 
     def do_OPTIONS(self):
@@ -233,7 +265,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             if path in ('/', '/index.html'):
                 self._static('index.html'); return
             if path.startswith('/static/'):
-                self._static(path.removeprefix('/static/')); return
+                self._static(unquote(path.removeprefix('/static/'))); return
             if parts == ['api', 'health']:
                 self._send_json(200, self._recorded('GET', parts, None,
                     lambda: {'ok': True, 'service': 'rtdb-sqlite', **self.manager.info()})); return
@@ -264,6 +296,8 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', media)
                 self.send_header('Content-Disposition', disposition)
                 self.send_header('Content-Length', str(len(content)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
                 self.end_headers()
                 self.wfile.write(content)
                 return
@@ -319,7 +353,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         try:
-            _, parts, query = self._route(); payload = self._body()
+            _, parts, query = self._route(); payload = self._body(optional=True)
             if self._manage('DELETE', parts, query=query, payload=payload):
                 return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'rows':
@@ -339,7 +373,26 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, self.server.workspaces.listing())
             return True
         if parts == ['api', 'manage', 'workspaces', 'directories'] and method == 'POST':
-            self._send_json(201, self.server.workspaces.create_directory(payload.get('parent'), payload.get('name')))
+            started = time.perf_counter()
+            default_manager = self.server.workspaces.default.sqlite_manager
+            try:
+                default_manager.require_writable()
+                result = self.server.workspaces.create_directory(payload.get('parent'), payload.get('name'))
+            except Exception as error:
+                default_manager.record_operation(
+                    category='system', operation='新建工作目录', status='failure',
+                    http_status=status_for_exception(error), method='POST',
+                    path='/api/manage/workspaces/directories',
+                    duration_ms=(time.perf_counter() - started) * 1000, error=error,
+                )
+                raise
+            default_manager.record_operation(
+                category='system', operation='新建工作目录', status='success',
+                http_status=201, method='POST',
+                path='/api/manage/workspaces/directories',
+                duration_ms=(time.perf_counter() - started) * 1000, result=result,
+            )
+            self._send_json(201, result)
             return True
         if len(parts)==3 and parts[2]=='tasks' and method=='GET':
             self._send_json(200,{'tasks':self.context.tasks.recent()})
@@ -369,7 +422,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             with fence(manager):
                 self._download_snapshot(manager, parts[3])
             return True
-        management = SQLiteManagement(manager) if manager.database_file else self.context.management
+        management = SQLiteManagement(manager) if manager is not self.context.sqlite_manager else self.context.management
         if (query or {}).get('background') == ['1']:
             started=time.perf_counter()
             parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id','workspace')}
@@ -431,9 +484,12 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 raise error
             with path.open('rb') as stream:
                 stream.seek(start)
+                filename = item['filename']
+                disposition = (f'attachment; filename="{filename}"' if filename.isascii()
+                               else "attachment; filename*=UTF-8''" + quote(filename))
                 self.send_response(206 if partial else 200)
                 self.send_header('Content-Type', 'application/vnd.sqlite3')
-                self.send_header('Content-Disposition', f'attachment; filename="{item["filename"]}"')
+                self.send_header('Content-Disposition', disposition)
                 self.send_header('Content-Length', str(end - start + 1))
                 self.send_header('Accept-Ranges', 'bytes'); self.send_header('ETag', etag)
                 self.send_header('Cache-Control', 'no-store'); self.send_header('X-Content-Type-Options', 'nosniff')
@@ -457,14 +513,39 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         target = (STATIC_ROOT / name).resolve()
         if STATIC_ROOT.resolve() not in target.parents or not target.is_file():
             raise APIError(404, '文件不存在')
+        stat_info = target.stat()
+        etag = f'"{stat_info.st_mtime_ns:x}-{stat_info.st_size:x}"'
+        if_none_match = self.headers.get('If-None-Match', '')
+        if etag in [part.strip() for part in if_none_match.split(',')]:
+            self.send_response(304)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            return
+        media = {
+            '.html': 'text/html; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.js': 'text/javascript; charset=utf-8',
+            '.json': 'application/json; charset=utf-8',
+            '.svg': 'image/svg+xml; charset=utf-8',
+        }.get(target.suffix.lower()) or (mimetypes.guess_type(target.name)[0] or 'application/octet-stream')
         body = target.read_bytes()
-        self.send_response(200); self.send_header('Content-Type', mimetypes.guess_type(target.name)[0] or 'application/octet-stream'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_response(200)
+        self.send_header('Content-Type', media)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('ETag', etag)
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class SQLiteHTTPServer(ThreadingHTTPServer):
     # A reload can request many scripts while upload connections are closing.
     # Keep that brief burst queued instead of using socketserver's backlog of 5.
     request_queue_size = 64
+    daemon_threads = True
 
     def server_close(self):
         super().server_close()

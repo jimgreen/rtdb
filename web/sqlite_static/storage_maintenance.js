@@ -4,9 +4,14 @@ const storageMaintenance = {
   async open() {
     const dialog=el('storage-maintenance-dialog');
     el('storage-close').onclick=()=>dialog.close();
+    el('storage-close-x').onclick=()=>dialog.close();
     el('storage-refresh').onclick=()=>this.perform(()=>this.refresh());
+    el('storage-policy').querySelectorAll('select[data-retention-preset]').forEach(select=>{
+      const input=el('storage-policy').elements.namedItem(select.dataset.retentionPreset);
+      bindPresetControl(select,input,()=>{this.preview=null;el('storage-clean').disabled=true;});
+    });
     el('storage-policy').onsubmit=event=>{event.preventDefault();this.perform(async()=>{
-      const config=Object.fromEntries(Array.from(new FormData(event.target),([k,v])=>[k,Number(v)]));
+      const config=Object.fromEntries(['upload_retention_days','snapshot_retention_days','task_retention_days'].map(k=>[k,Number(el('storage-policy').elements.namedItem(k).value)]));
       await request('storage-maintenance','PUT',config);await this.refresh();
       el('storage-status').textContent='保留配置已保存；未执行清理。';
     });};
@@ -27,11 +32,20 @@ const storageMaintenance = {
   async refresh() {
     this.preview=null;el('storage-status').textContent='正在统计…';
     const result=await request('storage-maintenance');this.preview=result;
-    for(const [key,value] of Object.entries(result.config))el('storage-policy').elements.namedItem(key).value=value;
+    for(const [key,value] of Object.entries(result.config)){
+      const input=el('storage-policy').elements.namedItem(key);
+      const select=el('storage-policy').querySelector(`select[data-retention-preset="${key}"]`);
+      if(select&&input)syncPresetControl(select,input,value);else if(input)input.value=value;
+    }
     const stats=el('storage-statistics');stats.replaceChildren();
     for(const [kind,item] of Object.entries(result.statistics)) {
-      const card=node('div');card.append(node('strong',this.names[kind]),node('span',formatBytes(item.bytes)),
-        node('small',kind==='tasks'?`${item.records||0} 个任务 · ${item.active||0} 个活动任务`:`${item.files} 个文件`));stats.append(card);
+      const card=node('div');
+      const formatted=formatBytes(item.bytes).split(' ');
+      const metric=node('div',null,'kpi-metric');
+      metric.append(node('span',formatted[0],'kpi-value'),node('span',formatted[1]||'','kpi-unit'));
+      card.append(node('span',this.names[kind],'kpi-label'),metric,
+        node('small',kind==='tasks'?`${item.records||0} 个任务 · ${item.active||0} 个活动`:`${item.files} 个文件`));
+      stats.append(card);
     }
     const days=result.statistics.logs.retention_days;
     el('storage-log-policy').textContent=`日志：${days?'保留 '+days+' 天':'永久保留'}，沿用“日志”页的查询和清理设置。账本清理释放的页供后续写入复用，文件不一定立即缩小。`;

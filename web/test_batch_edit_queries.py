@@ -1,5 +1,4 @@
 """Bulk edit validation uses bounded indexed reads in the same transaction."""
-import copy
 import unittest
 from unittest.mock import patch
 

@@ -13,6 +13,18 @@ from .audit import _local_now, result_summary
 
 _current = ContextVar('web_write_operation', default=None)
 TABLE = 'rtdb_web_commits'
+_publish_guard = threading.Lock()
+_publish_locks = {}
+
+
+def _publish_lock_for(path):
+    key = str(path)
+    with _publish_guard:
+        lock = _publish_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _publish_locks[key] = lock
+        return lock
 
 
 @contextmanager
@@ -112,9 +124,12 @@ def receipt(manager, ident, signature):
 def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*1024*1024):
     """Never turn a committed operation into a reported failure of the data write."""
     try:
-        if manager.read_only:
+        if manager.read_only or not manager.database_file:
             return True
-        with manager.read_scope(), closing(sqlite3.connect((manager.data_dir/manager.database_file).as_uri()+'?mode=rw',uri=True,timeout=5)) as c:
+        db_path = manager.data_dir / manager.database_file
+        if not db_path.is_file():
+            return True
+        with _publish_lock_for(db_path), manager.read_scope(), closing(sqlite3.connect(db_path.as_uri()+'?mode=rw',uri=True,timeout=5)) as c:
             if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(TABLE,)).fetchone():
                 return True
             cursor=c.execute(f'SELECT id,event FROM {TABLE} WHERE delivered=0'+(' AND id=?' if ident else '')+' ORDER BY rowid LIMIT ?', ((ident,batch_size) if ident else (batch_size,)))
@@ -124,6 +139,8 @@ def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*
                 if rows and size+count>max_bytes:break
                 rows.append(row);size+=count
             cursor.close()
+            if not rows:
+                return True
             if len(rows)==1:
                 logged=manager.audit_log.write_event(json.loads(rows[0][1]), recovery=recovery) is not None
             else:
@@ -214,10 +231,12 @@ class AuditDelivery:
                     self.condition.wait(.05)
                     if self.stopping:return
                     recovery=self.pending.pop(filename);self.active=filename
-            more=False;archive_warning=None
+            more=False;archive_warning=None;gone=False
             try:
                 scoped=self.manager.for_database(filename)
-                if archival:
+                if not (scoped.data_dir / scoped.database_file).is_file():
+                    gone=True;ok=True
+                elif archival:
                     from .receipt_maintenance import archive_batch
                     result=archive_batch(scoped);ok=True;more=result['more']
                     if result['archived'] and not scoped.record_operation(category='system',operation='压缩历史回执',status='success',
@@ -226,6 +245,16 @@ class AuditDelivery:
                 else:
                     ok=publish(scoped,recovery=recovery)
                     more=ok and pending(scoped)
+            except APIError as error:
+                if error.status==404:
+                    gone=True;ok=True
+                else:
+                    ok=False
+                    if archival:
+                        archive_warning=f'回执压缩失败，将自动重试：{error}'
+                        try:self.manager.record_operation(category='system',operation='压缩历史回执',status='failure',http_status=500,
+                            method='SYSTEM',path='/receipt-maintenance',result={'database':filename},error=error)
+                        except Exception:pass
             except Exception as error:
                 ok=False
                 if archival:
@@ -234,7 +263,15 @@ class AuditDelivery:
                         method='SYSTEM',path='/receipt-maintenance',result={'database':filename},error=error)
                     except Exception:pass
             with self.condition:
-                if archival:
+                if gone:
+                    # 数据库文件已删除，清理对应投递与归档队列，避免无限重试阻塞 drain/close。
+                    if archival:
+                        self.archive_active=None
+                    else:
+                        self.active=None
+                    self.pending.pop(filename,None);self.errors.pop(filename,None);self.retry_at.pop(filename,None)
+                    self.archive_queue.pop(filename,None);self.archive_due.pop(filename,None);self.archive_errors.pop(filename,None)
+                elif archival:
                     self.archive_active=None;self.archive_due[filename]=time.monotonic()+3600
                     if ok:
                         self.archive_errors.pop(filename,None)

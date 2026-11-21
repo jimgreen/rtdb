@@ -2,6 +2,8 @@
 
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
+import re
+import shutil
 import sqlite3
 import uuid
 
@@ -277,22 +279,39 @@ def drop_native_schema(manager, name, payload):
     if payload.get('confirm') != name:
         raise APIError(400, '请输入表名确认删除')
     path = _path(manager)
-
-    def apply(connection):
-        document = _document(connection, path)
-        _existing(connection, document, name, payload.get('version'))
-        _ordinary_table(connection, name)
-        if connection.execute(f'SELECT 1 FROM {_quote(name)} LIMIT 1').fetchone():
-            raise APIError(409, '表有数据，请先导出并清空后删除表结构')
-        _check_drop_references(connection, name)
-        archive = manager.data_dir / '.web-archive' / (name + '-' + uuid.uuid4().hex)
-        archive.mkdir(parents=True)
+    manager.require_writable()
+    with manager.exclusive():
+        # 先在事务外验证版本与空表状态并完成备份，避免在写事务内对活跃连接执行 backup 导致死锁或自锁。
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)) as source:
-            with closing(sqlite3.connect(archive / path.name, timeout=5)) as backup:
-                source.backup(backup)
-        connection.execute(f'DROP TABLE {_quote(name)}')
-        remove_embedded_definition(connection, name)
-        return dict(deleted=True, archive=str(archive), database_file=path.name,
-                    remaining_tables=[table.eng_name for table in document.tables if table.eng_name != name])
+            document = _document(source, path)
+            _existing(source, document, name, payload.get('version'))
+            _ordinary_table(source, name)
+            if source.execute(f'SELECT 1 FROM {_quote(name)} LIMIT 1').fetchone():
+                raise APIError(409, '表有数据，请先导出并清空后删除表结构')
+            safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', name)[:48] or 'table'
+            archive = manager.data_dir / '.web-archive' / f'{safe_name}-{uuid.uuid4().hex}'
+            archive.mkdir(parents=True)
+            try:
+                with closing(sqlite3.connect(archive / path.name, timeout=5)) as backup:
+                    source.backup(backup)
+            except BaseException:
+                shutil.rmtree(archive, ignore_errors=True)
+                raise
 
-    return _run_write(manager, path, apply)
+        def apply(connection):
+            document = _document(connection, path)
+            _existing(connection, document, name, payload.get('version'))
+            _ordinary_table(connection, name)
+            if connection.execute(f'SELECT 1 FROM {_quote(name)} LIMIT 1').fetchone():
+                raise APIError(409, '表有数据，请先导出并清空后删除表结构')
+            _check_drop_references(connection, name)
+            connection.execute(f'DROP TABLE {_quote(name)}')
+            remove_embedded_definition(connection, name)
+            return dict(deleted=True, archive=str(archive), database_file=path.name,
+                        remaining_tables=[table.eng_name for table in document.tables if table.eng_name != name])
+
+        try:
+            return _run_write(manager, path, apply, already_locked=True)
+        except BaseException:
+            shutil.rmtree(archive, ignore_errors=True)
+            raise
