@@ -1095,6 +1095,15 @@ function isNumericColumn(column) {
   const kind = columnKind(column);
   return integerTypes.has(kind) || floatTypes.has(kind);
 }
+function recordPrimaryKey(record) {
+  if (!record || record.draftId) return null;
+  if (Array.isArray(record.ref?.key) && record.ref.key.length) return record.ref.key;
+  const pkCols = (state.definition?.columns || []).filter((c) => c.primary_key);
+  if (!pkCols.length || !record.row) return null;
+  const values = pkCols.map((c) => record.row[c.eng_name]);
+  if (values.some((v) => v === undefined || v === null)) return null;
+  return values;
+}
 function renderGridCellValue(record, column, cell) {
   const pending = pendingCell(record, column.eng_name);
   const rawVal = record.row[column.eng_name];
@@ -1164,14 +1173,21 @@ function renderGridCellValue(record, column, cell) {
       : pending
         ? `${shown.invalid ? `${shown.invalidDetail} · ` : ""}已修改${shown.formatted ? `（原值: ${shown.rawText}）` : ""}，保存前仅保留在当前页面`
         : displayTip;
-  const samplePoint = (!record.draftId && state.table && record.ref?.key)
-    ? window.rtdbSampleTrends?.isSamplePoint(state.table, record.ref.key, column.eng_name)
+  const pkKey = recordPrimaryKey(record);
+  const samplePoint = (state.table && pkKey)
+    ? window.rtdbSampleTrends?.isSamplePoint(state.table, pkKey, column.eng_name)
     : null;
   cell.classList.toggle("cell-sample-point", Boolean(samplePoint));
   if (samplePoint) {
     cell.style.setProperty("--sample-point-color", samplePoint.color);
-    cell.dataset.sampleAxis = samplePoint.axis === "right" ? "R" : "L";
-    cell.title = `${cell.title} · 采样点（${samplePoint.axis === "right" ? "右轴" : "左轴"}）`;
+    const hiddenInChart = samplePoint.visible === false;
+    if (hiddenInChart) {
+      delete cell.dataset.sampleAxis;
+      cell.title = `${cell.title} · ${t("st.cellTipHidden")}`;
+    } else {
+      cell.dataset.sampleAxis = samplePoint.axis === "right" ? "R" : "L";
+      cell.title = `${cell.title} · ${samplePoint.axis === "right" ? t("st.cellTipRight") : t("st.cellTipLeft")}`;
+    }
   } else {
     cell.style.removeProperty("--sample-point-color");
     delete cell.dataset.sampleAxis;
@@ -1286,7 +1302,7 @@ function tab(name) {
     renderSchema(state.definition);
   }
   if (name === "data") requestAnimationFrame(drawChart);
-  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setActive(name === "sample-trends");
+  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setListVisible(name === "sample-trends");
 }
 function bottomTab(name) {
   document.querySelectorAll("[data-bottom-tab]").forEach((button) => {
@@ -1297,6 +1313,10 @@ function bottomTab(name) {
   });
   if (name === "logs") run(async () => { await loadAuditLogs(); });
   if (name === "chart") requestAnimationFrame(drawChart);
+  if (window.rtdbSampleTrends) {
+    const collapsed = document.documentElement.classList.contains("chart-collapsed");
+    window.rtdbSampleTrends.setChartVisible(name === "sample" && !collapsed);
+  }
 }
 function filteredTables() {
   const query = el("table-filter").value.trim().toLowerCase();
@@ -1855,44 +1875,37 @@ function openRowContextMenu(event, record, index) {
   }
   const stApi = window.rtdbSampleTrends;
   const sampleTargets = collectSampleTargets(record, sampleColumn);
-  const existingSamples = sampleTargets
-    .map((item) => ({ item, series: stApi?.isSamplePoint(item.table, item.key, item.field) || null }))
-    .filter((entry) => entry.series);
-  const directSample = (stApi && state.table && record && !record.draftId && record.ref?.key?.length && sampleColumn)
-    ? stApi.isSamplePoint(state.table, record.ref.key, sampleColumn.eng_name)
-    : null;
-  const primaryExisting = directSample
-    ? { item: { table: state.table, key: record.ref.key, field: sampleColumn.eng_name }, series: directSample }
-    : (existingSamples[0] || null);
+  const newSampleTargets = [];
+  const existingSamples = [];
+  for (const item of sampleTargets) {
+    const series = stApi?.isSamplePoint(item.table, item.key, item.field) || null;
+    if (series) existingSamples.push({ item, series });
+    else newSampleTargets.push(item);
+  }
   state.contextRecord.sampleTargets = sampleTargets;
+  state.contextRecord.newSampleTargets = newSampleTargets;
   state.contextRecord.existingSamples = existingSamples;
-  state.contextRecord.primaryExisting = primaryExisting;
 
-  const canSampleAny = Boolean(stApi && state.database && sampleTargets.length);
-  setDisabled("sample-add-left", !canSampleAny);
-  setDisabled("sample-add-right", !canSampleAny);
-  setDisabled("sample-locate", !primaryExisting);
-  setDisabled("sample-switch-axis", !primaryExisting);
-  setDisabled("sample-open-board", !state.database);
-  setDisabled("sample-remove", !existingSamples.length);
+  const canAddSample = Boolean(stApi && state.database && newSampleTargets.length);
+  const hasExistingSample = Boolean(stApi && state.database && existingSamples.length);
+  setDisabled("sample-add", !canAddSample);
+  setDisabled("sample-remove", !hasExistingSample);
+  setDisabled("sample-show-left", !hasExistingSample);
+  setDisabled("sample-show-right", !hasExistingSample);
+  setDisabled("sample-hide", !hasExistingSample);
+  setDisabled("sample-open-list", !state.database);
 
-  const addLeftBtn = menu.querySelector('[data-action="sample-add-left"]');
-  const addRightBtn = menu.querySelector('[data-action="sample-add-right"]');
-  const switchBtn = menu.querySelector('[data-action="sample-switch-axis"]');
+  const addBtn = menu.querySelector('[data-action="sample-add"]');
   const removeBtn = menu.querySelector('[data-action="sample-remove"]');
-  const countSuffix = sampleTargets.length > 1 ? `（${sampleTargets.length} 项）` : "";
-  if (addLeftBtn) addLeftBtn.textContent = `${t("st.menuAddLeft")}${countSuffix}`;
-  if (addRightBtn) addRightBtn.textContent = `${t("st.menuAddRight")}${countSuffix}`;
-  if (switchBtn) {
-    switchBtn.textContent = primaryExisting
-      ? (primaryExisting.series.axis === "right" ? `${t("st.menuSwitchAxis")}（→ ${t("chart.leftAxis")}）` : `${t("st.menuSwitchAxis")}（→ ${t("chart.rightAxis")}）`)
-      : t("st.menuSwitchAxis");
-  }
-  if (removeBtn) {
-    removeBtn.textContent = existingSamples.length > 1
-      ? `${t("st.menuRemove")}（${existingSamples.length} 项）`
-      : t("st.menuRemove");
-  }
+  const showLeftBtn = menu.querySelector('[data-action="sample-show-left"]');
+  const showRightBtn = menu.querySelector('[data-action="sample-show-right"]');
+  const hideBtn = menu.querySelector('[data-action="sample-hide"]');
+  if (addBtn) addBtn.textContent = newSampleTargets.length > 1 ? `${t("st.menuAdd")}（${newSampleTargets.length} 项）` : t("st.menuAdd");
+  const existSuffix = existingSamples.length > 1 ? `（${existingSamples.length} 项）` : "";
+  if (removeBtn) removeBtn.textContent = `${t("st.menuRemove")}${existSuffix}`;
+  if (showLeftBtn) showLeftBtn.textContent = `${t("st.stateLeft")}${existSuffix}`;
+  if (showRightBtn) showRightBtn.textContent = `${t("st.stateRight")}${existSuffix}`;
+  if (hideBtn) hideBtn.textContent = `${t("st.stateHidden")}${existSuffix}`;
   syncContextSubmenuGroups(menu);
   menu.hidden = false;
   menu.scrollTop = 0;
@@ -1963,17 +1976,18 @@ function collectSampleTargets(fallbackRecord, fallbackColumn) {
   const seen = new Set();
 
   const pushTarget = (rec, col) => {
-    if (!rec || rec.draftId || !rec.ref?.key?.length || !col || !stApi.isSampleableType(col.data_type)) return;
-    const pkey = stApi.pointKey(state.table, rec.ref.key, col.eng_name);
+    const pk = recordPrimaryKey(rec);
+    if (!pk || !col || !stApi.isSampleableType(col.data_type, col.disp_type)) return;
+    const pkey = stApi.pointKey(state.table, pk, col.eng_name);
     if (seen.has(pkey)) return;
     seen.add(pkey);
     const colLabel = col.chn_name || col.eng_name;
     results.push({
       table: state.table,
-      key: rec.ref.key,
+      key: pk,
       field: col.eng_name,
-      name: `${tableLabel} #${rec.ref.key.join(",")} · ${colLabel}`,
-      kind: stApi.isBoolType(col.data_type) ? "switch" : "analog"
+      name: `${tableLabel} #${pk.join(",")} · ${colLabel}`,
+      kind: stApi.isBoolType(col.data_type, col.disp_type) ? "switch" : "analog"
     });
   };
 
@@ -2013,32 +2027,26 @@ function handleRowContextAction(actionName) {
   else if (actionName === "delete-selected") run(() => deleteSelectedRows(record, index));
   else if (actionName === "clear-table") run(clearTable);
   else if (actionName === "chart-left" || actionName === "chart-right") run(() => addSelectionCurves(context.selection, actionName === "chart-left" ? "left" : "right"));
-  else if (actionName === "sample-add-left" || actionName === "sample-add-right") run(async () => {
-    const targets = context.sampleTargets || [];
+  else if (actionName === "sample-add") run(async () => {
+    const targets = context.newSampleTargets || [];
     if (!targets.length || !window.rtdbSampleTrends) return;
-    const axis = actionName === "sample-add-right" ? "right" : "left";
-    if (targets.length === 1) {
-      await window.rtdbSampleTrends.addOrUpdateFromCell({ ...targets[0], axis });
-    } else {
-      await window.rtdbSampleTrends.addManyFromCells(targets, axis);
-    }
+    await window.rtdbSampleTrends.addSamplePoints(targets);
     renderGrid();
   });
-  else if (actionName === "sample-locate") {
-    const primary = context.primaryExisting;
-    if (primary && window.rtdbSampleTrends) {
-      window.rtdbSampleTrends.focusPoint(primary.item.table, primary.item.key, primary.item.field);
+  else if (actionName === "sample-show-left" || actionName === "sample-show-right" || actionName === "sample-hide") run(async () => {
+    const existing = context.existingSamples || [];
+    if (!existing.length || !window.rtdbSampleTrends) return;
+    const mode = actionName === "sample-show-left" ? "left" : actionName === "sample-show-right" ? "right" : "hidden";
+    await window.rtdbSampleTrends.setDisplayStateForKeys(existing.map((entry) => entry.series.key), mode);
+    renderGrid();
+    if (mode !== "hidden") {
+      chartLayout.expand();
+      bottomTab("sample");
     }
-  }
-  else if (actionName === "sample-open-board") {
+  });
+  else if (actionName === "sample-open-list") {
     tab("sample-trends");
   }
-  else if (actionName === "sample-switch-axis") run(async () => {
-    const primary = context.primaryExisting;
-    if (!primary || !window.rtdbSampleTrends) return;
-    await window.rtdbSampleTrends.toggleAxisForCell(primary.item.table, primary.item.key, primary.item.field);
-    renderGrid();
-  });
   else if (actionName === "sample-remove") run(async () => {
     const existing = context.existingSamples || [];
     if (!existing.length || !window.rtdbSampleTrends) return;
@@ -4850,7 +4858,15 @@ setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", default
   collapseThreshold: 16, cssVariable: "--query-height", collapsedClass: "query-collapsed" });
 syncLayoutToggleButtons();
 if (el("toggle-sidebar")) el("toggle-sidebar").onclick = () => { sidebarLayout.toggle(); syncLayoutToggleButtons(); };
-if (el("toggle-bottom")) el("toggle-bottom").onclick = () => { chartLayout.toggle(); syncLayoutToggleButtons(); requestAnimationFrame(drawChart); };
+if (el("toggle-bottom")) el("toggle-bottom").onclick = () => {
+  chartLayout.toggle();
+  syncLayoutToggleButtons();
+  requestAnimationFrame(drawChart);
+  if (window.rtdbSampleTrends) {
+    const collapsed = document.documentElement.classList.contains("chart-collapsed");
+    window.rtdbSampleTrends.setChartVisible(el("tab-sample")?.classList.contains("active") && !collapsed);
+  }
+};
 if (el("lang-select")) el("lang-select").onchange = () => i18n.setLang(el("lang-select").value);
 if (el("theme-select")) el("theme-select").onchange = () => applyTheme(el("theme-select").value);
 i18n.onChange(() => {
@@ -5356,14 +5372,15 @@ if (window.rtdbSampleTrends) {
     getCurrentTable: () => state.table,
     confirmAction,
     notice,
-    switchToSampleTab: () => tab("sample-trends"),
+    openSampleChart: () => { chartLayout.expand(); bottomTab("sample"); },
+    openSampleList: () => tab("sample-trends"),
     onSeriesChange: () => {
       if (state.table && state.records.length) renderGrid();
     },
     fetchTableSchema: (tableName) => request(`tables/${encodeURIComponent(tableName)}/schema`),
     fetchTableRows: (tableName, limit = 200) => request(`tables/${encodeURIComponent(tableName)}/rows?limit=${limit}&offset=0`)
   });
-  window.addEventListener("rtdb:langchange", () => window.rtdbSampleTrends.redraw());
+  i18n.onChange(() => window.rtdbSampleTrends.redraw());
 }
 run(async () => {
   let info;

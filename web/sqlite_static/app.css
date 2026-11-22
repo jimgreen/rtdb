@@ -2170,11 +2170,13 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
 #data-grid td.cell-sample-point {
   position: relative;
   padding-left: 20px;
-  padding-right: 26px;
   background-color: var(--accent-soft);
   background-color: color-mix(in srgb, var(--sample-point-color, var(--accent)) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--sample-point-color, var(--accent));
   font-weight: 500;
+}
+#data-grid td.cell-sample-point[data-sample-axis] {
+  padding-right: 26px;
 }
 #data-grid td.cell-sample-point::before {
   content: "";
@@ -2211,7 +2213,7 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   opacity: 0.92;
 }
 
-/* 采样点曲线板主 Tab 分栏容器 */
+/* 采样点定义主 Tab 与底部「采样」实时曲线分页 */
 .sample-trends-tab.active {
   display: flex;
   flex-direction: column;
@@ -2221,10 +2223,10 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   overflow: hidden;
 }
 
-.st-list-pane,
-.st-chart-pane {
+.st-list-pane {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
   min-height: 120px;
   min-width: 0;
   margin-bottom: 0;
@@ -2233,8 +2235,48 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   gap: 6px;
 }
 
-.st-pane-hidden {
-  display: none !important;
+.sample-chart-panel.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 10px 8px;
+  gap: 6px;
+}
+
+.st-bottom-toolbar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 0;
+  gap: 8px;
+}
+
+.st-bottom-toolbar .st-toolbar-group,
+.st-bottom-toolbar .st-status-bar {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.st-bottom-toolbar label {
+  flex-direction: row;
+  font-size: 11px;
+  gap: 4px;
+}
+
+.st-bottom-toolbar select,
+.st-bottom-toolbar input[type="datetime-local"] {
+  height: 24px;
+  min-height: 24px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.st-bottom-toolbar .st-status-bar {
+  margin-left: auto;
+  font-size: 11px;
 }
 
 .st-toolbar {
@@ -2255,6 +2297,7 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
 
 .st-toolbar label {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 5px;
   margin: 0;
@@ -2277,7 +2320,7 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
 
 .st-toolbar select option,
 .st-inline-axis option,
-.st-ed-axis option,
+.st-ed-display option,
 .st-ed-width option,
 #st-add-dialog select option {
   background: var(--bg-option);
@@ -2419,7 +2462,8 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   gap: 6px;
 }
 
-.st-inline-axis {
+.st-inline-axis,
+.st-inline-select {
   min-height: 24px;
   padding: 1px 6px;
   border: 1px solid var(--border);
@@ -2427,6 +2471,25 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-inline-select option {
+  background: var(--bg-option);
+  color: var(--text-primary);
+}
+
+.st-ret-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.st-ret-stored {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .st-list-empty {
@@ -2436,94 +2499,12 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
   white-space: normal !important;
 }
 
-/* 中区：双向可拖拽与快捷全屏分隔条 */
-.st-splitter {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  height: 18px;
-  margin: 2px 0;
-  cursor: row-resize;
-  user-select: none;
-  touch-action: none;
-}
-
-.st-splitter::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
-  height: 2px;
-  transform: translateY(-50%);
-  background: var(--border);
-  border-radius: 2px;
-  transition: background var(--transition), height var(--transition);
-}
-
-.st-splitter:hover::before,
-.st-splitter.is-dragging::before {
-  height: 3px;
-  background: var(--accent);
-}
-
-.st-splitter-grip {
-  position: relative;
-  z-index: 1;
-  width: 28px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--border-strong);
-  transition: background var(--transition);
-}
-
-.st-splitter:hover .st-splitter-grip,
-.st-splitter.is-dragging .st-splitter-grip {
-  background: var(--accent);
-}
-
-.st-splitter-btn {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 16px;
-  padding: 0;
-  font-size: 10px;
-  line-height: 1;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition), border-color var(--transition);
-}
-
-.st-splitter-btn:hover,
-.st-splitter-btn.is-active {
-  background: var(--accent-btn);
-  border-color: var(--accent-btn);
-  color: var(--accent-btn-text);
-}
-
-body.st-resizing,
-body.st-resizing * {
-  cursor: row-resize !important;
-  user-select: none !important;
-}
-
-/* 下半区：采样点实时双轴曲线板 */
+/* 底部「采样」实时双轴曲线板 */
 .st-status-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 8px 12px;
   font-size: 12px;
   flex: 0 0 auto;
 }
@@ -2537,7 +2518,7 @@ body.st-resizing * {
 .st-chart-wrap {
   position: relative;
   flex: 1 1 0;
-  min-height: 150px;
+  min-height: 110px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-canvas);
@@ -2649,13 +2630,19 @@ body.st-resizing * {
 
 .st-series-edit-row {
   display: grid;
-  grid-template-columns: 22px 34px minmax(140px, 1fr) 74px 76px 64px;
+  grid-template-columns: 32px minmax(120px, 1fr) 62px 88px 56px 66px 84px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 6px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
+}
+
+.st-series-edit-row input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .st-series-edit-row input[type="color"] {

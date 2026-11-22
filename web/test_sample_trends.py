@@ -101,13 +101,15 @@ class SampleTrendsTest(unittest.TestCase):
         with self.assertRaises(Exception):
             validate_settings({'series': too_many})
 
-        # 重复点自动去重
+        # 重复点自动去重且默认携带 1s 周期与 10000 点留存
         dup = [
             {'point': {'table': 't', 'key': [1], 'field': 'v'}, 'axis': 'left'},
             {'point': {'table': 't', 'key': [1], 'field': 'v'}, 'axis': 'right'},
         ]
         cleaned = validate_settings({'series': dup})
         self.assertEqual(len(cleaned['series']), 1)
+        self.assertEqual(cleaned['series'][0]['interval_seconds'], 1)
+        self.assertEqual(cleaned['series'][0]['retention_points'], 10000)
 
         # 均匀降采样保留首尾
         data = [{'time_ms': i, 'samples': {}} for i in range(1000)]
@@ -124,15 +126,15 @@ class SampleTrendsTest(unittest.TestCase):
         rev1 = data['revision']
         self.assertTrue(rev1)
 
-        # 2. 定义 1 个数值采样点（左轴）和 1 个布尔采样点（右轴），周期 1 秒
+        # 2. 定义 1 个数值采样点（左轴，1s 周期，留存 100 点）和 1 个布尔采样点（右轴，2s 周期，留存 200 点）
         p_volt = {'table': 'telemetry', 'key': [1], 'field': 'voltage'}
         p_brk = {'table': 'telemetry', 'key': [1], 'field': 'breaker'}
         payload = {
-            'interval_seconds': 1,
-            'retention_seconds': 300,
             'series': [
-                {'point': p_volt, 'name': '1号主变电压', 'unit': 'kV', 'kind': 'analog', 'axis': 'left', 'color': '#2563EB'},
-                {'point': p_brk, 'name': '1号主变开关', 'unit': '', 'kind': 'switch', 'axis': 'right', 'color': '#0D9488'},
+                {'point': p_volt, 'name': '1号主变电压', 'unit': 'kV', 'kind': 'analog', 'axis': 'left',
+                 'color': '#2563EB', 'interval_seconds': 1, 'retention_points': 100},
+                {'point': p_brk, 'name': '1号主变开关', 'unit': '', 'kind': 'switch', 'axis': 'right',
+                 'color': '#0D9488', 'interval_seconds': 1, 'retention_points': 200},
             ],
         }
         status, saved = _http_json(
@@ -146,6 +148,9 @@ class SampleTrendsTest(unittest.TestCase):
         rev2 = saved['revision']
         self.assertNotEqual(rev1, rev2)
         self.assertEqual(len(saved['settings']['series']), 2)
+        self.assertEqual(saved['settings']['series'][0]['interval_seconds'], 1)
+        self.assertEqual(saved['settings']['series'][0]['retention_points'], 100)
+        self.assertEqual(saved['settings']['series'][1]['retention_points'], 200)
         # 保存后同步采入首帧
         self.assertGreaterEqual(len(saved['samples']), 1)
         first_slot = saved['samples'][-1]
@@ -154,6 +159,7 @@ class SampleTrendsTest(unittest.TestCase):
         self.assertAlmostEqual(first_slot['samples'][k_volt]['v'], 220.5)
         self.assertTrue(first_slot['samples'][k_volt]['ok'])
         self.assertAlmostEqual(first_slot['samples'][k_brk]['v'], 1.0)
+        self.assertGreaterEqual(saved['point_counts'][k_volt], 1)
 
         # 3. 过期 If-Match 必须返回 409 并附带最新状态
         status, conflict = _http_json(
@@ -182,8 +188,11 @@ class SampleTrendsTest(unittest.TestCase):
             self.assertEqual(status, 200)
             for slot in inc['samples']:
                 self.assertGreater(slot['time_ms'], last_ms)
-                if abs(slot['samples'][k_volt]['v'] - 231.8) < 1e-6:
-                    self.assertAlmostEqual(slot['samples'][k_brk]['v'], 0.0)
+                volt_rec = slot['samples'].get(k_volt)
+                brk_rec = slot['samples'].get(k_brk)
+                if volt_rec and abs(volt_rec['v'] - 231.8) < 1e-6:
+                    if brk_rec is not None:
+                        self.assertAlmostEqual(brk_rec['v'], 0.0)
                     found_updated = True
                     break
             if found_updated:
@@ -228,37 +237,40 @@ class SampleTrendsTest(unittest.TestCase):
 
     def test_retention_pruning(self):
         p_volt = {'table': 'telemetry', 'key': [1], 'field': 'voltage'}
+        k_volt = point_key(p_volt)
         status, initial = _http_json(self.base, f'/api/manage/sample-trends?database={self.db_filename}')
         self.assertEqual(status, 200)
         status, saved = _http_json(
             self.base,
             f'/api/manage/sample-trends?database={self.db_filename}',
             method='PUT',
-            body={'interval_seconds': 5, 'retention_seconds': 3600, 'series': [{'point': p_volt}]},
+            body={'series': [{'point': p_volt, 'interval_seconds': 60, 'retention_points': 100}]},
             headers={'If-Match': initial['revision']},
         )
         self.assertEqual(status, 200)
 
-        # 直接往侧库插入一条 2 小时前的历史样本
+        # 直接往分点表写入 25 条历史样本（时间严格递增）
         history = self.server.sample_trends.for_manager(self.server.sqlite_manager.for_database(self.db_filename))
-        old_ms = int(time.time() * 1000) - 7200 * 1000
+        base_ms = int(time.time() * 1000) - 50000
         with history._lock:
-            history._conn.execute(
-                'INSERT INTO trend_sample (time_ms, samples) VALUES (?, ?)',
-                (old_ms, json.dumps({point_key(p_volt): {'v': 100.0, 'q': 0, 'ok': True, 'f': True}})),
+            history._conn.executemany(
+                'INSERT OR REPLACE INTO trend_point_sample '
+                '(point_key, time_ms, value, quality, ok, found) VALUES (?, ?, ?, ?, ?, ?)',
+                [(k_volt, base_ms + i * 1000, float(100 + i), 0, 1, 1) for i in range(25)],
             )
             history._conn.commit()
 
-        # 更新留存为 60 秒应自动裁剪掉 2 小时前的记录
+        # 将该采样点留存点数调整为 10 点，应精确裁剪至仅保留最新的 10 条样本
         status, after = _http_json(
             self.base,
             f'/api/manage/sample-trends?database={self.db_filename}',
             method='PUT',
-            body={'interval_seconds': 5, 'retention_seconds': 60, 'series': [{'point': p_volt}]},
+            body={'series': [{'point': p_volt, 'interval_seconds': 60, 'retention_points': 10}]},
             headers={'If-Match': saved['revision']},
         )
         self.assertEqual(status, 200)
-        self.assertTrue(all(slot['time_ms'] > old_ms for slot in after['samples']))
+        self.assertEqual(after['point_counts'][k_volt], 10)
+        self.assertEqual(len(after['samples']), 10)
 
 
 if __name__ == '__main__':

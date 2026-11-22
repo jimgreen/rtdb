@@ -483,9 +483,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                     http_status=200, method='PUT',
                     path='/api/manage/sample-trends',
                     duration_ms=(time.perf_counter() - started) * 1000,
-                    result={'series_count': len(result.get('settings', {}).get('series', [])),
-                            'interval_seconds': result.get('settings', {}).get('interval_seconds'),
-                            'retention_seconds': result.get('settings', {}).get('retention_seconds')},
+                    result={'series_count': len(result.get('settings', {}).get('series', []))},
                 )
                 self._server_ms = (time.perf_counter() - started) * 1000
                 self._send_json(200, result)

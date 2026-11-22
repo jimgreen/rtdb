@@ -1,15 +1,15 @@
 """独立侧库采样点定义与后台历史趋势采集服务。
 
-参考 SCADA 采样点与曲线板（PointTrendHistory）设计：
-- 不侵入业务 SQLite 库，在 <data_dir>/.rtdb-trends/<hash>.sqlite3 独立保存采样配置与样本；
+参考 SCADA 采样点与曲线板（PointTrendHistory）设计，并升级为分点独立参数：
+- 不侵入业务 SQLite 库，在 <data_dir>/.rtdb-trends/<hash>.sqlite3 独立保存采样配置与分点样本；
 - 支持任意 RTDB 标准表及原生 SQLite 表的数值 / 布尔字段按主键定位采集（每库最多 24 点）；
-- 后台守护线程按固定节拍批量只读采样、自动按留存期裁剪并执行增量 vacuum；
+- 每个采样点独立定义采样周期（interval_seconds，单位秒）与后台留存点数（retention_points，单位点数）；
+- 后台守护线程按各点独立节拍批量只读采集、按各自留存点数精确裁剪并定期执行增量 vacuum；
 - 提供增量游标查询（after_ms + 均匀降采样）与基于 revision / If-Match 的乐观并发更新。
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from contextlib import closing
 import copy
 import hashlib
 import json
@@ -22,17 +22,18 @@ import sqlite3
 import threading
 import time
 
-from core.sqlite_db import _BOOL, _FLOAT, _INT
+from core.sqlite_db import _BOOL
 from .errors import APIError
 from .sqlite_service import browser_value
 
 LOG = logging.getLogger(__name__)
 
 MAX_POINTS = 24
-DEFAULT_INTERVAL_SECONDS = 5
-DEFAULT_RETENTION_SECONDS = 3600
-MAX_INTERVAL_SECONDS = 60
-MAX_RETENTION_SECONDS = 86400
+DEFAULT_INTERVAL_SECONDS = 1
+MAX_INTERVAL_SECONDS = 3600
+DEFAULT_RETENTION_POINTS = 10000
+MIN_RETENTION_POINTS = 10
+MAX_RETENTION_POINTS = 100000
 MAX_RESULTS = 7200
 _PRUNE_INTERVAL = 30.0
 _VACUUM_PAGES = 16
@@ -117,8 +118,6 @@ def point_key(point: dict) -> str:
 def default_settings() -> dict:
     """默认采样配置与曲线视图设置。"""
     return {
-        'interval_seconds': DEFAULT_INTERVAL_SECONDS,
-        'retention_seconds': DEFAULT_RETENTION_SECONDS,
         'series': [],
         'view': {
             'open': True,
@@ -196,18 +195,37 @@ def _validate_view(raw, current: dict) -> dict:
 
 
 def validate_settings(body, current: dict | None = None) -> dict:
-    """校验并规范化完整采样点设置与视图参数。"""
+    """校验并规范化完整采样点设置与视图参数（兼容旧全局周期/留存字段迁移）。"""
     if not isinstance(body, dict):
         raise APIError(400, '采样配置必须是 JSON 对象')
     base = copy.deepcopy(current) if isinstance(current, dict) else default_settings()
-    interval = _int_value(
-        body.get('interval_seconds', base.get('interval_seconds', DEFAULT_INTERVAL_SECONDS)),
-        '采样周期（秒）', 1, MAX_INTERVAL_SECONDS,
-    )
-    retention = _int_value(
-        body.get('retention_seconds', base.get('retention_seconds', DEFAULT_RETENTION_SECONDS)),
-        '后台留存时长（秒）', 1, MAX_RETENTION_SECONDS,
-    )
+
+    # 兼容旧版顶层 interval_seconds / retention_seconds 作为未显式指定时的默认值回退
+    legacy_interval = DEFAULT_INTERVAL_SECONDS
+    raw_legacy_interval = body.get('interval_seconds', base.get('interval_seconds'))
+    if raw_legacy_interval is not None:
+        legacy_interval = _int_value(raw_legacy_interval, '采样周期（秒）', 1, MAX_INTERVAL_SECONDS)
+
+    legacy_retention_points = DEFAULT_RETENTION_POINTS
+    raw_legacy_ret_pts = body.get('retention_points')
+    raw_legacy_ret_sec = body.get('retention_seconds', base.get('retention_seconds'))
+    if raw_legacy_ret_pts is not None:
+        legacy_retention_points = _int_value(
+            raw_legacy_ret_pts, '后台留存点数', MIN_RETENTION_POINTS, MAX_RETENTION_POINTS
+        )
+    elif raw_legacy_ret_sec is not None and not isinstance(raw_legacy_ret_sec, bool):
+        try:
+            est = int(round(float(raw_legacy_ret_sec) / max(1, legacy_interval)))
+            legacy_retention_points = max(MIN_RETENTION_POINTS, min(MAX_RETENTION_POINTS, est))
+        except (TypeError, ValueError):
+            pass
+
+    existing_by_key = {
+        item.get('key'): item
+        for item in (base.get('series') or [])
+        if isinstance(item, dict) and item.get('key')
+    }
+
     raw_series = body.get('series', base.get('series', []))
     if not isinstance(raw_series, list):
         raise APIError(400, 'series 采样点列表必须是数组')
@@ -224,6 +242,8 @@ def validate_settings(body, current: dict | None = None) -> dict:
         if pkey in seen:
             continue
         seen.add(pkey)
+        prev = existing_by_key.get(pkey, {})
+
         name = item.get('name')
         if not isinstance(name, str) or not name.strip():
             key_text = ','.join(str(v) for v in point['key'])
@@ -246,6 +266,18 @@ def validate_settings(body, current: dict | None = None) -> dict:
         else:
             color = color.strip()
         width = _int_value(item.get('width', 2), '曲线线宽', 1, 6)
+
+        raw_item_interval = item.get('interval_seconds', prev.get('interval_seconds', legacy_interval))
+        item_interval = _int_value(raw_item_interval, f'采样点 {name} 的采样周期（秒）', 1, MAX_INTERVAL_SECONDS)
+
+        raw_item_retention = item.get('retention_points', prev.get('retention_points', legacy_retention_points))
+        item_retention = _int_value(
+            raw_item_retention,
+            f'采样点 {name} 的后台留存点数',
+            MIN_RETENTION_POINTS,
+            MAX_RETENTION_POINTS,
+        )
+
         series.append({
             'key': pkey,
             'point': point,
@@ -256,12 +288,12 @@ def validate_settings(body, current: dict | None = None) -> dict:
             'axis': axis,
             'color': color,
             'width': width,
+            'interval_seconds': item_interval,
+            'retention_points': item_retention,
         })
 
     view = _validate_view(body.get('view'), base.get('view', {}))
     return {
-        'interval_seconds': interval,
-        'retention_seconds': retention,
         'series': series,
         'view': view,
     }
@@ -298,21 +330,7 @@ def _to_numeric(raw, is_bool: bool):
 
 
 def read_sample_points(manager, points: list[dict]) -> dict[str, dict]:
-    """按表分组在单次只读事务中批量读取采样点当前值。
-
-    返回值按 point_key 索引：
-    {
-      "<point_key>": {
-        "value": 220.5,
-        "raw": 220.5,
-        "valid": True,
-        "found": True,
-        "kind": "analog" | "switch",
-        "quality": 0,   # 0 正常；1 无效/空值；2 缺失/不可读
-        "time_ms": 1730000000000
-      }
-    }
-    """
+    """按表分组在单次只读事务中批量读取采样点当前值。"""
     if not points:
         return {}
     if len(points) > MAX_POINTS:
@@ -359,7 +377,8 @@ def read_sample_points(manager, points: list[dict]) -> dict[str, dict]:
                         }
                         continue
                     dtype = col.data_type.strip().lower()
-                    is_bool = dtype in _BOOL
+                    disp = (getattr(col, 'disp_type', '') or '').strip().lower()
+                    is_bool = dtype in _BOOL or disp in ('布尔', 'bool', 'boolean')
                     kind = 'switch' if is_bool else 'analog'
                     row = rows.get(lookup_map[pkey])
                     if row is None:
@@ -453,7 +472,7 @@ class _FileLock:
 
 
 class SampleTrendHistory:
-    """单个数据库的采样点定义持久化与后台定时采集器。"""
+    """单个数据库的采样点定义持久化与分点独立节拍后台采集器。"""
 
     def __init__(self, manager, db_key: str, storage_path: Path):
         self._manager = manager
@@ -468,11 +487,12 @@ class SampleTrendHistory:
         self._conn: sqlite3.Connection | None = None
         self._settings = default_settings()
         self._revision = self._compute_revision(self._settings)
-        self._last_prune = 0.0
-        self._sample_immediately = False
+        self._last_vacuum = 0.0
+        self._next_due: dict[str, float] = {}
 
         self._open_storage()
         if self._settings['series']:
+            self._reset_schedule_locked()
             self._ensure_thread_locked()
 
     @staticmethod
@@ -506,10 +526,19 @@ class SampleTrendHistory:
                     'updated_ms INTEGER NOT NULL)'
                 )
                 conn.execute(
-                    'CREATE TABLE IF NOT EXISTS trend_sample ('
-                    'time_ms INTEGER PRIMARY KEY, '
-                    'samples TEXT NOT NULL)'
+                    'CREATE TABLE IF NOT EXISTS trend_point_sample ('
+                    'point_key TEXT NOT NULL, '
+                    'time_ms INTEGER NOT NULL, '
+                    'value REAL, '
+                    'quality INTEGER NOT NULL, '
+                    'ok INTEGER NOT NULL, '
+                    'found INTEGER NOT NULL, '
+                    'PRIMARY KEY (point_key, time_ms)'
+                    ') WITHOUT ROWID'
                 )
+                # 若存在旧版 trend_sample 且新表为空，则平滑迁移历史数据
+                self._migrate_legacy_samples(conn)
+
                 row = conn.execute('SELECT settings, revision FROM trend_settings WHERE id = 1').fetchone()
                 if row is not None:
                     try:
@@ -536,6 +565,59 @@ class SampleTrendHistory:
             self._file_lock.release()
             raise
 
+    @staticmethod
+    def _migrate_legacy_samples(conn: sqlite3.Connection) -> None:
+        has_legacy = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trend_sample'"
+        ).fetchone()
+        if not has_legacy:
+            return
+        already = conn.execute('SELECT 1 FROM trend_point_sample LIMIT 1').fetchone()
+        if already:
+            return
+        rows = conn.execute('SELECT time_ms, samples FROM trend_sample ORDER BY time_ms ASC').fetchall()
+        batch = []
+        for ts, raw_json in rows:
+            try:
+                parsed = json.loads(raw_json)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            for pkey, rec in parsed.items():
+                if not isinstance(rec, dict):
+                    continue
+                batch.append((
+                    str(pkey),
+                    int(ts),
+                    rec.get('v'),
+                    int(rec.get('q', 0)),
+                    1 if rec.get('ok') else 0,
+                    1 if rec.get('f', True) else 0,
+                ))
+        if batch:
+            conn.executemany(
+                'INSERT OR IGNORE INTO trend_point_sample '
+                '(point_key, time_ms, value, quality, ok, found) VALUES (?, ?, ?, ?, ?, ?)',
+                batch,
+            )
+            conn.commit()
+
+    def _reset_schedule_locked(self, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        next_due: dict[str, float] = {}
+        for item in self._settings['series']:
+            pkey = item['key']
+            interval = max(1, int(item.get('interval_seconds', DEFAULT_INTERVAL_SECONDS)))
+            existing = self._next_due.get(pkey)
+            # 保留尚未到期且周期合理的已有排期；新点或修改周期后立即重新对齐网格
+            aligned = (math.floor(now / interval) + 1) * interval
+            if existing is not None and now < existing <= now + interval + 0.5:
+                next_due[pkey] = existing
+            else:
+                next_due[pkey] = aligned
+        self._next_due = next_due
+
     def _ensure_thread_locked(self):
         if self._closed or (self._thread is not None and self._thread.is_alive()):
             return
@@ -552,100 +634,126 @@ class SampleTrendHistory:
         with self._lock:
             return (not self._closed) and bool(self._settings['series'])
 
-    def _sample_once(self) -> None:
-        with self._lock:
-            if self._closed or self._conn is None:
-                return
-            series = copy.deepcopy(self._settings['series'])
-            retention_ms = self._settings['retention_seconds'] * 1000
-        if not series:
-            self._maybe_prune(retention_ms, force=False)
-            return
+    def _prune_points_locked(self, items: list[dict], *, cleanup_orphans: bool = False) -> bool:
+        if self._closed or self._conn is None:
+            return False
+        deleted_any = False
+        if cleanup_orphans:
+            active_keys = [item['key'] for item in self._settings['series']]
+            if active_keys:
+                placeholders = ','.join('?' for _ in active_keys)
+                cur = self._conn.execute(
+                    f'DELETE FROM trend_point_sample WHERE point_key NOT IN ({placeholders})',
+                    active_keys,
+                )
+            else:
+                cur = self._conn.execute('DELETE FROM trend_point_sample')
+            if cur.rowcount and cur.rowcount > 0:
+                deleted_any = True
 
-        points = [item['point'] for item in series]
+        for item in items:
+            pkey = item['key']
+            keep = max(MIN_RETENTION_POINTS, int(item.get('retention_points', DEFAULT_RETENTION_POINTS)))
+            cutoff_row = self._conn.execute(
+                'SELECT time_ms FROM trend_point_sample '
+                'WHERE point_key = ? ORDER BY time_ms DESC LIMIT 1 OFFSET ?',
+                (pkey, keep - 1),
+            ).fetchone()
+            if cutoff_row is not None:
+                cur = self._conn.execute(
+                    'DELETE FROM trend_point_sample WHERE point_key = ? AND time_ms < ?',
+                    (pkey, cutoff_row[0]),
+                )
+                if cur.rowcount and cur.rowcount > 0:
+                    deleted_any = True
+
+        if deleted_any:
+            self._conn.commit()
+            now_mono = time.monotonic()
+            if (now_mono - self._last_vacuum) >= _PRUNE_INTERVAL:
+                self._last_vacuum = now_mono
+                try:
+                    self._conn.execute(f'PRAGMA incremental_vacuum({_VACUUM_PAGES})')
+                except sqlite3.Error:
+                    pass
+        return deleted_any
+
+    def _sample_items(self, items: list[dict]) -> None:
+        if not items:
+            return
+        points = [item['point'] for item in items]
         readings = read_sample_points(self._manager, points)
         sample_ms = _utc_ms()
-        compact_samples = {}
-        for item in series:
+        rows_to_insert = []
+        for item in items:
             pkey = item['key']
             reading = readings.get(pkey)
             if reading is None:
                 continue
-            compact_samples[pkey] = {
-                'v': reading['value'],
-                'q': reading['quality'],
-                'ok': bool(reading['valid']),
-                'f': bool(reading['found']),
-            }
+            rows_to_insert.append((
+                pkey,
+                sample_ms,
+                reading['value'],
+                int(reading['quality']),
+                1 if reading['valid'] else 0,
+                1 if reading['found'] else 0,
+            ))
+        if not rows_to_insert:
+            return
 
         with self._lock:
             if self._closed or self._conn is None:
                 return
             try:
-                self._conn.execute(
-                    'INSERT OR REPLACE INTO trend_sample (time_ms, samples) VALUES (?, ?)',
-                    (sample_ms, json.dumps(compact_samples, ensure_ascii=False, separators=(',', ':'))),
+                self._conn.executemany(
+                    'INSERT OR REPLACE INTO trend_point_sample '
+                    '(point_key, time_ms, value, quality, ok, found) VALUES (?, ?, ?, ?, ?, ?)',
+                    rows_to_insert,
                 )
                 self._conn.commit()
+                self._prune_points_locked(items, cleanup_orphans=False)
             except sqlite3.Error as error:
                 LOG.warning('写入采样样本失败 (%s): %s', self.db_key, error)
-                return
-        self._maybe_prune(retention_ms, force=False)
-
-    def _maybe_prune(self, retention_ms: int, *, force: bool = False) -> None:
-        now_mono = time.monotonic()
-        if not force and (now_mono - self._last_prune) < _PRUNE_INTERVAL:
-            return
-        cutoff = _utc_ms() - retention_ms
-        with self._lock:
-            if self._closed or self._conn is None:
-                return
-            self._last_prune = now_mono
-            try:
-                cursor = self._conn.execute('DELETE FROM trend_sample WHERE time_ms < ?', (cutoff,))
-                deleted = cursor.rowcount
-                if deleted and deleted > 0:
-                    self._conn.commit()
-                    self._conn.execute(f'PRAGMA incremental_vacuum({_VACUUM_PAGES})')
-            except sqlite3.Error as error:
-                LOG.warning('裁剪过期采样样本失败 (%s): %s', self.db_key, error)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             with self._lock:
-                interval = self._settings['interval_seconds']
-                has_series = bool(self._settings['series'])
-                immediate = self._sample_immediately
-                self._sample_immediately = False
+                series = copy.deepcopy(self._settings['series'])
+                if not series:
+                    self._next_due.clear()
+                    wait_seconds = 30.0
+                    due_items: list[dict] = []
+                else:
+                    now = time.time()
+                    if set(self._next_due) != {item['key'] for item in series}:
+                        self._reset_schedule_locked(now)
+                    due_items = []
+                    nearest = float('inf')
+                    for item in series:
+                        pkey = item['key']
+                        interval = max(1, int(item.get('interval_seconds', DEFAULT_INTERVAL_SECONDS)))
+                        due_at = self._next_due.get(pkey, now + interval)
+                        if due_at <= now + 0.02:
+                            due_items.append(item)
+                            next_tick = (math.floor(now / interval) + 1) * interval
+                            self._next_due[pkey] = next_tick
+                            due_at = next_tick
+                        if due_at < nearest:
+                            nearest = due_at
+                    wait_seconds = max(0.05, nearest - now) if math.isfinite(nearest) else 1.0
 
-            if not has_series:
-                # 无采样点时不空转，等待新配置唤醒或关闭信号。
-                self._wakeup.wait(timeout=30.0)
-                self._wakeup.clear()
-                continue
-
-            if immediate:
+            if due_items:
                 try:
-                    self._sample_once()
+                    self._sample_items(due_items)
                 except Exception as error:
-                    LOG.warning('后台即时采样异常 (%s): %s', self.db_key, error)
-
-            now = time.time()
-            next_tick = (math.floor(now / interval) + 1) * interval
-            wait_seconds = max(0.05, next_tick - now)
-            woken = self._wakeup.wait(timeout=wait_seconds)
-            self._wakeup.clear()
-            if self._stop.is_set():
-                break
-            if woken:
+                    LOG.warning('后台定时采样异常 (%s): %s', self.db_key, error)
                 continue
-            try:
-                self._sample_once()
-            except Exception as error:
-                LOG.warning('后台定时采样异常 (%s): %s', self.db_key, error)
+
+            self._wakeup.wait(timeout=wait_seconds)
+            self._wakeup.clear()
 
     def get(self, after_ms: int = 0) -> dict:
-        """读取当前采样配置与时间大于 after_ms 的历史采样点数据。"""
+        """读取当前采样配置、各点已留存点数及时间大于 after_ms 的历史采样数据。"""
         if after_ms < 0:
             after_ms = 0
         with self._lock:
@@ -653,32 +761,53 @@ class SampleTrendHistory:
                 raise APIError(503, '采样服务已关闭')
             settings = copy.deepcopy(self._settings)
             revision = self._revision
-            retention_ms = settings['retention_seconds'] * 1000
-            cutoff = max(after_ms, _utc_ms() - retention_ms)
-            rows = self._conn.execute(
-                'SELECT time_ms, samples FROM trend_sample WHERE time_ms > ? ORDER BY time_ms ASC',
-                (cutoff,),
-            ).fetchall()
+            series = settings['series']
+            active_keys = [item['key'] for item in series]
+            point_counts: dict[str, int] = {pkey: 0 for pkey in active_keys}
+            slots_by_time: dict[int, dict] = {}
 
-        samples = []
-        for ts, raw_json in rows:
-            try:
-                parsed = json.loads(raw_json)
-            except json.JSONDecodeError:
-                continue
-            samples.append({'time_ms': ts, 'samples': parsed})
+            if active_keys:
+                placeholders = ','.join('?' for _ in active_keys)
+                for pkey, cnt in self._conn.execute(
+                    f'SELECT point_key, COUNT(*) FROM trend_point_sample '
+                    f'WHERE point_key IN ({placeholders}) GROUP BY point_key',
+                    active_keys,
+                ).fetchall():
+                    point_counts[str(pkey)] = int(cnt)
+
+                rows = self._conn.execute(
+                    f'SELECT time_ms, point_key, value, quality, ok, found '
+                    f'FROM trend_point_sample '
+                    f'WHERE point_key IN ({placeholders}) AND time_ms > ? '
+                    f'ORDER BY time_ms ASC',
+                    (*active_keys, after_ms),
+                ).fetchall()
+                for ts, pkey, val, qual, ok_flag, found_flag in rows:
+                    slot = slots_by_time.get(ts)
+                    if slot is None:
+                        slot = {}
+                        slots_by_time[ts] = slot
+                    slot[pkey] = {
+                        'v': val,
+                        'q': int(qual),
+                        'ok': bool(ok_flag),
+                        'f': bool(found_flag),
+                    }
+
+        samples = [{'time_ms': ts, 'samples': slots_by_time[ts]} for ts in sorted(slots_by_time)]
         samples = _downsample(samples, MAX_RESULTS)
         return {
             'database': self.db_key if self.db_key != '__default__' else None,
             'settings': settings,
             'samples': samples,
+            'point_counts': point_counts,
             'revision': revision,
             'server_time_ms': _utc_ms(),
             'max_points': MAX_POINTS,
         }
 
     def put(self, body: dict, *, expected_revision: str | None = None) -> dict:
-        """乐观并发更新采样配置、周期与视图参数，并立即触发一次采集。"""
+        """乐观并发更新各采样点独立配置（周期/留存点数/轴向/视图），并按点数即时裁剪。"""
         with self._lock:
             if self._closed or self._conn is None:
                 raise APIError(503, '采样服务已关闭')
@@ -690,26 +819,29 @@ class SampleTrendHistory:
                         '采样点配置已被其他会话修改，已刷新最新配置，请核对后重试',
                         details=self.get(0),
                     )
+            old_keys = {item['key'] for item in self._settings['series']}
             validated = validate_settings(body, self._settings)
             new_revision = self._compute_revision(validated, _utc_ms())
             self._conn.execute(
                 'INSERT OR REPLACE INTO trend_settings (id, settings, revision, updated_ms) VALUES (1, ?, ?, ?)',
                 (json.dumps(validated, ensure_ascii=False), new_revision, _utc_ms()),
             )
-            cutoff = _utc_ms() - validated['retention_seconds'] * 1000
-            self._conn.execute('DELETE FROM trend_sample WHERE time_ms < ?', (cutoff,))
             self._conn.commit()
             self._settings = validated
             self._revision = new_revision
-            has_series = bool(validated['series'])
-            if has_series:
+            # 清理已移除点并按新留存点数裁剪现有点
+            self._prune_points_locked(validated['series'], cleanup_orphans=True)
+
+            # 新加入的采样点立刻采集首帧；如果原本没有任何样本，也立即采一帧
+            added_items = [item for item in validated['series'] if item['key'] not in old_keys]
+            self._reset_schedule_locked()
+            if validated['series']:
                 self._ensure_thread_locked()
             self._wakeup.set()
 
-        # 若新增或保留了采样点，同步快速采集首帧，让前端立即可见当前值。
-        if has_series:
+        if added_items:
             try:
-                self._sample_once()
+                self._sample_items(added_items)
             except Exception as error:
                 LOG.warning('保存采样配置后即时采集失败 (%s): %s', self.db_key, error)
         return self.get(0)
@@ -758,7 +890,6 @@ class SampleTrendRegistry:
             existing = self._histories.get(db_key)
             if existing is not None:
                 return existing
-            # 保存独立的 manager 浅拷贝用于后台定时采集，不受请求级状态影响。
             scoped_manager = copy.copy(manager)
             history = SampleTrendHistory(scoped_manager, db_key, self._storage_path(db_key))
             self._histories[db_key] = history

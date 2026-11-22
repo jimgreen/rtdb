@@ -2,24 +2,27 @@
  * 参考 SCADA PointTrendHistory / point-trend.js / point-trends-page.js 设计，
  * 完整适配 RTDB 多数据库、8 套 data-theme 视觉主题与中/英/俄三语体系。
  */
-(function () {
+window.rtdbSampleTrends = (function () {
   const MAX_POINTS = 24;
+  const DEFAULT_INTERVAL_SECONDS = 1;
+  const DEFAULT_RETENTION_POINTS = 10000;
   const DEFAULT_PALETTE = [
     "#2563EB", "#0D9488", "#EA580C", "#7C3AED",
     "#DC2626", "#0284C7", "#16A34A", "#CA8A04",
     "#DB2777", "#4F46E5", "#0891B2", "#65A30D"
   ];
-  const INTERVAL_PRESETS = [1, 2, 5, 10, 15, 30, 60];
-  const RETENTION_PRESETS_MIN = [15, 30, 60, 180, 360, 720, 1440];
+  const INTERVAL_PRESETS = [1, 2, 5, 10, 15, 30, 60, 300];
+  const RETENTION_POINT_PRESETS = [100, 500, 1000, 3000, 5000, 10000, 20000, 50000, 100000];
   const WINDOW_PRESETS_MIN = [5, 15, 30, 60, 180, 360, 720, 1440];
-  const LAYOUT_STORAGE_KEY = "rtdb.sampleTrends.layout";
   const NUMERIC_OR_BOOL_TYPES = new Set([
     "int", "int8", "int16", "int32", "int64", "integer", "tinyint", "smallint", "mediumint", "bigint",
-    "uint", "uint8", "uint16", "uint32", "uint64", "unsigned",
+    "short", "ushort", "long", "ulong", "longlong", "ulonglong", "uchar", "schar", "byte", "word", "dword",
+    "uint", "uint8", "uint16", "uint32", "uint64", "unsigned", "datetime", "timestamp",
     "float", "float32", "float64", "double", "real", "decimal", "numeric", "number",
     "bool", "boolean", "bit"
   ]);
   const BOOL_TYPES = new Set(["bool", "boolean", "bit"]);
+  const BOOL_DISP_TYPES = new Set(["布尔", "bool", "boolean"]);
 
   const el = (id) => document.getElementById(id);
   const tr = (key, params, fallback) => {
@@ -37,13 +40,32 @@
     return JSON.stringify([String(table), Array.isArray(key) ? key : [key], String(field)]);
   }
 
-  function isSampleableType(dataType) {
+  function getDisplayState(item) {
+    if (!item || item.visible === false) return "hidden";
+    return item.axis === "right" ? "right" : "left";
+  }
+
+  function applyDisplayState(item, mode) {
+    if (mode === "hidden") {
+      item.visible = false;
+    } else if (mode === "right") {
+      item.visible = true;
+      item.axis = "right";
+    } else {
+      item.visible = true;
+      item.axis = "left";
+    }
+  }
+
+  function isSampleableType(dataType, dispType) {
+    if (dispType && BOOL_DISP_TYPES.has(String(dispType).trim().toLowerCase())) return true;
     if (!dataType) return false;
     const normalized = String(dataType).trim().toLowerCase().replace(/\(.*\)$/, "");
     return NUMERIC_OR_BOOL_TYPES.has(normalized);
   }
 
-  function isBoolType(dataType) {
+  function isBoolType(dataType, dispType) {
+    if (dispType && BOOL_DISP_TYPES.has(String(dispType).trim().toLowerCase())) return true;
     if (!dataType) return false;
     const normalized = String(dataType).trim().toLowerCase().replace(/\(.*\)$/, "");
     return BOOL_TYPES.has(normalized);
@@ -51,8 +73,6 @@
 
   function defaultSettings() {
     return {
-      interval_seconds: 5,
-      retention_seconds: 3600,
       series: [],
       view: {
         open: true,
@@ -166,7 +186,8 @@
     host: null,
     workspace: "",
     database: "",
-    active: false,
+    listVisible: false,
+    chartVisible: false,
     initialized: false,
     loading: false,
     saving: false,
@@ -177,6 +198,7 @@
     lastSampleMs: 0,
     settings: defaultSettings(),
     samples: [],        // [{ time_ms, samples: { [key]: { v, q, ok, f } } }]
+    pointCounts: {},    // { [key]: 已留存点数 }
     seriesMap: new Map(), // key -> series item
     focusedKey: null,
     error: "",
@@ -190,12 +212,12 @@
       schema: null,
       rows: [],
       loadingRows: false
-    },
-    layout: {
-      mode: "split",    // "split" | "chart-full" | "list-full"
-      listRatio: 0.38
     }
   };
+
+  function isAnyVisible() {
+    return state.listVisible || state.chartVisible;
+  }
 
   function apiUrl(path, extraParams) {
     const params = new URLSearchParams();
@@ -249,17 +271,23 @@
     if (Number.isFinite(payload.server_time_ms)) {
       state.serverOffsetMs = payload.server_time_ms - Date.now();
     }
+    if (payload.point_counts && typeof payload.point_counts === "object") {
+      state.pointCounts = payload.point_counts;
+    }
     const incoming = Array.isArray(payload.samples) ? payload.samples : [];
     if (!incremental) {
       state.samples = incoming;
     } else if (incoming.length) {
       const byTime = new Map(state.samples.map((s) => [s.time_ms, s]));
-      for (const item of incoming) byTime.set(item.time_ms, item);
-      const retentionMs = (state.settings.retention_seconds || 3600) * 1000;
-      const cutoff = (Date.now() + state.serverOffsetMs) - retentionMs - 5000;
-      state.samples = [...byTime.values()]
-        .filter((s) => s.time_ms >= cutoff)
-        .sort((a, b) => a.time_ms - b.time_ms);
+      for (const item of incoming) {
+        const prev = byTime.get(item.time_ms);
+        if (prev) {
+          byTime.set(item.time_ms, { time_ms: item.time_ms, samples: { ...prev.samples, ...item.samples } });
+        } else {
+          byTime.set(item.time_ms, item);
+        }
+      }
+      state.samples = [...byTime.values()].sort((a, b) => a.time_ms - b.time_ms);
       if (state.samples.length > 7200) {
         state.samples = state.samples.slice(state.samples.length - 7200);
       }
@@ -279,9 +307,9 @@
   function updateTabBadge() {
     const badge = el("sample-trends-badge");
     if (!badge) return;
-    const count = (state.settings.series || []).length;
-    badge.textContent = count > 0 ? String(count) : "";
-    badge.hidden = count === 0;
+    const shownCount = (state.settings.series || []).filter((s) => s.visible !== false).length;
+    badge.textContent = shownCount > 0 ? String(shownCount) : "";
+    badge.hidden = shownCount === 0;
   }
 
   async function syncFromServer({ configOnly = false, incremental = false } = {}) {
@@ -380,107 +408,14 @@
 
   function scheduleNextPoll() {
     stopPolling();
-    if (!state.active || document.hidden || !state.database) return;
-    if (!(state.settings.series || []).length) return;
-    const intervalMs = Math.max(2000, (state.settings.interval_seconds || 5) * 1000);
+    if (!isAnyVisible() || document.hidden || !state.database) return;
+    const series = state.settings.series || [];
+    if (!series.length) return;
+    const minIntervalSec = Math.min(...series.map((s) => Math.max(1, Number(s.interval_seconds) || DEFAULT_INTERVAL_SECONDS)));
+    const intervalMs = Math.max(1000, minIntervalSec * 1000);
     state.pollTimer = setTimeout(() => {
       void syncFromServer({ incremental: true });
     }, intervalMs);
-  }
-
-  /* ==================== 布局分栏与拖拽分隔条 ==================== */
-  function loadLayout() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(LAYOUT_STORAGE_KEY) || "null");
-      if (raw && typeof raw === "object") {
-        if (["split", "chart-full", "list-full"].includes(raw.mode)) state.layout.mode = raw.mode;
-        if (typeof raw.listRatio === "number" && raw.listRatio >= 0.16 && raw.listRatio <= 0.80) {
-          state.layout.listRatio = raw.listRatio;
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  function saveLayout() {
-    try {
-      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state.layout));
-    } catch { /* ignore */ }
-  }
-
-  function applyLayout() {
-    const listPane = el("st-list-pane");
-    const chartPane = el("st-chart-pane");
-    const btnChartFull = el("st-btn-chart-full");
-    const btnListFull = el("st-btn-list-full");
-    if (!listPane || !chartPane) return;
-    const mode = state.layout.mode;
-    listPane.classList.toggle("st-pane-hidden", mode === "chart-full");
-    chartPane.classList.toggle("st-pane-hidden", mode === "list-full");
-    if (mode === "split") {
-      listPane.style.flex = `0 0 ${Math.round(state.layout.listRatio * 100)}%`;
-      chartPane.style.flex = "1 1 0";
-    } else {
-      listPane.style.flex = "1 1 0";
-      chartPane.style.flex = "1 1 0";
-    }
-    if (btnChartFull) btnChartFull.classList.toggle("is-active", mode === "chart-full");
-    if (btnListFull) btnListFull.classList.toggle("is-active", mode === "list-full");
-    requestAnimationFrame(drawChart);
-  }
-
-  function bindSplitter() {
-    const splitter = el("st-splitter");
-    const container = el("tab-sample-trends");
-    if (!splitter || !container) return;
-    let dragging = null;
-
-    splitter.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button") || event.button !== 0) return;
-      event.preventDefault();
-      splitter.setPointerCapture(event.pointerId);
-      const rect = container.getBoundingClientRect();
-      dragging = { pointerId: event.pointerId, top: rect.top, height: Math.max(240, rect.height) };
-      splitter.classList.add("is-dragging");
-      document.body.classList.add("st-resizing");
-    });
-
-    splitter.addEventListener("pointermove", (event) => {
-      if (!dragging || event.pointerId !== dragging.pointerId) return;
-      const ratio = (event.clientY - dragging.top) / dragging.height;
-      state.layout.mode = "split";
-      state.layout.listRatio = Math.max(0.18, Math.min(0.76, ratio));
-      applyLayout();
-    });
-
-    const endDrag = (event) => {
-      if (!dragging || event.pointerId !== dragging.pointerId) return;
-      splitter.classList.remove("is-dragging");
-      document.body.classList.remove("st-resizing");
-      if (splitter.hasPointerCapture(dragging.pointerId)) splitter.releasePointerCapture(dragging.pointerId);
-      dragging = null;
-      saveLayout();
-    };
-    splitter.addEventListener("pointerup", endDrag);
-    splitter.addEventListener("pointercancel", endDrag);
-
-    splitter.addEventListener("dblclick", (event) => {
-      if (event.target.closest("button")) return;
-      state.layout.mode = "split";
-      state.layout.listRatio = 0.38;
-      saveLayout();
-      applyLayout();
-    });
-
-    el("st-btn-chart-full")?.addEventListener("click", () => {
-      state.layout.mode = state.layout.mode === "chart-full" ? "split" : "chart-full";
-      saveLayout();
-      applyLayout();
-    });
-    el("st-btn-list-full")?.addEventListener("click", () => {
-      state.layout.mode = state.layout.mode === "list-full" ? "split" : "list-full";
-      saveLayout();
-      applyLayout();
-    });
   }
 
   /* ==================== 上半区：采样点定义列表与周期/留存设置 ==================== */
@@ -496,42 +431,14 @@
   }
 
   function renderToolbarDisabled() {
-    const disabled = !state.database || state.saving;
-    for (const id of ["st-add-btn", "st-save-policy", "st-interval", "st-retention-preset", "st-retention-custom"]) {
-      const node = el(id);
-      if (node) node.disabled = disabled;
-    }
     const addBtn = el("st-add-btn");
-    if (addBtn && (state.settings.series || []).length >= MAX_POINTS) {
-      addBtn.disabled = true;
+    if (addBtn) {
+      addBtn.disabled = !state.database || state.saving || (state.settings.series || []).length >= MAX_POINTS;
     }
   }
 
   function syncPolicyControls() {
-    const intervalEl = el("st-interval");
-    if (intervalEl) {
-      const val = String(state.settings.interval_seconds || 5);
-      if (![...intervalEl.options].some((opt) => opt.value === val)) {
-        const opt = document.createElement("option");
-        opt.value = val;
-        opt.textContent = `${val}s`;
-        intervalEl.appendChild(opt);
-      }
-      intervalEl.value = val;
-    }
-    const retPreset = el("st-retention-preset");
-    const retCustom = el("st-retention-custom");
-    if (retPreset && retCustom) {
-      const mins = Math.max(1, Math.round((state.settings.retention_seconds || 3600) / 60));
-      if (RETENTION_PRESETS_MIN.includes(mins)) {
-        retPreset.value = String(mins);
-        retCustom.hidden = true;
-      } else {
-        retPreset.value = "custom";
-        retCustom.hidden = false;
-      }
-      retCustom.value = String(mins);
-    }
+    // 采样周期与后台留存点数已调整为各采样点行内独立定义
   }
 
   function syncViewControls() {
@@ -573,7 +480,7 @@
     if (!state.database) {
       const trEl = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 8;
+      td.colSpan = 9;
       td.className = "st-list-empty";
       td.textContent = tr("st.noDatabase", null, "请先选择数据库");
       trEl.appendChild(td);
@@ -584,7 +491,7 @@
     if (!series.length) {
       const trEl = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 8;
+      td.colSpan = 9;
       td.className = "st-list-empty";
       td.textContent = tr("st.emptyList", null, "尚未定义采样点：点击上方“＋ 添加采样点”，或在“结果展示”表格中右键数值/布尔单元格设为采样点。");
       trEl.appendChild(td);
@@ -599,23 +506,7 @@
       row.dataset.seriesKey = item.key;
       if (state.focusedKey === item.key) row.classList.add("is-focused");
 
-      // 1. 显隐勾选
-      const tdVis = document.createElement("td");
-      const chk = document.createElement("input");
-      chk.type = "checkbox";
-      chk.checked = item.visible !== false;
-      chk.className = "st-vis-checkbox";
-      chk.ariaLabel = item.name;
-      chk.addEventListener("change", () => {
-        const next = clone(state.settings);
-        const target = next.series.find((s) => s.key === item.key);
-        if (target) target.visible = chk.checked;
-        void saveSettings(next, { silent: true });
-      });
-      tdVis.appendChild(chk);
-      row.appendChild(tdVis);
-
-      // 2. 颜色标识 + 名称
+      // 1. 颜色标识 + 名称
       const tdName = document.createElement("td");
       tdName.className = "st-col-name";
       const dot = document.createElement("span");
@@ -627,19 +518,19 @@
       tdName.append(dot, nameSpan);
       row.appendChild(tdName);
 
-      // 3. 表名 · 字段
+      // 2. 表名 · 字段
       const tdTarget = document.createElement("td");
       tdTarget.className = "st-mono";
       tdTarget.textContent = `${item.point.table}.${item.point.field}`;
       row.appendChild(tdTarget);
 
-      // 4. 主键值
+      // 3. 主键值
       const tdKey = document.createElement("td");
       tdKey.className = "st-mono";
       tdKey.textContent = item.point.key.join(", ");
       row.appendChild(tdKey);
 
-      // 5. 类型（数值 / 布尔）
+      // 4. 类型（数值 / 布尔）
       const tdKind = document.createElement("td");
       const pill = document.createElement("span");
       pill.className = `st-kind-pill is-${item.kind}`;
@@ -649,7 +540,65 @@
       tdKind.appendChild(pill);
       row.appendChild(tdKind);
 
-      // 6. 最近采样值 & 时间
+      // 5. 独立采样周期（秒）
+      const tdInterval = document.createElement("td");
+      const intervalSel = document.createElement("select");
+      intervalSel.className = "st-inline-select";
+      intervalSel.ariaLabel = tr("st.colInterval", null, "采样周期(秒)");
+      const curInterval = Math.max(1, Number(item.interval_seconds) || DEFAULT_INTERVAL_SECONDS);
+      const intervalChoices = INTERVAL_PRESETS.includes(curInterval)
+        ? INTERVAL_PRESETS
+        : [...INTERVAL_PRESETS, curInterval].sort((a, b) => a - b);
+      for (const sec of intervalChoices) {
+        const opt = document.createElement("option");
+        opt.value = String(sec);
+        opt.textContent = `${sec}s`;
+        intervalSel.appendChild(opt);
+      }
+      intervalSel.value = String(curInterval);
+      intervalSel.addEventListener("change", () => {
+        const next = clone(state.settings);
+        const target = next.series.find((s) => s.key === item.key);
+        if (target) target.interval_seconds = Math.max(1, Number(intervalSel.value) || DEFAULT_INTERVAL_SECONDS);
+        void saveSettings(next, { silent: true });
+      });
+      tdInterval.appendChild(intervalSel);
+      row.appendChild(tdInterval);
+
+      // 6. 独立后台留存（点数）
+      const tdRet = document.createElement("td");
+      const retWrap = document.createElement("span");
+      retWrap.className = "st-ret-cell";
+      const retSel = document.createElement("select");
+      retSel.className = "st-inline-select";
+      retSel.ariaLabel = tr("st.colRetentionPts", null, "后台留存(点数)");
+      const curRet = Math.max(10, Number(item.retention_points) || DEFAULT_RETENTION_POINTS);
+      const retChoices = RETENTION_POINT_PRESETS.includes(curRet)
+        ? RETENTION_POINT_PRESETS
+        : [...RETENTION_POINT_PRESETS, curRet].sort((a, b) => a - b);
+      for (const pts of retChoices) {
+        const opt = document.createElement("option");
+        opt.value = String(pts);
+        opt.textContent = String(pts);
+        retSel.appendChild(opt);
+      }
+      retSel.value = String(curRet);
+      retSel.addEventListener("change", () => {
+        const next = clone(state.settings);
+        const target = next.series.find((s) => s.key === item.key);
+        if (target) target.retention_points = Math.max(10, Number(retSel.value) || DEFAULT_RETENTION_POINTS);
+        void saveSettings(next, { silent: true });
+      });
+      const storedCount = Number(state.pointCounts?.[item.key] || 0);
+      const storedSpan = document.createElement("span");
+      storedSpan.className = "st-ret-stored";
+      storedSpan.textContent = `(${storedCount})`;
+      storedSpan.title = `${storedCount} / ${curRet}`;
+      retWrap.append(retSel, storedSpan);
+      tdRet.appendChild(retWrap);
+      row.appendChild(tdRet);
+
+      // 7. 最近采样值 & 时间
       const tdVal = document.createElement("td");
       tdVal.className = "st-num";
       if (!reading) {
@@ -673,18 +622,21 @@
       if (reading) tdTime.title = formatFullTime(reading.time_ms);
       row.appendChild(tdTime);
 
-      // 7. 纵轴选择与操作
+      // 8. 曲线板显示状态（隐藏 / 左轴显示 / 右轴显示）与操作
       const tdAct = document.createElement("td");
       tdAct.className = "st-col-actions";
-      const axisSelect = document.createElement("select");
-      axisSelect.className = "st-inline-axis";
-      axisSelect.ariaLabel = tr("st.axisLabel", null, "纵轴");
-      axisSelect.innerHTML = `<option value="left">${tr("chart.leftAxis", null, "左轴")}</option><option value="right">${tr("chart.rightAxis", null, "右轴")}</option>`;
-      axisSelect.value = item.axis || "left";
-      axisSelect.addEventListener("change", () => {
+      const displaySelect = document.createElement("select");
+      displaySelect.className = "st-inline-axis";
+      displaySelect.ariaLabel = tr("st.colDisplay", null, "曲线板显示");
+      displaySelect.innerHTML =
+        `<option value="hidden">${tr("st.stateHidden", null, "隐藏")}</option>` +
+        `<option value="left">${tr("st.stateLeft", null, "左轴显示")}</option>` +
+        `<option value="right">${tr("st.stateRight", null, "右轴显示")}</option>`;
+      displaySelect.value = getDisplayState(item);
+      displaySelect.addEventListener("change", () => {
         const next = clone(state.settings);
         const target = next.series.find((s) => s.key === item.key);
-        if (target) target.axis = axisSelect.value;
+        if (target) applyDisplayState(target, displaySelect.value);
         void saveSettings(next, { silent: true });
       });
 
@@ -693,14 +645,16 @@
       btnFocus.className = "secondary small";
       btnFocus.textContent = tr("st.btnLocate", null, "定位");
       btnFocus.addEventListener("click", () => {
-        state.focusedKey = state.focusedKey === item.key ? null : item.key;
-        if (state.layout.mode === "list-full") {
-          state.layout.mode = "split";
-          saveLayout();
-          applyLayout();
+        state.focusedKey = item.key;
+        if (item.visible === false) {
+          const next = clone(state.settings);
+          const target = next.series.find((s) => s.key === item.key);
+          if (target) applyDisplayState(target, target.axis === "right" ? "right" : "left");
+          void saveSettings(next, { silent: true });
         }
+        if (state.host?.openSampleChart) state.host.openSampleChart();
         renderPointList();
-        drawChart();
+        requestAnimationFrame(drawChart);
       });
 
       const btnRemove = document.createElement("button");
@@ -709,7 +663,7 @@
       btnRemove.textContent = tr("st.btnRemove", null, "移除");
       btnRemove.addEventListener("click", () => void confirmAndRemoveSeries(item.key));
 
-      tdAct.append(axisSelect, btnFocus, btnRemove);
+      tdAct.append(displaySelect, btnFocus, btnRemove);
       row.appendChild(tdAct);
       frag.appendChild(row);
     }
@@ -727,11 +681,12 @@
     }
     if (statusEl) {
       const count = state.samples.length;
+      const points = (state.settings.series || []).length;
       const syncText = state.lastSyncMs ? formatTimeShort(state.lastSyncMs, false) : "—";
       statusEl.textContent = tr(
         "st.statusLine",
-        { count, interval: state.settings.interval_seconds || 5, sync: syncText },
-        `样本 ${count} 帧 · 周期 ${state.settings.interval_seconds || 5}s · 更新 ${syncText}`
+        { points, count, sync: syncText },
+        `${points} 个采样点 · ${count} 帧 · 更新 ${syncText}`
       );
     }
     if (errEl) {
@@ -745,7 +700,7 @@
     syncViewControls();
     renderPointList();
     renderStatus();
-    if (state.active) requestAnimationFrame(drawChart);
+    if (state.chartVisible) requestAnimationFrame(drawChart);
   }
 
   /* ==================== 时间窗口与采样对齐 ==================== */
@@ -831,11 +786,18 @@
     if (!canvas || !wrap) return;
 
     const allSeries = state.settings.series || [];
+    const visibleSeries = allSeries.filter((s) => s.visible !== false);
     state.legendHits = [];
 
     if (!allSeries.length) {
       if (emptyEl) {
         emptyEl.textContent = tr("st.chartEmpty", null, "添加采样点后，后台将按设定周期自动记录并在此实时绘制双轴趋势曲线。");
+        emptyEl.hidden = false;
+      }
+      hideTooltip();
+    } else if (!visibleSeries.length) {
+      if (emptyEl) {
+        emptyEl.textContent = tr("st.chartNoneVisible", null, "当前暂无显示的采样曲线，请在表格右键或“采样点定义”中选择“左轴显示”或“右轴显示”。");
         emptyEl.hidden = false;
       }
       hideTooltip();
@@ -859,20 +821,21 @@
     ctx.fillStyle = tokens.bg;
     ctx.fillRect(0, 0, width, height);
 
-    if (!allSeries.length) return;
+    if (!allSeries.length || !visibleSeries.length) return;
 
-    // 1. 绘制顶部流式图例条（参考 SCADA point-trend.js：点击切显隐、右键单曲线菜单）
+    // 1. 绘制顶部流式图例条（仅展示已加入曲线板的左轴/右轴曲线）
     const legendTop = 8;
     let legendX = 12;
     let legendY = legendTop;
     const legendRowH = 20;
     const maxLegendY = legendTop + legendRowH; // 最多 2 行，超出折叠为 +N
     ctx.font = `12px ${tokens.fontSans}`;
+    ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     let hiddenOverflow = 0;
 
-    for (let i = 0; i < allSeries.length; i += 1) {
-      const s = allSeries[i];
+    for (let i = 0; i < visibleSeries.length; i += 1) {
+      const s = visibleSeries[i];
       const axisTag = s.axis === "right" ? tr("chart.axisRightShort", null, "右") : tr("chart.axisLeftShort", null, "左");
       const label = `[${axisTag}] ${s.name}`;
       const textW = Math.min(180, ctx.measureText(label).width);
@@ -882,15 +845,13 @@
           legendY += legendRowH + 4;
           legendX = 12;
         } else {
-          hiddenOverflow = allSeries.length - i;
+          hiddenOverflow = visibleSeries.length - i;
           break;
         }
       }
       const isFocused = state.focusedKey === s.key;
-      const visible = s.visible !== false;
 
       ctx.save();
-      ctx.globalAlpha = visible ? 1 : 0.4;
       ctx.fillStyle = isFocused ? `${s.color}24` : (tokens.dark ? "rgba(255,255,255,0.05)" : "rgba(15,23,42,0.04)");
       ctx.strokeStyle = isFocused ? s.color : tokens.border;
       ctx.lineWidth = isFocused ? 1.5 : 1;
@@ -920,6 +881,8 @@
       }
 
       ctx.fillStyle = tokens.text;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
       ctx.fillText(truncateText(ctx, label, textW), legendX + 23, cy + 0.5);
       ctx.restore();
 
@@ -937,11 +900,12 @@
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = tokens.textSecondary;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
       ctx.fillText(moreText, mx + 7, legendY + legendRowH / 2 + 0.5);
       state.legendHits.push({ key: null, overflow: true, x: mx, y: legendY, w: moreW, h: legendRowH });
     }
 
-    const visibleSeries = allSeries.filter((s) => s.visible !== false);
     const leftSeries = visibleSeries.filter((s) => s.axis !== "right");
     const rightSeries = visibleSeries.filter((s) => s.axis === "right");
 
@@ -954,15 +918,6 @@
 
     const { startMs, endMs } = computeTimeBounds();
     const slots = alignedSamples(startMs, endMs);
-
-    if (!visibleSeries.length) {
-      if (emptyEl) {
-        emptyEl.textContent = tr("chart.allHidden", null, "全部曲线已隐藏，点击顶部图例恢复显示。");
-        emptyEl.hidden = false;
-      }
-      hideTooltip();
-      return;
-    }
     if (emptyEl) emptyEl.hidden = true;
 
     const leftBounds = leftSeries.length ? computeAxisBounds(leftSeries, slots, "left", startMs, endMs) : null;
@@ -1063,26 +1018,32 @@
     ctx.strokeStyle = tokens.border;
     ctx.strokeRect(padLeft + 0.5, padTop + 0.5, plotW, plotH);
 
-    // 3. 裁剪绘图区并逐条绘制曲线（断采断线 + 开关量阶跃线 + 孤立单点圆点）
-    const gapLimitMs = Math.max((state.settings.interval_seconds || 5) * 3500, 15000);
+    // 3. 裁剪绘图区并逐条绘制曲线（支持各点独立采样周期、断采断线、开关量阶跃线与孤立单点圆点）
     ctx.save();
     ctx.beginPath();
     ctx.rect(padLeft, padTop, plotW, plotH);
     ctx.clip();
 
+    const perSeriesPoints = new Map();
     for (const s of visibleSeries) {
       const bounds = s.axis === "right" ? rightBounds : leftBounds;
       if (!bounds) continue;
       const isFocused = state.focusedKey === s.key;
+      const gapLimitMs = Math.max((Number(s.interval_seconds) || DEFAULT_INTERVAL_SECONDS) * 3500, 10000);
       const pts = [];
+      const validPts = [];
       for (const slot of slots) {
         const rec = slot.samples?.[s.key];
-        if (!rec || !rec.ok || !Number.isFinite(rec.v)) {
+        if (rec === undefined) continue; // 非本点采样时刻，保持连线
+        if (!rec.ok || !Number.isFinite(rec.v)) {
           pts.push(null);
           continue;
         }
-        pts.push({ t: slot.time_ms, x: xMap(slot.time_ms), y: yMap(rec.v, bounds), v: rec.v });
+        const pt = { t: slot.time_ms, x: xMap(slot.time_ms), y: yMap(rec.v, bounds), v: rec.v, ok: true, f: true };
+        pts.push(pt);
+        validPts.push(pt);
       }
+      perSeriesPoints.set(s.key, { validPts, gapLimitMs });
 
       ctx.strokeStyle = s.color;
       ctx.fillStyle = s.color;
@@ -1133,13 +1094,12 @@
       ctx.shadowBlur = 0;
     }
 
-    // 4. 悬停十字准星与命中点高亮
+    // 4. 悬停十字准星与各曲线独立最近样本高亮（兼容不同采样周期同屏悬停）
     let tooltipLines = null;
     if (state.hover && state.hover.x >= padLeft && state.hover.x <= padLeft + plotW
         && state.hover.y >= padTop && state.hover.y <= padTop + plotH) {
       const hoverMs = startMs + ((state.hover.x - padLeft) / plotW) * (endMs - startMs);
-      const nearest = findNearestSlot(slots, hoverMs, gapLimitMs);
-      const cursorX = nearest ? xMap(nearest.time_ms) : state.hover.x;
+      const cursorX = state.hover.x;
 
       ctx.strokeStyle = tokens.muted;
       ctx.lineWidth = 1;
@@ -1150,30 +1110,22 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      const timeStr = formatFullTime(nearest ? nearest.time_ms : hoverMs);
-      tooltipLines = [timeStr];
-      if (nearest) {
-        for (const s of visibleSeries) {
-          const rec = nearest.samples?.[s.key];
-          const bounds = s.axis === "right" ? rightBounds : leftBounds;
-          let valText = "—";
-          if (rec && rec.ok && Number.isFinite(rec.v)) {
-            valText = s.unit ? `${formatNumber(rec.v, s.kind)} ${s.unit}` : formatNumber(rec.v, s.kind);
-            if (bounds) {
-              const py = yMap(rec.v, bounds);
-              ctx.fillStyle = tokens.surface;
-              ctx.strokeStyle = s.color;
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              ctx.arc(cursorX, py, 4, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.stroke();
-            }
-          } else if (rec && !rec.ok) {
-            valText = rec.f ? tr("st.invalidVal", null, "无效") : tr("st.missingVal", null, "缺失");
-          }
-          tooltipLines.push(`${s.name}: ${valText}`);
+      tooltipLines = [formatFullTime(hoverMs)];
+      for (const s of visibleSeries) {
+        const entry = perSeriesPoints.get(s.key);
+        const nearestPt = entry ? findNearestPoint(entry.validPts, hoverMs, entry.gapLimitMs) : null;
+        let valText = "—";
+        if (nearestPt) {
+          valText = s.unit ? `${formatNumber(nearestPt.v, s.kind)} ${s.unit}` : formatNumber(nearestPt.v, s.kind);
+          ctx.fillStyle = tokens.surface;
+          ctx.strokeStyle = s.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(nearestPt.x, nearestPt.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
         }
+        tooltipLines.push(`${s.name}: ${valText}`);
       }
     }
 
@@ -1224,20 +1176,20 @@
     return candidates[candidates.length - 1];
   }
 
-  function findNearestSlot(slots, targetMs, maxDistMs) {
-    if (!slots.length) return null;
+  function findNearestPoint(pts, targetMs, maxDistMs) {
+    if (!pts || !pts.length) return null;
     let lo = 0;
-    let hi = slots.length - 1;
+    let hi = pts.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (slots[mid].time_ms < targetMs) lo = mid + 1;
+      if (pts[mid].t < targetMs) lo = mid + 1;
       else hi = mid;
     }
-    let best = slots[lo];
-    if (lo > 0 && Math.abs(slots[lo - 1].time_ms - targetMs) < Math.abs(best.time_ms - targetMs)) {
-      best = slots[lo - 1];
+    let best = pts[lo];
+    if (lo > 0 && Math.abs(pts[lo - 1].t - targetMs) < Math.abs(best.t - targetMs)) {
+      best = pts[lo - 1];
     }
-    return Math.abs(best.time_ms - targetMs) <= Math.max(maxDistMs, 60000) ? best : null;
+    return Math.abs(best.t - targetMs) <= Math.max(maxDistMs, 30000) ? best : null;
   }
 
   function showTooltip(lines, alignLeft) {
@@ -1332,14 +1284,24 @@
     return DEFAULT_PALETTE[seriesList.length % DEFAULT_PALETTE.length];
   }
 
-  async function addOrUpdateFromCell({ table, key, field, name, unit = "", kind = "analog", axis = "left" }) {
+  async function ensureSynced() {
     if (!state.database) throw new Error(tr("st.noDatabase", null, "请先选择数据库"));
+    if (state.revision) return;
+    await syncFromServer({ configOnly: !isAnyVisible(), incremental: false });
+  }
+
+  async function addOrUpdateFromCell({
+    table, key, field, name, unit = "", kind = "analog", displayMode = "hidden",
+    interval_seconds = DEFAULT_INTERVAL_SECONDS, retention_points = DEFAULT_RETENTION_POINTS
+  }) {
+    await ensureSynced();
     const pkey = pointKey(table, key, field);
     const next = clone(state.settings);
     const existing = next.series.find((s) => s.key === pkey);
     if (existing) {
-      existing.axis = axis;
-      existing.visible = true;
+      applyDisplayState(existing, displayMode);
+      if (interval_seconds) existing.interval_seconds = Math.max(1, Math.min(3600, Math.round(interval_seconds)));
+      if (retention_points) existing.retention_points = Math.max(10, Math.min(100000, Math.round(retention_points)));
       await saveSettings(next);
       return existing;
     }
@@ -1352,14 +1314,76 @@
       name: name || `${table}[${key.join(",")}].${field}`,
       unit: unit || "",
       kind: kind === "switch" ? "switch" : "analog",
-      visible: true,
-      axis: axis === "right" ? "right" : "left",
+      visible: displayMode !== "hidden",
+      axis: displayMode === "right" ? "right" : "left",
       color: pickNextColor(next.series),
-      width: 2
+      width: 2,
+      interval_seconds: Math.max(1, Math.min(3600, Math.round(interval_seconds || DEFAULT_INTERVAL_SECONDS))),
+      retention_points: Math.max(10, Math.min(100000, Math.round(retention_points || DEFAULT_RETENTION_POINTS)))
     };
     next.series.push(item);
     await saveSettings(next);
     return item;
+  }
+
+  async function addSamplePoints(items) {
+    await ensureSynced();
+    if (!Array.isArray(items) || !items.length) return [];
+    const next = clone(state.settings);
+    let added = 0;
+    for (const raw of items) {
+      const pkey = pointKey(raw.table, raw.key, raw.field);
+      if (next.series.some((s) => s.key === pkey)) continue;
+      if (next.series.length >= MAX_POINTS) {
+        if (added === 0) {
+          throw new Error(tr("st.limitReached", { max: MAX_POINTS }, `最多支持定义 ${MAX_POINTS} 个采样点`));
+        }
+        break;
+      }
+      next.series.push({
+        key: pkey,
+        point: { table: raw.table, key: raw.key, field: raw.field },
+        name: raw.name || `${raw.table}[${raw.key.join(",")}].${raw.field}`,
+        unit: raw.unit || "",
+        kind: raw.kind === "switch" ? "switch" : "analog",
+        visible: false, // 采样与曲线板显示解耦：新设采样点默认隐藏，由左轴显示/右轴显示控制上板
+        axis: "left",
+        color: pickNextColor(next.series),
+        width: 2,
+        interval_seconds: DEFAULT_INTERVAL_SECONDS,
+        retention_points: DEFAULT_RETENTION_POINTS
+      });
+      added += 1;
+    }
+    if (!added) return next.series;
+    await saveSettings(next, { silent: true });
+    if (state.host?.notice) {
+      state.host.notice(tr("st.pointsAddedNotice", { count: added }, `已新增 ${added} 个采样点`));
+    }
+    return next.series;
+  }
+
+  async function setDisplayStateForKeys(keys, mode) {
+    await ensureSynced();
+    const targetKeys = new Set(keys || []);
+    if (!targetKeys.size) return;
+    const next = clone(state.settings);
+    let changed = 0;
+    for (const item of next.series) {
+      if (!targetKeys.has(item.key)) continue;
+      applyDisplayState(item, mode);
+      changed += 1;
+    }
+    if (!changed) return;
+    await saveSettings(next, { silent: true });
+    if (state.host?.notice) {
+      const label = mode === "left"
+        ? tr("st.stateLeft", null, "左轴显示")
+        : mode === "right"
+          ? tr("st.stateRight", null, "右轴显示")
+          : tr("st.stateHidden", null, "隐藏");
+      state.host.notice(tr("st.displayChangedNotice", { count: changed, state: label }, `已将 ${changed} 个采样点设为「${label}」`));
+    }
   }
 
   async function toggleAxisForCell(table, key, field) {
@@ -1387,7 +1411,7 @@
   }
 
   async function addManyFromCells(items, axis = "left") {
-    if (!state.database) throw new Error(tr("st.noDatabase", null, "请先选择数据库"));
+    await ensureSynced();
     if (!Array.isArray(items) || !items.length) return [];
     const next = clone(state.settings);
     const targetAxis = axis === "right" ? "right" : "left";
@@ -1417,7 +1441,9 @@
         visible: true,
         axis: targetAxis,
         color: pickNextColor(next.series),
-        width: 2
+        width: 2,
+        interval_seconds: DEFAULT_INTERVAL_SECONDS,
+        retention_points: DEFAULT_RETENTION_POINTS
       });
       added += 1;
     }
@@ -1462,13 +1488,9 @@
   function focusPoint(table, key, field) {
     const pkey = pointKey(table, key, field);
     state.focusedKey = pkey;
-    if (state.layout.mode === "list-full") {
-      state.layout.mode = "split";
-      saveLayout();
-    }
-    if (state.host?.switchToSampleTab) state.host.switchToSampleTab();
+    if (state.host?.openSampleChart) state.host.openSampleChart();
     renderPointList();
-    drawChart();
+    requestAnimationFrame(drawChart);
   }
 
   /* ==================== 「＋ 添加采样点」模态对话框（全下拉选择） ==================== */
@@ -1477,7 +1499,7 @@
     const tableSel = el("st-add-table");
     const rowSel = el("st-add-row");
     const fieldSel = el("st-add-field");
-    const axisSel = el("st-add-axis");
+    const displaySel = el("st-add-display");
     const nameInput = el("st-add-name");
     const unitInput = el("st-add-unit");
     const errEl = el("st-add-error");
@@ -1485,7 +1507,13 @@
 
     errEl.textContent = "";
     unitInput.value = "";
-    axisSel.value = "left";
+    if (displaySel) displaySel.value = "hidden";
+    if (el("st-add-interval")) el("st-add-interval").value = String(DEFAULT_INTERVAL_SECONDS);
+    if (el("st-add-retention-preset")) el("st-add-retention-preset").value = String(DEFAULT_RETENTION_POINTS);
+    if (el("st-add-retention-custom")) {
+      el("st-add-retention-custom").value = String(DEFAULT_RETENTION_POINTS);
+      el("st-add-retention-custom").hidden = true;
+    }
     const tables = (state.host?.getTables ? state.host.getTables() : []) || [];
     state.addDialog.tables = tables;
     tableSel.textContent = "";
@@ -1534,7 +1562,7 @@
       const def = schemaResp.definition || schemaResp;
       const columns = def.columns || [];
       const pkCols = columns.filter((c) => c.primary_key);
-      const sampleCols = columns.filter((c) => isSampleableType(c.data_type));
+      const sampleCols = columns.filter((c) => isSampleableType(c.data_type, c.disp_type));
       const records = rowsResp.records || [];
 
       state.addDialog.schema = def;
@@ -1635,11 +1663,6 @@
         row.className = "st-series-edit-row";
         row.dataset.seriesKey = item.key;
 
-        const vis = document.createElement("input");
-        vis.type = "checkbox";
-        vis.className = "st-ed-vis";
-        vis.checked = item.visible !== false;
-
         const color = document.createElement("input");
         color.type = "color";
         color.className = "st-ed-color";
@@ -1659,10 +1682,13 @@
         unit.maxLength = 24;
         unit.placeholder = tr("st.colUnit", null, "单位");
 
-        const axis = document.createElement("select");
-        axis.className = "st-ed-axis";
-        axis.innerHTML = `<option value="left">${tr("chart.leftAxis", null, "左轴")}</option><option value="right">${tr("chart.rightAxis", null, "右轴")}</option>`;
-        axis.value = item.axis || "left";
+        const displaySel = document.createElement("select");
+        displaySel.className = "st-ed-display";
+        displaySel.innerHTML =
+          `<option value="hidden">${tr("st.stateHidden", null, "隐藏")}</option>` +
+          `<option value="left">${tr("st.stateLeft", null, "左轴显示")}</option>` +
+          `<option value="right">${tr("st.stateRight", null, "右轴显示")}</option>`;
+        displaySel.value = getDisplayState(item);
 
         const width = document.createElement("select");
         width.className = "st-ed-width";
@@ -1674,7 +1700,25 @@
         }
         width.value = String(item.width || 2);
 
-        row.append(vis, color, name, unit, axis, width);
+        const intervalInput = document.createElement("input");
+        intervalInput.type = "number";
+        intervalInput.className = "st-ed-interval";
+        intervalInput.min = "1";
+        intervalInput.max = "3600";
+        intervalInput.step = "1";
+        intervalInput.value = String(item.interval_seconds || DEFAULT_INTERVAL_SECONDS);
+        intervalInput.title = tr("st.colInterval", null, "采样周期(秒)");
+
+        const retInput = document.createElement("input");
+        retInput.type = "number";
+        retInput.className = "st-ed-retention";
+        retInput.min = "10";
+        retInput.max = "100000";
+        retInput.step = "10";
+        retInput.value = String(item.retention_points || DEFAULT_RETENTION_POINTS);
+        retInput.title = tr("st.colRetentionPts", null, "后台留存(点数)");
+
+        row.append(color, name, unit, displaySel, width, intervalInput, retInput);
         body.appendChild(row);
       }
     }
@@ -1734,11 +1778,9 @@
 
   /* ==================== 事件绑定 ==================== */
   function bindEvents() {
-    bindSplitter();
-
-    // 留存预设切换
-    el("st-retention-preset")?.addEventListener("change", (e) => {
-      const custom = el("st-retention-custom");
+    // 添加采样点弹窗：留存点数预设切换
+    el("st-add-retention-preset")?.addEventListener("change", (e) => {
+      const custom = el("st-add-retention-custom");
       if (!custom) return;
       if (e.target.value === "custom") {
         custom.hidden = false;
@@ -1747,21 +1789,6 @@
         custom.hidden = true;
         custom.value = e.target.value;
       }
-    });
-
-    // 保存采样周期与留存时长
-    el("st-save-policy")?.addEventListener("click", () => {
-      const intervalSec = Number(el("st-interval")?.value || 5);
-      const preset = el("st-retention-preset")?.value;
-      const mins = preset === "custom" ? Number(el("st-retention-custom")?.value || 60) : Number(preset || 60);
-      if (!Number.isFinite(mins) || mins < 1 || mins > 1440) {
-        if (state.host?.notice) state.host.notice(tr("st.retentionRangeErr", null, "留存时长须在 1–1440 分钟之间"), true);
-        return;
-      }
-      const next = clone(state.settings);
-      next.interval_seconds = Math.max(1, Math.min(60, Math.round(intervalSec)));
-      next.retention_seconds = Math.round(mins * 60);
-      void saveSettings(next);
     });
 
     // 添加采样点弹窗
@@ -1775,7 +1802,12 @@
       const table = el("st-add-table")?.value;
       const rowIdx = Number(el("st-add-row")?.value);
       const field = el("st-add-field")?.value;
-      const axis = el("st-add-axis")?.value || "left";
+      const displayMode = el("st-add-display")?.value || "hidden";
+      const intervalSec = Number(el("st-add-interval")?.value || DEFAULT_INTERVAL_SECONDS);
+      const retPreset = el("st-add-retention-preset")?.value;
+      const retentionPts = retPreset === "custom"
+        ? Number(el("st-add-retention-custom")?.value || DEFAULT_RETENTION_POINTS)
+        : Number(retPreset || DEFAULT_RETENTION_POINTS);
       const name = (el("st-add-name")?.value || "").trim();
       const unit = (el("st-add-unit")?.value || "").trim();
       const errEl = el("st-add-error");
@@ -1783,6 +1815,10 @@
       const def = state.addDialog.schema;
       if (!table || !rec || !field || !def) {
         errEl.textContent = tr("st.selectComplete", null, "请选择完整的表、行和字段");
+        return;
+      }
+      if (!Number.isFinite(retentionPts) || retentionPts < 10 || retentionPts > 100000) {
+        errEl.textContent = tr("st.retentionRangeErr", null, "后台留存点数须在 10–100000 之间");
         return;
       }
       const col = (def.columns || []).find((c) => c.eng_name === field);
@@ -1794,8 +1830,10 @@
           field,
           name,
           unit,
-          kind: isBoolType(col?.data_type) ? "switch" : "analog",
-          axis
+          kind: isBoolType(col?.data_type, col?.disp_type) ? "switch" : "analog",
+          displayMode,
+          interval_seconds: Math.max(1, Math.min(3600, Math.round(intervalSec))),
+          retention_points: Math.round(retentionPts)
         });
         el("st-add-dialog")?.close();
       } catch (error) {
@@ -1896,13 +1934,24 @@
         const key = row.dataset.seriesKey;
         const item = next.series.find((s) => s.key === key);
         if (!item) continue;
-        item.visible = Boolean(row.querySelector(".st-ed-vis")?.checked);
         item.color = row.querySelector(".st-ed-color")?.value || item.color;
         const nameVal = (row.querySelector(".st-ed-name")?.value || "").trim();
         if (nameVal) item.name = nameVal;
         item.unit = (row.querySelector(".st-ed-unit")?.value || "").trim();
-        item.axis = row.querySelector(".st-ed-axis")?.value || "left";
+        applyDisplayState(item, row.querySelector(".st-ed-display")?.value || "hidden");
         item.width = Number(row.querySelector(".st-ed-width")?.value || 2);
+        const iv = Number(row.querySelector(".st-ed-interval")?.value || DEFAULT_INTERVAL_SECONDS);
+        const rp = Number(row.querySelector(".st-ed-retention")?.value || DEFAULT_RETENTION_POINTS);
+        if (!Number.isFinite(iv) || iv < 1 || iv > 3600) {
+          errEl.textContent = tr("st.colInterval", null, "采样周期(秒)") + " (1–3600)";
+          return;
+        }
+        if (!Number.isFinite(rp) || rp < 10 || rp > 100000) {
+          errEl.textContent = tr("st.retentionRangeErr", null, "后台留存点数须在 10–100000 之间");
+          return;
+        }
+        item.interval_seconds = Math.round(iv);
+        item.retention_points = Math.round(rp);
       }
       try {
         await saveSettings(next);
@@ -1935,11 +1984,9 @@
           openSeriesDialog();
           return;
         }
-        const next = clone(state.settings);
-        const item = next.series.find((s) => s.key === hit.key);
-        if (!item) return;
-        item.visible = item.visible === false;
-        void saveSettings(next, { silent: true });
+        state.focusedKey = state.focusedKey === hit.key ? null : hit.key;
+        renderPointList();
+        drawChart();
       });
       canvas.addEventListener("wheel", (event) => {
         if (!(state.settings.series || []).length) return;
@@ -1998,15 +2045,29 @@
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopPolling();
-      else if (state.active && state.database) void syncFromServer({ incremental: true });
+      else if (isAnyVisible() && state.database) void syncFromServer({ incremental: true });
     });
 
     const wrap = el("st-chart-wrap");
     if (wrap && typeof ResizeObserver === "function") {
       new ResizeObserver(() => {
-        if (state.active) requestAnimationFrame(drawChart);
+        if (state.chartVisible) requestAnimationFrame(drawChart);
       }).observe(wrap);
     }
+  }
+
+  function handleVisibilityChange(becameVisible) {
+    if (becameVisible) {
+      if (state.database) {
+        void syncFromServer({ configOnly: false, incremental: state.historyLoaded });
+      } else {
+        renderAll();
+      }
+      if (state.chartVisible) requestAnimationFrame(drawChart);
+    } else if (!isAnyVisible()) {
+      stopPolling();
+    }
+    if (!state.chartVisible) closeChartMenu();
   }
 
   /* ==================== 对外公开接口 ==================== */
@@ -2018,9 +2079,7 @@
       state.host = hostApi;
       if (state.initialized) return;
       state.initialized = true;
-      loadLayout();
       bindEvents();
-      applyLayout();
       renderAll();
     },
     setContext(workspace, database) {
@@ -2033,6 +2092,7 @@
       state.historyLoaded = false;
       state.revision = null;
       state.samples = [];
+      state.pointCounts = {};
       state.lastSampleMs = 0;
       state.focusedKey = null;
       state.error = "";
@@ -2041,38 +2101,39 @@
       notifyHostSeriesChanged();
       renderAll();
       if (db) {
-        void syncFromServer({ configOnly: !state.active, incremental: false });
+        void syncFromServer({ configOnly: !isAnyVisible(), incremental: false });
       }
     },
+    setListVisible(visible) {
+      const next = Boolean(visible);
+      if (next === state.listVisible) return;
+      state.listVisible = next;
+      handleVisibilityChange(next);
+    },
+    setChartVisible(visible) {
+      const next = Boolean(visible);
+      if (next === state.chartVisible) return;
+      state.chartVisible = next;
+      handleVisibilityChange(next);
+    },
     setActive(active) {
-      const next = Boolean(active);
-      if (next === state.active) return;
-      state.active = next;
-      if (next) {
-        applyLayout();
-        if (state.database) {
-          void syncFromServer({ configOnly: false, incremental: state.historyLoaded });
-        } else {
-          renderAll();
-        }
-      } else {
-        stopPolling();
-        closeChartMenu();
-      }
+      this.setListVisible(active);
     },
     isSamplePoint(table, key, field) {
       if (!table || !field || !key) return null;
       return state.seriesMap.get(pointKey(table, key, field)) || null;
     },
     addOrUpdateFromCell,
+    addSamplePoints,
     addManyFromCells,
+    setDisplayStateForKeys,
     toggleAxisForCell,
     removeFromCell,
     removeManyFromCells,
     focusPoint,
     refresh() {
       if (!state.database) return;
-      void syncFromServer({ configOnly: !state.active, incremental: state.historyLoaded });
+      void syncFromServer({ configOnly: !isAnyVisible(), incremental: state.historyLoaded });
     },
     redraw() {
       renderAll();
