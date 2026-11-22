@@ -215,3 +215,67 @@ class ScadaNativeSQLiteTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as connection:
             self.assertIsNone(connection.execute("SELECT name FROM sqlite_schema WHERE name='operator_notes'").fetchone())
             self.assertEqual(connection.execute('SELECT value FROM fes_yc_define').fetchone(), (12.5,))
+
+    def test_native_schema_edit_type_default_and_primary_key_rebuild(self):
+        """原生 SQLite 表支持安全修改字段类型、默认值与主键组合，并保留索引与触发器。"""
+        manager = SQLiteManager(self.root, self.schema_dir)
+        self.addCleanup(manager.close)
+        scoped = manager.for_database(self.path.name)
+        management = SQLiteManagement(scoped)
+        route = ['tables', 'fes_yc_define', 'schema']
+
+        # 1) 修改字段类型 float -> str 并设置默认值，验证重建保留索引与触发器
+        exists = management.dispatch('GET', route, {}, None)
+        desired = exists['definition']
+        desired['columns'][2]['data_type'] = 'str'
+        desired['columns'][2]['default_value'] = '0.0'
+        payload = {'definition': desired, 'version': exists['version']}
+        preview = management.dispatch('POST', ['tables', 'fes_yc_define', 'schema-preview'], {}, payload)
+        self.assertTrue(preview['valid'], preview['errors'])
+        self.assertTrue(any('修改字段类型' in item for item in preview['changes']))
+        saved = management.dispatch('PUT', route, {}, payload)
+        self.assertEqual(saved['definition']['columns'][2]['data_type'], 'str')
+
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            self.assertEqual(connection.execute('SELECT value FROM fes_yc_define').fetchone(), ('12.5',))
+            self.assertEqual(connection.execute('PRAGMA index_info(fes_yc_value)').fetchone()[2], 'value')
+            self.assertEqual(connection.execute('SELECT storage_format FROM rtdb_schema_database').fetchone(), ('native',))
+            # 验证新默认值生效且触发器仍正常工作
+            connection.execute('INSERT INTO fes_yc_define (rtu_id, pnt_no) VALUES (2, 7)')
+            self.assertEqual(connection.execute('SELECT value FROM fes_yc_define WHERE rtu_id=2').fetchone(), ('0.0',))
+            connection.execute("UPDATE fes_yc_define SET value='9.5' WHERE rtu_id=2")
+            self.assertEqual(connection.execute('SELECT value FROM application_audit').fetchone(), (9.5,))
+
+        # 2) 非法类型转换（'12.5' -> int）应返回 422 且不修改原表
+        bad_type = management.dispatch('GET', route, {}, None)
+        bad_def = bad_type['definition']
+        bad_def['columns'][2]['data_type'] = 'int'
+        bad_def['columns'][2].pop('default_value', None)
+        with self.assertRaises(APIError) as bad_err:
+            management.dispatch('PUT', route, {}, {'definition': bad_def, 'version': bad_type['version']})
+        self.assertEqual(bad_err.exception.status, 422)
+
+        # 3) 修改主键组合：两行 pnt_no 均为 7，仅设 pnt_no 为主键应因重复被 422 拦截
+        dup_pk = management.dispatch('GET', route, {}, None)
+        dup_def = dup_pk['definition']
+        dup_def['columns'][0]['primary_key'] = False
+        dup_def['columns'][1]['primary_key'] = True
+        with self.assertRaises(APIError) as dup_err:
+            management.dispatch('PUT', route, {}, {'definition': dup_def, 'version': dup_pk['version']})
+        self.assertEqual(dup_err.exception.status, 422)
+
+        # 4) 合法修改主键（仅 rtu_id 为主键，两行分别为 1 和 2）并把 value 改回 float
+        ok_pk = management.dispatch('GET', route, {}, None)
+        ok_def = ok_pk['definition']
+        ok_def['columns'][0]['primary_key'] = True
+        ok_def['columns'][1]['primary_key'] = False
+        ok_def['columns'][2]['data_type'] = 'float'
+        ok_def['columns'][2]['default_value'] = 1.5
+        updated = management.dispatch('PUT', route, {}, {'definition': ok_def, 'version': ok_pk['version']})
+        self.assertEqual(updated['definition']['columns'][0]['primary_key'], True)
+        self.assertEqual(updated['definition']['columns'][1]['primary_key'], False)
+        self.assertEqual(updated['definition']['columns'][2]['data_type'], 'float')
+        self.assertEqual(updated['definition']['columns'][2]['default_value'], 1.5)
+        with SQLiteDatabase(self.root, schema_directory=self.schema_dir, database_file=self.path.name) as reopened:
+            self.assertEqual(reopened['fes_yc_define'].get_by_pk(1)['value'], 12.5)
+            self.assertEqual(reopened['fes_yc_define'].get_by_pk(2)['value'], 9.5)

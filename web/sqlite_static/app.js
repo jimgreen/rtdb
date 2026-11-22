@@ -1986,10 +1986,9 @@ function isReadOnlyDatabase() {
 function isNativeDatabase() {
   return state.databases.some((item) => item.filename === state.database && item.storage_format === "native");
 }
-function isLockedNativeField(row, property) {
-  if (!state.table || !isNativeDatabase()) return false;
-  return property === "primary_key"
-    || Boolean(row.dataset.originalName) && ["data_type", "default_value"].includes(property);
+function isLockedNativeField(_row, _property) {
+  // 原生 SQLite 表已支持通过原子事务安全修改字段类型、主键和默认值，不再锁定已有列。
+  return false;
 }
 function updateSchemaLocks() {
   const readOnly = isReadOnlyDatabase();
@@ -2006,7 +2005,7 @@ function updateSchemaLocks() {
   const hint = el("schema-hint");
   if (readOnly) hint.textContent = "当前数据库只读。";
   else if (isNativeDatabase() && state.table) {
-    hint.textContent = "可修改表名和显示信息、增删或重命名字段。已有字段的类型、主键和默认值由原表定义。";
+    hint.textContent = "表名、字段名、类型、主键、默认值和显示属性均可修改；下拉框和主键单击修改，文本双击编辑。";
   } else if (state.table) {
     hint.textContent = "下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。";
   } else {

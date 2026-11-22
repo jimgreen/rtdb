@@ -1,7 +1,8 @@
 """Update application-owned SQLite layouts in place without replacing tables."""
 
 from contextlib import closing, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import math
 import re
 import shutil
 import sqlite3
@@ -95,6 +96,179 @@ class _Plan:
     statements: list[str]
     changes: list[str]
     ordinal: int | None = None
+    rebuild: bool = False
+    rebuild_rows: list[tuple] = field(default_factory=list)
+    without_rowid: bool = False
+    rebuild_indexes: list[str] = field(default_factory=list)
+    rebuild_triggers: list[str] = field(default_factory=list)
+
+
+def _convert_native_value(value, column):
+    """将原生 SQLite 已有单元值无损转换并校验为目标列类型。"""
+    name = column.eng_name
+    kind = column.data_type.lower()
+    if value is None:
+        if column.primary_key:
+            raise APIError(422, f'主键字段 {name} 包含空值，不能作为主键')
+        return None
+    if kind in _INT:
+        if isinstance(value, bool):
+            result = int(value)
+        elif isinstance(value, int):
+            result = value
+        elif isinstance(value, float):
+            if not math.isfinite(value) or not value.is_integer():
+                raise APIError(422, f'字段 {name} 包含非整数值 {value!r}，无法转换为整数')
+            result = int(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                if column.primary_key:
+                    raise APIError(422, f'主键字段 {name} 包含空字符串，无法转换为整数')
+                return None
+            if not re.fullmatch(r'-?\d+', text):
+                raise APIError(422, f'字段 {name} 包含无法转为整数的值 {value!r}')
+            result = int(text)
+        else:
+            raise APIError(422, f'字段 {name} 的二进制或对象值无法转换为整数')
+        if result < -(1 << 63) or result >= (1 << 63):
+            raise APIError(422, f'字段 {name} 的整数值超出 64 位范围')
+        return result
+    if kind in _FLOAT:
+        if isinstance(value, bool):
+            result = float(int(value))
+        elif isinstance(value, (int, float)):
+            result = float(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                if column.primary_key:
+                    raise APIError(422, f'主键字段 {name} 包含空字符串，无法转换为浮点数')
+                return None
+            try:
+                result = float(text)
+            except ValueError as error:
+                raise APIError(422, f'字段 {name} 包含无法转为浮点数的值 {value!r}') from error
+        else:
+            raise APIError(422, f'字段 {name} 的值无法转换为浮点数')
+        if not math.isfinite(result):
+            raise APIError(422, f'字段 {name} 包含非法浮点值 {value!r}')
+        return result
+    if kind in _BOOL:
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, (int, float)):
+            if value in (0, 1):
+                return int(value)
+            raise APIError(422, f'字段 {name} 包含非布尔数值 {value!r}，无法转换为布尔')
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if not text:
+                if column.primary_key:
+                    raise APIError(422, f'主键字段 {name} 包含空字符串，无法转换为布尔')
+                return None
+            if text in ('true', '1'):
+                return 1
+            if text in ('false', '0'):
+                return 0
+            raise APIError(422, f'字段 {name} 包含无法转为布尔的值 {value!r}')
+        raise APIError(422, f'字段 {name} 的值无法转换为布尔')
+    if kind in _TEXT:
+        if isinstance(value, bytes):
+            try:
+                return value.decode('utf-8')
+            except UnicodeDecodeError as error:
+                raise APIError(422, f'字段 {name} 包含非 UTF-8 二进制数据，无法转换为文本') from error
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        return str(value)
+    if kind in _BLOB:
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return bytes(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                if column.primary_key:
+                    raise APIError(422, f'主键字段 {name} 包含空字符串，无法转换为 BLOB')
+                return None
+            try:
+                return bytes.fromhex(text)
+            except ValueError as error:
+                raise APIError(422, f'字段 {name} 的文本不是有效十六进制，无法转换为 BLOB') from error
+        raise APIError(422, f'字段 {name} 的值无法转换为 BLOB')
+    raise APIError(422, f'原生 SQLite 字段 {name} 不支持类型 {column.data_type}')
+
+
+def _collect_rebuild_objects(connection, old_name, new_name, renames, desired_names):
+    """收集原表需要保留的显式二级索引与触发器 DDL。"""
+    index_meta = {}
+    for _seq, idx_name, unique, origin, partial in connection.execute(f'PRAGMA index_list({_quote(old_name)})'):
+        if origin != 'c':
+            continue
+        cols = [row[2] for row in connection.execute(f'PRAGMA index_info({_quote(idx_name)})')]
+        index_meta[idx_name] = (bool(unique), bool(partial), cols)
+
+    indexes = []
+    for idx_name, sql in connection.execute(
+        "SELECT name, sql FROM sqlite_schema WHERE type='index' AND tbl_name=? COLLATE NOCASE AND sql IS NOT NULL",
+        (old_name,),
+    ):
+        meta = index_meta.get(idx_name)
+        if meta is not None and not meta[1] and all(col is not None for col in meta[2]):
+            unique, _partial, cols = meta
+            mapped = [renames.get(col, col) for col in cols]
+            if all(col in desired_names for col in mapped):
+                prefix = 'CREATE UNIQUE INDEX' if unique else 'CREATE INDEX'
+                cols_sql = ', '.join(_quote(col) for col in mapped)
+                indexes.append(f'{prefix} {_quote(idx_name)} ON {_quote(new_name)} ({cols_sql})')
+        elif old_name == new_name and not renames:
+            indexes.append(sql)
+
+    triggers = [
+        sql for (sql,) in connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=? COLLATE NOCASE AND sql IS NOT NULL",
+            (old_name,),
+        )
+    ]
+    if triggers and (old_name != new_name or renames):
+        raise APIError(422, '当前表包含触发器，不能在重建表结构的同时修改表名或字段名，请分步操作')
+    return indexes, triggers
+
+
+def _prepare_rebuild_rows(connection, old, desired, renames):
+    """按目标结构逐行转换现有数据，并校验目标主键非空且唯一。"""
+    reverse_renames = {after: before for before, after in renames.items()}
+    old_names = set(old.column_names)
+    select_cols = [col.eng_name for col in old.columns]
+    select_sql = ', '.join(_quote(col) for col in select_cols)
+    source_index = {col: idx for idx, col in enumerate(select_cols)}
+
+    # 预先构建每列的数据来源（原列索引或新列默认值）
+    sources = []
+    for col in desired.columns:
+        old_col = reverse_renames.get(col.eng_name, col.eng_name)
+        if old_col in old_names:
+            sources.append((True, source_index[old_col], col))
+        else:
+            default_val = _convert_native_value(col.default_value, col)
+            sources.append((False, default_val, col))
+
+    pk_positions = [idx for idx, col in enumerate(desired.columns) if col.primary_key]
+    seen_pks = set()
+    converted_rows = []
+    for raw_row in connection.execute(f'SELECT {select_sql} FROM {_quote(old.eng_name)}'):
+        out = []
+        for from_old, src, col in sources:
+            value = _convert_native_value(raw_row[src], col) if from_old else src
+            out.append(value)
+        pk_key = tuple(out[pos] for pos in pk_positions)
+        if any(part is None for part in pk_key):
+            raise APIError(422, '目标主键包含空值，无法修改主键')
+        if pk_key in seen_pks:
+            raise APIError(422, f'按新主键存在重复记录：{pk_key!r}，请先去重后再修改主键')
+        seen_pks.add(pk_key)
+        converted_rows.append(tuple(out))
+    return converted_rows
 
 
 def _plan(connection, manager, path, name, payload, *, creating):
@@ -131,20 +305,12 @@ def _plan(connection, manager, path, name, payload, *, creating):
     retained = [target_name for target_name in previous if target_name in current]
     removed = [col.eng_name for col in old.columns if renames.get(col.eng_name, col.eng_name) not in current]
     added = [col for col in desired.columns if col.eng_name not in previous]
-    if desired.column_names != (*retained, *(col.eng_name for col in added)):
-        raise APIError(422, '原生表保留已有字段顺序，新字段应追加在末尾')
-    if tuple(renames.get(key, key) for key in old.primary_keys) != desired.primary_keys:
-        raise APIError(422, '原生表不能在此修改主键组合')
     if old.indexes is None:
         retained_indexes = None
     else:
         retained_indexes = tuple(tuple(renames.get(field, field) for field in fields) for fields in old.indexes)
     if retained_indexes != desired.indexes:
         raise APIError(422, '原生表保留已有索引，不能在此修改索引方案')
-    for field in retained:
-        before, after = previous[field], current[field]
-        if before.data_type != after.data_type or before.default_value != after.default_value:
-            raise APIError(422, f'原生表的已有字段 {field} 不支持在此改类型或默认值')
     generated = {row[1] for row in connection.execute(f'PRAGMA table_xinfo({_quote(name)})') if row[6] != 0}
     if generated.intersection((*removed, *renames)):
         raise APIError(422, '原生表的生成字段不能删除或改名')
@@ -153,6 +319,62 @@ def _plan(connection, manager, path, name, payload, *, creating):
             indexed = {row[2] for row in connection.execute(f'PRAGMA index_info({_quote(index)})')}
             if indexed.intersection(removed):
                 raise APIError(422, '已有索引引用待删除字段，不能删除')
+
+    order_changed = desired.column_names != (*retained, *(col.eng_name for col in added))
+    pk_changed = tuple(renames.get(key, key) for key in old.primary_keys) != desired.primary_keys
+    type_changes = [
+        f for f in retained if previous[f].data_type != current[f].data_type
+    ]
+    default_changes = [
+        f for f in retained if previous[f].default_value != current[f].default_value
+    ]
+    needs_rebuild = order_changed or pk_changed or bool(type_changes) or bool(default_changes)
+
+    ordinal = connection.execute(
+        f'SELECT ordinal FROM {_quote(EMBEDDED_TABLES_TABLE)} WHERE table_name=?', (name,),
+    ).fetchone()[0]
+
+    if needs_rebuild:
+        if generated:
+            raise APIError(422, '原生表包含 SQLite 生成列，暂不支持通过重建修改类型、主键或默认值')
+        changes = []
+        if name != new_name:
+            changes.append(f'表改名：{name} → {new_name}')
+        for field in removed:
+            changes.append(f'删除字段及其数据：{field}')
+        for before, after in renames.items():
+            changes.append(f'字段改名：{before} → {after}')
+        for column in added:
+            changes.append(f'增加字段：{column.eng_name}')
+        for field in type_changes:
+            changes.append(f'修改字段类型：{field}（{previous[field].data_type} → {current[field].data_type}）')
+        for field in default_changes:
+            changes.append(f'修改字段默认值：{field}')
+        if pk_changed:
+            changes.append(f'修改主键：{", ".join(old.primary_keys)} → {", ".join(desired.primary_keys)}')
+        if order_changed:
+            changes.append('调整字段顺序')
+        if old.chn_name != desired.chn_name:
+            changes.append(f'表显示名：{old.chn_name} → {desired.chn_name}')
+        for field in retained:
+            before, after = previous[field], current[field]
+            if (before.chn_name, before.disp_type, before.disp_menu) != (after.chn_name, after.disp_type, after.disp_menu):
+                changes.append(f'字段显示属性：{field}')
+        changes.append('重建原生表并保留全部数据与索引')
+
+        table_sql_row = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='table' AND name=? COLLATE NOCASE", (name,),
+        ).fetchone()
+        without_rowid = bool(table_sql_row and table_sql_row[0] and re.search(r'\bWITHOUT\s+ROWID\b', table_sql_row[0], re.I))
+        rebuild_indexes, rebuild_triggers = _collect_rebuild_objects(
+            connection, name, new_name, renames, set(desired.column_names),
+        )
+        rebuild_rows = _prepare_rebuild_rows(connection, old, desired, renames)
+        return _Plan(
+            desired, [], changes, ordinal,
+            rebuild=True, rebuild_rows=rebuild_rows, without_rowid=without_rowid,
+            rebuild_indexes=rebuild_indexes, rebuild_triggers=rebuild_triggers,
+        )
 
     statements, changes = [], []
     if name != new_name:
@@ -184,9 +406,6 @@ def _plan(connection, manager, path, name, payload, *, creating):
         before, after = previous[field], current[field]
         if (before.chn_name, before.disp_type, before.disp_menu) != (after.chn_name, after.disp_type, after.disp_menu):
             changes.append(f'字段显示属性：{field}')
-    ordinal = connection.execute(
-        f'SELECT ordinal FROM {_quote(EMBEDDED_TABLES_TABLE)} WHERE table_name=?', (name,),
-    ).fetchone()[0]
     return _Plan(desired, statements, changes, ordinal)
 
 
@@ -217,6 +436,39 @@ def _run_write(manager, path, callback, *, already_locked=False):
         raise APIError(422, f'无法修改原生表结构：{error}') from error
 
 
+def _apply_native_rebuild(connection, old_name, plan):
+    """在当前事务内原子重建原生 SQLite 表并恢复数据、二级索引与触发器。"""
+    desired = plan.definition
+    temp_name = 'rtdb_native_rebuild_' + uuid.uuid4().hex
+    quoted_temp = _quote(temp_name)
+    quoted_old = _quote(old_name)
+    quoted_new = _quote(desired.eng_name)
+    columns = [_column_sql(connection, col) for col in desired.columns]
+    keys = ', '.join(_quote(key) for key in desired.primary_keys)
+    columns.append(f'PRIMARY KEY ({keys})')
+    suffix = ' WITHOUT ROWID' if plan.without_rowid else ''
+
+    # 推迟外键校验到事务提交前，确保 DROP/RENAME 期间外键关系安全切换并最终完整校验。
+    connection.execute('PRAGMA defer_foreign_keys = ON')
+    connection.execute(f'CREATE TABLE {quoted_temp} ({", ".join(columns)}){suffix}')
+    if plan.rebuild_rows:
+        placeholders = ', '.join('?' for _ in desired.columns)
+        col_list = ', '.join(_quote(col.eng_name) for col in desired.columns)
+        connection.executemany(
+            f'INSERT INTO {quoted_temp} ({col_list}) VALUES ({placeholders})',
+            plan.rebuild_rows,
+        )
+    connection.execute(f'DROP TABLE {quoted_old}')
+    connection.execute(f'ALTER TABLE {quoted_temp} RENAME TO {quoted_new}')
+    for index_sql in plan.rebuild_indexes:
+        connection.execute(index_sql)
+    for trigger_sql in plan.rebuild_triggers:
+        connection.execute(trigger_sql)
+    fk_violations = connection.execute('PRAGMA foreign_key_check').fetchall()
+    if fk_violations:
+        raise APIError(422, f'修改表结构破坏了外键约束：{fk_violations[0]}')
+
+
 def save_native_schema(manager, name, payload, *, creating=False, already_locked=False):
     from .sqlite_service import fingerprint
 
@@ -224,8 +476,11 @@ def save_native_schema(manager, name, payload, *, creating=False, already_locked
 
     def apply(connection):
         plan = _plan(connection, manager, path, name, payload, creating=creating)
-        for sql in plan.statements:
-            connection.execute(sql)
+        if plan.rebuild:
+            _apply_native_rebuild(connection, name, plan)
+        else:
+            for sql in plan.statements:
+                connection.execute(sql)
         desired = plan.definition
         validate_native_table(connection, desired)
         if not creating and desired.eng_name != name:
