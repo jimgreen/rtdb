@@ -832,14 +832,14 @@ td.cell-modified::before { content: ""; position: absolute; left: 0; top: 0; bot
 }
 #data-grid .cell-toggle { display: block; margin: 0 auto; width: 15px; height: 15px; cursor: pointer; }
 
-/* 右键菜单 */
+/* 右键菜单与 2 级子菜单 */
 .row-context-menu {
   position: fixed;
   z-index: 20;
-  min-width: 184px;
+  min-width: 172px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
-  overflow-y: auto;
+  overflow: visible;
   padding: 5px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -860,10 +860,35 @@ td.cell-modified::before { content: ""; position: absolute; left: 0; top: 0; bot
   font-weight: 450;
 }
 .row-context-menu button:not(:disabled):hover,
-.row-context-menu button:focus-visible { background: var(--bg-active); color: var(--accent); }
+.row-context-menu button:focus-visible,
+.row-context-menu .menu-group.is-open > .menu-trigger:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--accent);
+}
 .row-context-menu button.danger { color: var(--danger); background: transparent; }
-.row-context-menu button.danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
+.row-context-menu button.danger:hover:not(:disabled),
+.row-context-menu .menu-group.is-open > .menu-trigger.danger:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
 .row-context-menu hr { margin: 4px 4px; border: 0; border-top: 1px solid var(--border); }
+.row-context-menu .menu-group { position: relative; }
+.row-context-menu .menu-trigger { justify-content: space-between; gap: 14px; }
+.row-context-menu .menu-arrow { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+.row-context-menu .menu-group.is-open > .menu-trigger .menu-arrow { color: inherit; }
+.row-context-menu .submenu {
+  position: fixed;
+  z-index: 22;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
 
 /* 分页栏 */
 .pager {

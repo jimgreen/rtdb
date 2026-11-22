@@ -1081,8 +1081,113 @@ function updateQueryFeedback(result, sql) {
   if (item && item.row_count !== result.table_total) { item.row_count = result.table_total; renderTables(); }
 }
 function display(value) { return value == null ? "NULL" : typeof value === "object" ? JSON.stringify(value) : String(value); }
+function closeContextSubmenus(menu) {
+  if (!menu) return;
+  menu.querySelectorAll(".menu-group").forEach((group) => {
+    group.classList.remove("is-open");
+    group.querySelector(":scope > .menu-trigger")?.setAttribute("aria-expanded", "false");
+    const sub = group.querySelector(":scope > .submenu");
+    if (sub) sub.hidden = true;
+  });
+}
+function syncContextSubmenuGroups(menu) {
+  if (!menu) return;
+  closeContextSubmenus(menu);
+  menu.querySelectorAll(".menu-group").forEach((group) => {
+    const trigger = group.querySelector(":scope > .menu-trigger");
+    const sub = group.querySelector(":scope > .submenu");
+    if (!trigger || !sub) return;
+    const visibleButtons = [...sub.querySelectorAll(":scope > button")].filter((btn) => !btn.hidden);
+    group.hidden = visibleButtons.length === 0;
+    const allDisabled = visibleButtons.every((btn) => btn.disabled);
+    trigger.disabled = allDisabled;
+  });
+}
+function openContextSubmenu(menu, group, focusFirst = false) {
+  if (!menu || !group) return;
+  const trigger = group.querySelector(":scope > .menu-trigger");
+  const sub = group.querySelector(":scope > .submenu");
+  if (!trigger || !sub || trigger.disabled) { closeContextSubmenus(menu); return; }
+  closeContextSubmenus(menu);
+  group.classList.add("is-open");
+  trigger.setAttribute("aria-expanded", "true");
+  sub.hidden = false;
+  sub.scrollTop = 0;
+  const margin = 8;
+  const rect = trigger.getBoundingClientRect();
+  const width = sub.offsetWidth, height = sub.offsetHeight;
+  let left = rect.right - 2;
+  if (left + width > window.innerWidth - margin) left = Math.max(margin, rect.left - width + 2);
+  const top = Math.max(margin, Math.min(rect.top - 5, window.innerHeight - height - margin));
+  sub.style.left = `${left}px`;
+  sub.style.top = `${top}px`;
+  if (focusFirst) sub.querySelector("button:not([hidden]):not(:disabled)")?.focus({ preventScroll: true });
+}
+function focusFirstContextItem(menu) {
+  const first = [...menu.querySelectorAll(":scope > button, :scope > .menu-group > .menu-trigger")]
+    .find((btn) => !btn.hidden && !btn.disabled && !btn.closest("[hidden]"));
+  (first || menu).focus({ preventScroll: true });
+}
+function bindContextMenuNavigation(menu, onClose) {
+  if (!menu) return;
+  menu.addEventListener("pointermove", (event) => {
+    const group = event.target.closest(".menu-group");
+    if (group && menu.contains(group)) {
+      if (!group.classList.contains("is-open")) openContextSubmenu(menu, group, false);
+      return;
+    }
+    if (event.target.closest(":scope > button")) closeContextSubmenus(menu);
+  });
+  menu.addEventListener("click", (event) => {
+    const trigger = event.target.closest(".menu-trigger");
+    if (!trigger || trigger.disabled) return;
+    event.stopPropagation();
+    const group = trigger.closest(".menu-group");
+    if (group.classList.contains("is-open")) closeContextSubmenus(menu);
+    else openContextSubmenu(menu, group, false);
+  });
+  menu.addEventListener("keydown", (event) => {
+    if (event.key === "Tab") { onClose(true); return; }
+    const active = document.activeElement;
+    const inSub = active?.closest(".submenu");
+    if (inSub && menu.contains(inSub)) {
+      if (event.key === "ArrowLeft" || event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation();
+        const trigger = inSub.closest(".menu-group")?.querySelector(":scope > .menu-trigger");
+        closeContextSubmenus(menu);
+        trigger?.focus({ preventScroll: true });
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = [...inSub.querySelectorAll(":scope > button:not([hidden]):not(:disabled)")];
+      if (!buttons.length) return;
+      const current = buttons.indexOf(active);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next].focus();
+      return;
+    }
+    if ((event.key === "ArrowRight" || event.key === "Enter") && active?.classList.contains("menu-trigger") && !active.disabled) {
+      event.preventDefault();
+      openContextSubmenu(menu, active.closest(".menu-group"), true);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const buttons = [...menu.querySelectorAll(":scope > button, :scope > .menu-group > .menu-trigger")]
+      .filter((btn) => !btn.hidden && !btn.disabled && !btn.closest("[hidden]"));
+    if (!buttons.length) return;
+    const current = buttons.indexOf(active);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+      : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+    closeContextSubmenus(menu);
+    buttons[next].focus();
+  });
+}
 function closeRowContextMenu(restoreFocus = false) {
   const menu = el("row-context-menu"), trigger = state.contextRecord?.trigger;
+  closeContextSubmenus(menu);
   menu.hidden = true; state.contextRecord = null;
   if (restoreFocus) (trigger?.isConnected ? trigger : el("data-grid")).focus({ preventScroll: true });
 }
@@ -1097,14 +1202,12 @@ function openRowContextMenu(event, record, index) {
   const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, trigger: event.target.closest("[tabindex]") || el("data-grid") };
   const hasTable = Boolean(state.table), hasQuery = Boolean(state.lastQuery);
   const pending = hasPendingData();
-  const setDisabled = (actionName, disabled) => { menu.querySelector(`[data-action="${actionName}"]`).disabled = disabled; };
+  const setDisabled = (actionName, disabled) => { const btn = menu.querySelector(`[data-action="${actionName}"]`); if (btn) btn.disabled = disabled; };
   setDisabled("undo-edit", !editUndo.length); setDisabled("redo-edit", !editRedo.length);
   setDisabled("preview-edits", !hasPendingData());
   setDisabled("restore-draft",hasPendingData()||!localDrafts.candidates().length);
   setDisabled("add-row", !hasTable || isReadOnlyDatabase() || draftRecords().length >= 500);
   const rowIndexes = selectedRowIndexes(record, index);
-  const savedSelected = rowIndexes.some((idx) => state.records[idx] && !state.records[idx].draftId);
-  setDisabled("batch-edit", !hasTable || !state.editable || isReadOnlyDatabase() || pending || !savedSelected);
   setDisabled("copy-rows", !state.editable || !rowIndexes.length);
   setDisabled("insert-copied-rows", !state.editable || !canInsertCopiedRows() || draftRecords().length + (state.copiedRows?.rows.length || 0) > 500);
   setDisabled("import", !hasTable || isReadOnlyDatabase() || pending);
@@ -1123,12 +1226,13 @@ function openRowContextMenu(event, record, index) {
     const button = menu.querySelector(`[data-action="${actionName}"]`); button.disabled = !canPlot;
     button.title = canPlot ? `${selection.indexes.length} 行 × ${selection.columnCount} 列，${selection.mode === "rows" ? "按行绘制，KEY 为曲线名" : "按列绘制，列名为曲线名"}` : "选区中没有可绘制的数值";
   }
+  syncContextSubmenuGroups(menu);
   menu.hidden = false;
   menu.scrollTop = 0;
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
-  (menu.querySelector("button:not(:disabled)") || menu).focus({ preventScroll: true });
+  focusFirstContextItem(menu);
 }
 async function deleteRecords(records, title) {
   requireTable();
@@ -2201,6 +2305,7 @@ function handleSchemaContextAction(actionName) {
 }
 function closeSidebarContextMenu(restoreFocus = false) {
   const menu = el("sidebar-context-menu"), trigger = state.sidebarContextTrigger;
+  closeContextSubmenus(menu);
   menu.hidden = true; state.sidebarContextTrigger = null; state.sidebarContextScope = null;
   if (restoreFocus) (trigger?.isConnected ? trigger : el("table-list")).focus({ preventScroll: true });
 }
@@ -2214,9 +2319,6 @@ function openSidebarContextMenu(event, scope = "tables") {
   menu.querySelectorAll("[data-sidebar-scope]").forEach((button) => {
     button.hidden = button.dataset.sidebarScope !== scope;
   });
-  menu.querySelectorAll("[data-sidebar-separator]").forEach((separator) => {
-    separator.hidden = separator.dataset.sidebarSeparator !== scope;
-  });
   const hasFields = state.resultColumns.length > 0;
   for (const name of ["select-all-fields", "invert-fields", "clear-fields"]) {
     menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = !hasFields;
@@ -2226,11 +2328,12 @@ function openSidebarContextMenu(event, scope = "tables") {
   for (const name of ["load-definition", "restore"]) menu.querySelector(`[data-sidebar-action="${name}"]`).disabled = unavailable || isNativeDatabase();
   menu.querySelector('[data-sidebar-action="receipt-maintenance"]').disabled = unavailable;
   menu.querySelector('[data-sidebar-action="csv-import"]').disabled = unavailable || !state.table;
+  syncContextSubmenuGroups(menu);
   menu.hidden = false; menu.scrollTop = 0;
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
-  (menu.querySelector("button:not([hidden]):not(:disabled)") || menu).focus({ preventScroll: true });
+  focusFirstContextItem(menu);
 }
 function handleSidebarContextAction(actionName) {
   closeSidebarContextMenu();
@@ -2784,7 +2887,9 @@ function chartPointerDown(event) {
   if (x >= frame.left && x <= frame.left + frame.plotWidth && y >= frame.top && y <= frame.top + frame.plotHeight) { state.chartCursor.pinned = !state.chartCursor.pinned; state.chartCursor.index = frame.labels.length <= 1 ? 0 : Math.max(0, Math.min(frame.labels.length - 1, Math.round((x - frame.left) / frame.plotWidth * (frame.labels.length - 1)))); state.chartCursor.y = y; drawChart(); }
 }
 function closeChartContextMenu(restoreFocus = false) {
-  const menu = el("chart-context-menu"); menu.hidden = true;
+  const menu = el("chart-context-menu");
+  closeContextSubmenus(menu);
+  menu.hidden = true;
   if (restoreFocus) el("chart").focus({ preventScroll: true });
 }
 function openChartContextMenu(event) {
@@ -2794,11 +2899,12 @@ function openChartContextMenu(event) {
   const menu = el("chart-context-menu"), hasSeries = buildChartModel().series.length > 0;
   menu.querySelector('[data-chart-action="clear-chart"]').disabled = !hasSeries;
   menu.querySelector('[data-chart-action="series-settings"]').disabled = !hasSeries;
+  syncContextSubmenuGroups(menu);
   menu.hidden = false; menu.scrollTop = 0;
   const margin = 8, width = menu.offsetWidth, height = menu.offsetHeight;
   menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin))}px`;
   menu.style.top = `${Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin))}px`;
-  (menu.querySelector("button:not(:disabled)") || menu).focus({ preventScroll: true });
+  focusFirstContextItem(menu);
 }
 function clearChartDisplay() {
   state.chartSeries.forEach((series) => state.chartAxes.delete(series.key));
@@ -3099,15 +3205,7 @@ el("chart-context-menu").addEventListener("click", (event) => {
 el("sidebar-context-menu").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-sidebar-action]"); if (actionButton && !actionButton.disabled) handleSidebarContextAction(actionButton.dataset.sidebarAction);
 });
-el("chart-context-menu").addEventListener("keydown", (event) => {
-  if (event.key === "Tab") { closeChartContextMenu(true); return; }
-  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")]; if (!buttons.length) return;
-  const current = buttons.indexOf(document.activeElement);
-  const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
-  buttons[index].focus();
-});
+bindContextMenuNavigation(el("chart-context-menu"), closeChartContextMenu);
 el("chart-area").addEventListener("contextmenu", openChartContextMenu);
 el("records-panel").addEventListener("contextmenu", (event) => openRowContextMenu(event, null, null));
 el("table-list").addEventListener("contextmenu", (event) => openSidebarContextMenu(event, "tables"));
@@ -3211,24 +3309,8 @@ for (const id of ["table-list", "field-list"]) {
     event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 8, clientY: bounds.top + 8 }));
   });
 }
-el("row-context-menu").addEventListener("keydown", (event) => {
-  if (event.key === "Tab") { closeRowContextMenu(true); return; }
-  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")]; if (!buttons.length) return;
-  const current = buttons.indexOf(document.activeElement);
-  const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
-  buttons[index].focus();
-});
-el("sidebar-context-menu").addEventListener("keydown", (event) => {
-  if (event.key === "Tab") { closeSidebarContextMenu(true); return; }
-  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")]; if (!buttons.length) return;
-  const current = buttons.indexOf(document.activeElement);
-  const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
-  buttons[index].focus();
-});
+bindContextMenuNavigation(el("row-context-menu"), closeRowContextMenu);
+bindContextMenuNavigation(el("sidebar-context-menu"), closeSidebarContextMenu);
 document.addEventListener("click", (event) => { if (!event.target.closest("#row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#sidebar-context-menu")) closeSidebarContextMenu(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("row-context-menu").hidden) { event.preventDefault(); closeRowContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("chart-context-menu").hidden) { event.preventDefault(); closeChartContextMenu(true); } });

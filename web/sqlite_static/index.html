@@ -225,38 +225,69 @@
   <div id="sql-history-list" class="sql-history-list" role="listbox" aria-label="SQL 历史语句" hidden></div>
 
   <div id="row-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表格操作" hidden>
-    <button type="button" role="menuitem" data-action="undo-edit">撤销（Ctrl+Z）</button>
-    <button type="button" role="menuitem" data-action="redo-edit">重做（Ctrl+Y）</button>
-    <button type="button" role="menuitem" data-action="preview-edits">查看待保存修改</button>
-    <button type="button" role="menuitem" data-action="restore-draft">恢复本地草稿</button>
+    <button type="button" role="menuitem" data-action="copy-cells">复制(CTRL+C)</button>
+    <button type="button" role="menuitem" data-action="paste-cells">粘贴(CTRL+V)</button>
     <hr>
-    <button type="button" role="menuitem" data-action="add-row">新增记录</button>
-    <button type="button" role="menuitem" data-action="batch-edit">批量修改选中行</button>
-    <button type="button" role="menuitem" data-action="copy-rows">复制选中行</button>
-    <button type="button" role="menuitem" data-action="insert-copied-rows">插入复制行</button>
-    <button type="button" role="menuitem" data-action="import">导入 JSON / CSV</button>
-    <button type="button" role="menuitem" data-action="export-csv">导出查询（CSV）</button>
-    <button type="button" role="menuitem" data-action="export-json">导出查询（JSON）</button>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>行操作</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="add-row">新增记录</button>
+        <button type="button" role="menuitem" data-action="copy-rows">复制选中行</button>
+        <button type="button" role="menuitem" data-action="insert-copied-rows">插入复制行</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>编辑与草稿</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="undo-edit">撤销（Ctrl+Z）</button>
+        <button type="button" role="menuitem" data-action="redo-edit">重做（Ctrl+Y）</button>
+        <button type="button" role="menuitem" data-action="preview-edits">查看待保存修改</button>
+        <button type="button" role="menuitem" data-action="restore-draft">恢复本地草稿</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>导入 / 导出</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="import">导入 JSON / CSV</button>
+        <button type="button" role="menuitem" data-action="export-csv">导出查询（CSV）</button>
+        <button type="button" role="menuitem" data-action="export-json">导出查询（JSON）</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>绘制曲线</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="chart-left">添加至左轴曲线</button>
+        <button type="button" role="menuitem" data-action="chart-right">添加至右轴曲线</button>
+      </div>
+    </div>
     <hr>
-    <button type="button" role="menuitem" data-action="copy-cells">复制选中区域</button>
-    <button type="button" role="menuitem" data-action="paste-cells">粘贴到选区</button>
-    <hr>
-    <button type="button" role="menuitem" data-action="delete-selected" class="danger">删除选中记录</button>
-    <button type="button" role="menuitem" data-action="clear-table" class="danger">清空表</button>
-    <hr>
-    <button type="button" role="menuitem" data-action="chart-left">左轴曲线</button>
-    <button type="button" role="menuitem" data-action="chart-right">右轴曲线</button>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger danger" aria-haspopup="menu" aria-expanded="false"><span>删除 / 清空</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="delete-selected" class="danger">删除选中记录</button>
+        <button type="button" role="menuitem" data-action="clear-table" class="danger">清空表</button>
+      </div>
+    </div>
   </div>
 
   <div id="chart-context-menu" class="row-context-menu chart-context-menu" role="menu" tabindex="-1" aria-label="曲线操作" hidden>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>坐标轴设置</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-chart-action="axis-left">左轴设置</button>
+        <button type="button" role="menuitem" data-chart-action="axis-right">右轴设置</button>
+        <button type="button" role="menuitem" data-chart-action="axis-x">横轴设置</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>样式设置</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-chart-action="title-settings">标题设置</button>
+        <button type="button" role="menuitem" data-chart-action="series-settings">曲线设置</button>
+      </div>
+    </div>
+    <hr>
     <button type="button" role="menuitem" data-chart-action="clear-chart" class="danger">清空曲线</button>
-    <hr>
-    <button type="button" role="menuitem" data-chart-action="axis-left">左轴设置</button>
-    <button type="button" role="menuitem" data-chart-action="axis-right">右轴设置</button>
-    <button type="button" role="menuitem" data-chart-action="axis-x">横轴设置</button>
-    <hr>
-    <button type="button" role="menuitem" data-chart-action="title-settings">标题设置</button>
-    <button type="button" role="menuitem" data-chart-action="series-settings">曲线设置</button>
   </div>
 
   <div id="schema-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="字段操作" hidden>
@@ -280,21 +311,40 @@
   </dialog>
 
   <div id="sidebar-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表索引操作" hidden>
-    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="select-all-tables">全选</button>
-    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="invert-tables">反选</button>
-    <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="clear-tables">取消</button>
-    <hr data-sidebar-separator="tables">
-    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="select-all-fields">全选</button>
-    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="invert-fields">反选</button>
-    <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="clear-fields">取消</button>
-    <hr data-sidebar-separator="fields">
-    <button type="button" role="menuitem" data-sidebar-action="load-definition">加载 dbdef / E</button>
-    <button type="button" role="menuitem" data-sidebar-action="csv-import">CSV 流式导入</button>
-    <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
-    <button type="button" role="menuitem" data-sidebar-action="restore">恢复备份</button>
-    <button type="button" role="menuitem" data-sidebar-action="receipt-maintenance">日志与回执维护</button>
-    <button type="button" role="menuitem" data-sidebar-action="storage-maintenance">存储维护</button>
-    <button type="button" role="menuitem" data-sidebar-action="database-snapshots">整库快照 / 恢复</button>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>批量勾选</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="select-all-tables">全选</button>
+        <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="invert-tables">反选</button>
+        <button type="button" role="menuitem" data-sidebar-scope="tables" data-sidebar-action="clear-tables">取消勾选</button>
+        <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="select-all-fields">全选</button>
+        <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="invert-fields">反选</button>
+        <button type="button" role="menuitem" data-sidebar-scope="fields" data-sidebar-action="clear-fields">取消勾选</button>
+      </div>
+    </div>
+    <hr>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>数据导入</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-sidebar-action="load-definition">加载 dbdef / E</button>
+        <button type="button" role="menuitem" data-sidebar-action="csv-import">CSV 流式导入</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>备份与快照</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-sidebar-action="backup">备份所选表</button>
+        <button type="button" role="menuitem" data-sidebar-action="restore">恢复备份</button>
+        <button type="button" role="menuitem" data-sidebar-action="database-snapshots">整库快照 / 恢复</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>服务维护</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-sidebar-action="receipt-maintenance">日志与回执维护</button>
+        <button type="button" role="menuitem" data-sidebar-action="storage-maintenance">存储维护</button>
+      </div>
+    </div>
   </div>
 
   <div id="operation-notice" class="operation-notice" role="status" aria-live="polite" aria-atomic="true" hidden><span id="operation-message"></span><button id="dismiss-notice" type="button" aria-label="关闭操作提示">×</button></div>
