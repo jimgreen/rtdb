@@ -32,9 +32,12 @@ def scope(manager, filename):
     """Backup access does not require the original database to still exist."""
     if not filename: return manager
     import copy
-    scoped = copy.copy(manager)
-    scoped.database_file = manager._database_filename({'filename': filename})
+    from core.sqlite_schema import sqlite_filename
     from .sqlite_service import is_native_database
+    if not sqlite_filename(filename):
+        raise APIError(400, '请选择有效的 SQLite 数据库文件')
+    scoped = copy.copy(manager)
+    scoped.database_file = filename
     target_path = manager.data_dir / scoped.database_file
     scoped.native = is_native_database(target_path)
     tag = target_path.stem if target_path.suffix.lower() == '.sqlite3' else scoped.database_file

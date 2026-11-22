@@ -199,6 +199,35 @@ def _convert_native_value(value, column):
     raise APIError(422, f'原生 SQLite 字段 {name} 不支持类型 {column.data_type}')
 
 
+def _strip_sql_literals(sql):
+    """剥离 SQL 字符串与注释内容，便于安全检测表级约束关键字。"""
+    cleaned = re.sub(r'--[^\n]*', ' ', sql or '')
+    cleaned = re.sub(r'/\*.*?\*/', ' ', cleaned, flags=re.S)
+    cleaned = re.sub(r"'(?:''|[^'])*'", "''", cleaned)
+    cleaned = re.sub(r'"(?:""|[^"])*"', '""', cleaned)
+    return cleaned
+
+
+def _check_rebuild_constraints(connection, table_name, table_sql):
+    """重建原生表前拦截会导致静默丢失的高危表级约束，并返回需要告知用户的提示。"""
+    cleaned = _strip_sql_literals(table_sql)
+    if re.search(r'\bSTRICT\b', cleaned, re.I):
+        raise APIError(422, '原生表启用了 STRICT 模式，暂不支持通过重建修改结构')
+    if re.search(r'\bAUTOINCREMENT\b', cleaned, re.I):
+        raise APIError(422, '原生表包含 AUTOINCREMENT 约束，暂不支持通过重建修改结构')
+    if re.search(r'\b(?:FOREIGN\s+KEY|REFERENCES)\b', cleaned, re.I) or connection.execute(
+        f'PRAGMA foreign_key_list({_quote(table_name)})'
+    ).fetchall():
+        raise APIError(422, '原生表包含外键（FOREIGN KEY）约束，为避免丢失约束暂不支持重建表结构')
+    for _seq, _idx_name, unique, origin, _partial in connection.execute(f'PRAGMA index_list({_quote(table_name)})'):
+        if unique and origin == 'u':
+            raise APIError(422, '原生表包含非主键 UNIQUE 约束，为避免丢失约束暂不支持重建表结构')
+    notes = []
+    if re.search(r'\bCHECK\s*\(', cleaned, re.I):
+        notes.append('注意：原表包含 CHECK 约束，重建后将不再保留原 CHECK 表达式')
+    return notes
+
+
 def _collect_rebuild_objects(connection, old_name, new_name, renames, desired_names):
     """收集原表需要保留的显式二级索引与触发器 DDL。"""
     index_meta = {}
@@ -223,6 +252,8 @@ def _collect_rebuild_objects(connection, old_name, new_name, renames, desired_na
                 indexes.append(f'{prefix} {_quote(idx_name)} ON {_quote(new_name)} ({cols_sql})')
         elif old_name == new_name and not renames:
             indexes.append(sql)
+        else:
+            raise APIError(422, f'原生表包含部分索引或表达式索引（{idx_name}），无法在改名或重建时安全保留')
 
     triggers = [
         sql for (sql,) in connection.execute(
@@ -365,7 +396,9 @@ def _plan(connection, manager, path, name, payload, *, creating):
         table_sql_row = connection.execute(
             "SELECT sql FROM sqlite_schema WHERE type='table' AND name=? COLLATE NOCASE", (name,),
         ).fetchone()
-        without_rowid = bool(table_sql_row and table_sql_row[0] and re.search(r'\bWITHOUT\s+ROWID\b', table_sql_row[0], re.I))
+        table_sql = table_sql_row[0] if table_sql_row and table_sql_row[0] else ''
+        changes.extend(_check_rebuild_constraints(connection, name, table_sql))
+        without_rowid = bool(re.search(r'\bWITHOUT\s+ROWID\b', table_sql, re.I))
         rebuild_indexes, rebuild_triggers = _collect_rebuild_objects(
             connection, name, new_name, renames, set(desired.column_names),
         )

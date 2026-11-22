@@ -63,10 +63,10 @@ def prepare(manager,value):
         prepared.unlink(missing_ok=True)
         scoped=manager.for_database(value['database'])
         with scoped.session(value['table']) as table, closing(sqlite3.connect(prepared)) as staging:
-            staging.execute('PRAGMA cache_size=-2048');staging.execute('PRAGMA synchronous=FULL')
+            staging.execute('PRAGMA cache_size=-2048');staging.execute('PRAGMA synchronous=OFF');staging.execute('PRAGMA journal_mode=MEMORY')
             create_layout(staging,table.definition,'rows','metadata')
             fields=','.join(f'c{i}' for i in range(len(table.columns)));markers=','.join('?' for _ in table.columns)
-            sample=[];count=0
+            sample=[];count=0;batch_values=[]
             with (folder/'payload.sqlite3').open('r',encoding=value['encoding'],errors='strict',newline='') as stream:
                 reader=csv.DictReader(stream,strict=True)
                 names=reader.fieldnames
@@ -87,18 +87,28 @@ def prepare(manager,value):
                             elif kind in _FLOAT:
                                 cell=float(cell)
                                 if not math.isfinite(cell):raise ValueError(f'{name} 必须为有限数值')
-                            elif kind in _BOOL|_OBJECT:cell=json.loads(cell)
+                            elif kind in _BOOL:
+                                text_val = cell.strip().lower()
+                                if text_val not in ('true', 'false', '0', '1'):
+                                    raise ValueError(f'{name} 必须为布尔值（true/false 或 0/1）')
+                                cell = text_val in ('true', '1')
+                            elif kind in _OBJECT:cell=json.loads(cell)
                             elif cell.startswith('\\\\'):cell=cell[1:]
                             row[name]=cell
                         row=scoped._coerce(table,row,complete=True);table.definition.validate_rows([row])
                         if any(isinstance(row[key],str) and not row[key].strip() for key in table.primary_keys):
                             raise ValueError('KEY 不能为空')
-                        values=tuple(table._encode(name,row[name]) for name in table.columns)
-                        staging.execute(f'INSERT INTO rows ({fields}) VALUES ({markers})',values)
+                        batch_values.append(tuple(table._encode(name,row[name]) for name in table.columns))
+                        if len(batch_values)>=BATCH:
+                            staging.executemany(f'INSERT INTO rows ({fields}) VALUES ({markers})',batch_values)
+                            batch_values.clear()
                         if len(sample)<20:
                             sample.append({key:(cell[:160]+'…' if len(cell)>160 else cell) if isinstance(cell,str)
                                 else json.dumps(cell,ensure_ascii=False)[:160] if isinstance(cell,(dict,list))
                                 else browser_value(cell) for key,cell in row.items()})
+                    if batch_values:
+                        staging.executemany(f'INSERT INTO rows ({fields}) VALUES ({markers})',batch_values)
+                        batch_values.clear()
                 except (ValueError,TypeError,csv.Error,sqlite3.IntegrityError) as error:
                     raise APIError(422,f'CSV 第 {reader.line_num} 行：{error}（请检查值、列数及重复 KEY）') from error
             if not count:raise APIError(422,'CSV 没有可导入记录')

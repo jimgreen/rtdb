@@ -7,7 +7,7 @@ const backgroundTasks = {
     if(method==='POST' && route==='storage-maintenance')return true;
     if(method==='POST' && /^database-snapshots(?:\/[a-f0-9]{32}\/restore)?$/.test(route))return true;
     if(method==='POST' && /^database-uploads\/[a-f0-9]{32}\/finalize$/.test(route))return true;
-    return method==='GET' && route==='logs' || method==='PUT' && /^tables\/[^/]+\/(schema|cell-edits|rows)$/.test(route) || method==='DELETE'&&/^tables\/[^/]+\/(rows|schema)$/.test(route) ||
+    return method==='PUT' && /^tables\/[^/]+\/(schema|cell-edits|rows)$/.test(route) || method==='DELETE'&&/^tables\/[^/]+\/(rows|schema)$/.test(route) ||
       method==='POST' && (/^(definition-preview|definition-import|backup|restore-preview|restore|database-files\/rebuild-from-embedded)$/.test(route) || /^tables\/[^/]+\/(sql-export|import|rows|clear)$/.test(route) || /^tables\/[^/]+\/sql$/.test(route)&&!body?.readonly_only&&/^\s*(INSERT|UPDATE|DELETE)\b/i.test(body?.sql||''));
   },
   remember(task) { try { sessionStorage.setItem(this.storageKey,JSON.stringify({id:task.id,database:task.database,path:task.path,draftKey:task.draftKey,draftRevision:task.draftRevision})); } catch {} },

@@ -266,7 +266,7 @@ def legacy_sqlite_filename(filename: str) -> bool:
     return bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.sqlite3', filename))
 
 
-def load_embedded_database(path: str | Path) -> DatabaseDefinition | None:
+def load_embedded_database(path: str | Path, *, ignore_unavailable: bool = False) -> DatabaseDefinition | None:
     """Load embedded definitions from one SQLite file, if present."""
 
     path = Path(path).expanduser().resolve()
@@ -279,8 +279,13 @@ def load_embedded_database(path: str | Path) -> DatabaseDefinition | None:
                 return None
             return _read_embedded_database(connection, path)
     except sqlite3.Error as error:
-        if not legacy_sqlite_filename(path.name) and getattr(error, 'sqlite_errorcode', 0) in (
+        code = getattr(error, 'sqlite_errorcode', 0) & 0xff
+        if not legacy_sqlite_filename(path.name) and code in (
             sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_CORRUPT,
+        ):
+            return None
+        if ignore_unavailable and not legacy_sqlite_filename(path.name) and code in (
+            sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_PERM,
         ):
             return None
         raise SchemaError(f'cannot read embedded schema {path}: {error}') from error
@@ -297,7 +302,7 @@ def iter_embedded_databases(directory: str | Path, database_file=None):
     for path in paths:
         if not sqlite_filename(path.name):
             continue
-        document = load_embedded_database(path)
+        document = load_embedded_database(path, ignore_unavailable=database_file is None)
         if document is not None:
             yield document
 

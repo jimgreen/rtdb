@@ -60,7 +60,7 @@ const localDrafts={
         }
         if(emergency&&data){const encoded=JSON.stringify(data);if(encoded.length<=2*1024*1024)localStorage.setItem('rtdb-draft-emergency:'+key,encoded);}
       }
-      await Promise.all(writes);this.announce('changed');return true;
+      if(writes.length){await Promise.all(writes);this.announce('changed');}return true;
     }catch(error){notice('本地草稿未能保存：'+error.message+'；请勿关闭页面',true);return false;}
   },
   async saving(kind='data'){await this.flush();const key=this.key(kind),saved=this.read(key);return saved?{draftKey:key,draftRevision:saved.revision}:{};},

@@ -133,7 +133,9 @@ class SchemaMigrationTests(unittest.TestCase):
             self.assertEqual(len(table), 1)
             indexes = {row[1] for row in connection.execute('PRAGMA index_list(data)')}
             self.assertIn('primary_key', indexes)
-            self.assertTrue({'idx_c0', 'idx_c1', 'idx_c2', 'idx_c3', 'idx_c4', 'idx_c5'} <= indexes)
+            # 标量列自动维护二级索引，不可下推的 JSON 对象列（c5）跳过死索引。
+            self.assertTrue({'idx_c0', 'idx_c1', 'idx_c2', 'idx_c3', 'idx_c4'} <= indexes)
+            self.assertNotIn('idx_c5', indexes)
             table.insert_one(dict(site='B', id=4, extra=8.5))
             self.assertGreater(connection.execute('SELECT MAX(_pos) FROM data').fetchone()[0], sequence)
             self.assertEqual(len(table), 2)

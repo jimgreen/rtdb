@@ -121,17 +121,24 @@ def receipt(manager, ident, signature):
         return decode_result(c,ident,row[1])
 
 
-def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*1024*1024):
+def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*1024*1024, return_more=False):
     """Never turn a committed operation into a reported failure of the data write."""
     try:
         if manager.read_only or not manager.database_file:
-            return True
+            return (True, False) if return_more else True
         db_path = manager.data_dir / manager.database_file
         if not db_path.is_file():
-            return True
+            return (True, False) if return_more else True
+        # 空库或无待同步回执时先走无写锁只读快探查，避免刷盘与 WAL 写锁争用。
+        if ident is None:
+            with manager.read_scope(), closing(sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True,timeout=5)) as ro:
+                if not ro.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone():
+                    return (True, False) if return_more else True
+                if not ro.execute(f'SELECT 1 FROM {TABLE} WHERE delivered=0 LIMIT 1').fetchone():
+                    return (True, False) if return_more else True
         with _publish_lock_for(db_path), manager.read_scope(), closing(sqlite3.connect(db_path.as_uri()+'?mode=rw',uri=True,timeout=5)) as c:
             if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(TABLE,)).fetchone():
-                return True
+                return (True, False) if return_more else True
             cursor=c.execute(f'SELECT id,event FROM {TABLE} WHERE delivered=0'+(' AND id=?' if ident else '')+' ORDER BY rowid LIMIT ?', ((ident,batch_size) if ident else (batch_size,)))
             rows=[];size=0
             for row in cursor:
@@ -140,17 +147,18 @@ def publish(manager, ident=None, *, recovery=False, batch_size=200, max_bytes=2*
                 rows.append(row);size+=count
             cursor.close()
             if not rows:
-                return True
+                return (True, False) if return_more else True
             if len(rows)==1:
                 logged=manager.audit_log.write_event(json.loads(rows[0][1]), recovery=recovery) is not None
             else:
                 logged=manager.audit_log.write_events([json.loads(encoded) for _,encoded in rows], recovery=recovery)
-            if not logged: return False
+            if not logged: return (False, False) if return_more else False
             with c:
                 c.executemany(f'UPDATE {TABLE} SET delivered=1 WHERE id=?', [(ident,) for ident,_ in rows])
-        return True
+            more = bool(c.execute(f'SELECT 1 FROM {TABLE} WHERE delivered=0 LIMIT 1').fetchone()) if return_more else False
+        return (True, more) if return_more else True
     except Exception:
-        return False
+        return (False, False) if return_more else False
 
 
 def pending(manager):
@@ -172,7 +180,10 @@ def recover_pending(manager):
     for filename in _receipt_databases(manager):
         try:
             scoped=manager.for_database(filename)
-            while publish(scoped,recovery=True) and pending(scoped):pass
+            while True:
+                ok, more = publish(scoped, recovery=True, return_more=True)
+                if not ok or not more:
+                    break
         except Exception: pass  # Inaccessible databases remain available for the repair UI.
 
 
@@ -243,8 +254,7 @@ class AuditDelivery:
                             http_status=200,method='SYSTEM',path='/receipt-maintenance',result=result):
                         archive_warning='回执压缩已完成，维护日志写入失败'
                 else:
-                    ok=publish(scoped,recovery=recovery)
-                    more=ok and pending(scoped)
+                    ok, more = publish(scoped, recovery=recovery, return_more=True)
             except APIError as error:
                 if error.status==404:
                     gone=True;ok=True

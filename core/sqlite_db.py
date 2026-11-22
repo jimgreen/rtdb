@@ -255,10 +255,12 @@ class SQLiteTable(MutableSequence):
             c.commit()
             return result
         except sqlite3.IntegrityError as exc:
-            c.rollback()
+            if c.in_transaction:
+                c.rollback()
             raise SchemaError(str(exc)) from exc
         except BaseException:
-            c.rollback()
+            if c.in_transaction:
+                c.rollback()
             raise
 
     @contextmanager
@@ -271,7 +273,8 @@ class SQLiteTable(MutableSequence):
             self._check_schema(c)
             yield c
         finally:
-            c.rollback()
+            if c.in_transaction:
+                c.rollback()
 
     def _check_schema(self, connection):
         if self._schema_fingerprint is None:
@@ -540,7 +543,13 @@ class SQLiteTable(MutableSequence):
         if any(f not in self._fields for f in fields):
             raise SchemaError('unknown projection column')
         condition = self._where_sql(where)
-        ordering = _parse_order_by(order_by)
+        raw_ordering = _parse_order_by(order_by)
+        ordering = []
+        for name, descending in raw_ordering:
+            clean_name = name.rsplit('.', 1)[1] if '.' in name else name
+            if clean_name not in self._fields:
+                raise SchemaError(f'unknown order column: {name}')
+            ordering.append((clean_name, descending))
         if condition is None or any(self._types.get(f) in _OBJECT for f, desc in ordering):
             rows = [self._decode(r) for r in c.execute('SELECT '+','.join(self._fields.values())+f' FROM {self._data_sql} ORDER BY {self._row_order}')]
             predicate = _compile_where(where)

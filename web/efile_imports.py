@@ -111,10 +111,12 @@ def prepare(manager, value):
         scoped = manager.for_database(value['database']); tables = []
         with closing(sqlite3.connect(raw_path)) as staging, scoped.read_scope():
             staging.execute('PRAGMA cache_size=-2048')
+            staging.execute('PRAGMA synchronous=OFF')
+            staging.execute('PRAGMA journal_mode=MEMORY')
             staging.execute('CREATE TABLE rows (table_no INTEGER, line INTEGER, cells TEXT)')
-            staging.execute('CREATE INDEX row_table ON rows(table_no)')
             definitions = {t['name']:t['definition'] for t in scoped.tables()['tables'] if not t.get('orphan')}
             seen_names = set()
+            row_batch = []
             with (folder/'payload.sqlite3').open('r', encoding=encoding, newline='') as source:
                 for event, line, item in events(source):
                     if event == 'start':
@@ -130,7 +132,10 @@ def prepare(manager, value):
                         count += 1
                         if count > min(MAX_ROWS, scoped.max_rows): raise APIError(413, f'{name} 超过100,000条记录')
                         if count % 500 == 1: checkpoint(f'解析 {name}', count)
-                        staging.execute('INSERT INTO rows VALUES(?,?,?)', (len(tables), line, json.dumps(item, ensure_ascii=False)))
+                        row_batch.append((len(tables), line, json.dumps(item, ensure_ascii=False)))
+                        if len(row_batch) >= 512:
+                            staging.executemany('INSERT INTO rows VALUES(?,?,?)', row_batch)
+                            row_batch.clear()
                         for i, cell in enumerate(item):
                             masks[i] &= candidates(cell); present[i] |= cell not in ('', r'\N')
                         if len(samples) < 5: samples.append([cell[:80] for cell in item[:20]])
@@ -145,8 +150,12 @@ def prepare(manager, value):
                                 data_type=kind, primary_key=not old and i==0, disp_type={'int':'整数','float':'浮点数','bool':'布尔'}.get(kind,'文本'), disp_menu=''))
                         definition = TableDefinition.from_mapping(normalize_definition_labels(desired), scoped.schema_dir, name)
                         tables.append(dict(name=name, definition=definition.to_mapping(), incoming=count, source_fields=item['columns'], sample=samples, old=old))
+            if row_batch:
+                staging.executemany('INSERT INTO rows VALUES(?,?,?)', row_batch)
+                row_batch.clear()
             if not tables:
                 raise SchemaError('一次导入应包含 1–200 张表')
+            staging.execute('CREATE INDEX row_table ON rows(table_no)')
             staging.commit()
         result = dict(kind='e', id=value['id'], database=value['database'], encoding=encoding, tables=tables, sha256=checksum)
         value.update(state='ready', result=result, raw_sha256=file_hash(raw_path))

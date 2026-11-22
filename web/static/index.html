@@ -24,6 +24,7 @@
   <main class="layout">
     <aside class="panel tables-panel">
       <div class="panel-title"><h2 data-i18n="panel.tables">数据表</h2><button id="new-table" type="button" class="small"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span data-i18n="btn.newTable">新建</span></button></div>
+      <input id="table-search" type="search" class="table-search" placeholder="搜索表名…" aria-label="搜索表名" data-i18n-placeholder="filter.tableSearchPlaceholder" data-i18n-aria-label="filter.tableSearchPlaceholder">
       <div id="table-list" class="table-list"><p class="muted" data-i18n="grid.loading">正在加载…</p></div>
     </aside>
     <section class="content">
@@ -55,6 +56,7 @@
     <form method="dialog" class="dialog-form">
       <div class="panel-title"><h2 id="row-dialog-title" data-i18n="dialog.addRowTitle">新增行</h2><button value="cancel" class="icon" aria-label="关闭" data-i18n-aria-label="btn.close">×</button></div>
       <textarea id="row-editor" class="editor" spellcheck="false" aria-label="行 JSON" data-i18n-aria-label="dialog.rowEditorAria"></textarea>
+      <p id="row-error" class="error-text" role="alert"></p>
       <div class="dialog-actions"><button value="cancel" class="secondary" data-i18n="btn.cancel">取消</button><button id="save-row" value="default" data-i18n="btn.save">保存</button></div>
     </form>
   </dialog>

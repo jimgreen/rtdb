@@ -23,8 +23,24 @@ class AuditIndex:
         except (ValueError, TypeError):
             return None
 
+    _SCHEMA_VERSION = '2'
+
     @staticmethod
-    def _schema(connection):
+    def _register_functions(connection):
+        connection.create_function('rtdb_casefold', 1, lambda s: s.casefold() if isinstance(s, str) else '')
+
+    @classmethod
+    def _schema(cls, connection):
+        connection.executescript('''
+            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+        ''')
+        ver = connection.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+        if ver != (cls._SCHEMA_VERSION,):
+            connection.executescript('''
+                DROP TABLE IF EXISTS entries;
+                DROP TABLE IF EXISTS sources;
+            ''')
+            connection.execute("INSERT OR REPLACE INTO settings VALUES ('schema_version',?)", (cls._SCHEMA_VERSION,))
         connection.executescript('''
             CREATE TABLE IF NOT EXISTS sources (
                 source TEXT PRIMARY KEY, identity TEXT, size INTEGER, mtime INTEGER,
@@ -32,14 +48,13 @@ class AuditIndex:
             CREATE TABLE IF NOT EXISTS entries (
                 source TEXT NOT NULL REFERENCES sources(source) ON DELETE CASCADE,
                 position INTEGER NOT NULL, record_date TEXT, category TEXT, status TEXT,
-                table_name TEXT, operation TEXT, search TEXT, payload TEXT,
+                table_name TEXT, operation TEXT, payload TEXT,
                 PRIMARY KEY(source, position));
             CREATE INDEX IF NOT EXISTS entries_date ON entries(record_date, source, position);
             CREATE INDEX IF NOT EXISTS entries_date_status ON entries(record_date, status, source, position);
             CREATE INDEX IF NOT EXISTS entries_status ON entries(status, category, source, position);
             CREATE INDEX IF NOT EXISTS entries_category ON entries(category, source, position);
             CREATE INDEX IF NOT EXISTS entries_table ON entries(table_name, source, position);
-            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         ''')
         # Dates follow the host's local timezone, just like the source reader.
         zone = json.dumps([time.tzname, time.timezone, time.daylight, os.environ.get('TZ')])
@@ -94,14 +109,14 @@ class AuditIndex:
                             record.get('category') if isinstance(record.get('category'), str) else None,
                             record.get('status') if isinstance(record.get('status'), str) else None,
                             str(record.get('table') or ''), str(record.get('operation') or '').casefold(),
-                            payload.casefold(), payload))
+                            payload))
                         if len(pending) >= 500:
                             task_checkpoint(f'建立日志索引：{path.name}', stream.tell(), stat.st_size)
-                            connection.executemany('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?,?)', pending)
+                            connection.executemany('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', pending)
                             pending.clear()
                     if pending:
                         task_checkpoint(f'建立日志索引：{path.name}', stream.tell(), stat.st_size)
-                        connection.executemany('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?,?)', pending)
+                        connection.executemany('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', pending)
                     stream.seek(max(0, checkpoint - 256))
                     tail = stream.read(min(256, checkpoint))
                     connection.execute('UPDATE sources SET identity=?,size=?,mtime=?,offset=?,tail=? WHERE source=?',
@@ -115,7 +130,11 @@ class AuditIndex:
             return False, None
         try:
             with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=2)) as connection:
+                self._register_functions(connection)
                 connection.execute('BEGIN')
+                ver = connection.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+                if ver != (self._SCHEMA_VERSION,):
+                    return False, None
                 zone = json.dumps([time.tzname, time.timezone, time.daylight, os.environ.get('TZ')])
                 old_zone = connection.execute("SELECT value FROM settings WHERE key='timezone'").fetchone()
                 if old_zone != (zone,):
@@ -146,6 +165,7 @@ class AuditIndex:
             for attempt in range(2):
                 try:
                     with closing(sqlite3.connect(self.path, timeout=2, isolation_level=None)) as connection:
+                        self._register_functions(connection)
                         connection.execute('PRAGMA foreign_keys=ON')
                         connection.execute('PRAGMA journal_mode=WAL')
                         connection.execute('PRAGMA synchronous=NORMAL')
@@ -195,9 +215,10 @@ class AuditIndex:
             for column, value in (('category', category), ('status', status), ('table_name', table)):
                 if value:
                     conditions.append(column + '=?'); args.append(value)
-            for column, value in (('search', keyword), ('operation', operation)):
-                if value:
-                    conditions.append(f'instr({column},?)>0'); args.append(value.casefold())
+            if keyword:
+                conditions.append('instr(rtdb_casefold(payload),?)>0'); args.append(keyword.casefold())
+            if operation:
+                conditions.append('instr(operation,?)>0'); args.append(operation.casefold())
             where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
             total = connection.execute('SELECT COUNT(*) FROM entries' + where, args).fetchone()[0]
             records = [json.loads(row[0]) for row in connection.execute(

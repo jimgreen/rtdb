@@ -66,8 +66,15 @@ class FixedWriteGroup:
             if key is None:
                 continue
             hash(key)
-            values = bucket.get(key, base.get(key, ()))
-            values = (*values, slot) if adding else tuple(i for i in values if i != slot)
+            existing = bucket.get(key)
+            if existing is None:
+                values = set(base.get(key, ()))
+            else:
+                values = set(existing)
+            if adding:
+                values.add(slot)
+            else:
+                values.discard(slot)
             if record_undo:
                 self._set(bucket, key, values)
             else:

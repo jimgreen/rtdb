@@ -464,12 +464,16 @@ input[type=checkbox] { accent-color: var(--accent-btn); cursor: pointer; }
 .toolbar input { flex: 1 1 240px; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; }
 .toolbar select { flex: 0 0 auto; min-width: 120px; }
 
-.grid-wrap { overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); }
+.table-search { width: 100%; margin-top: 10px; padding: 6px 10px; font-size: 12.5px; }
+.error-text { margin: 8px 0 0; min-height: 18px; color: var(--danger); font-size: 12.5px; }
+.grid-wrap { overflow: auto; max-height: clamp(280px, 52vh, 560px); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); }
 table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--border); padding: 9px 12px; text-align: left; white-space: nowrap; }
-th { background: var(--bg-subtle); color: var(--text-secondary); font-weight: 600; font-size: 12px; position: sticky; top: 0; }
+th { background: var(--bg-subtle); color: var(--text-secondary); font-weight: 600; font-size: 12px; position: sticky; top: 0; z-index: 2; }
 tbody tr:nth-child(even) { background: var(--table-stripe); }
 tbody tr:hover { background: var(--table-hover); }
+tbody tr.row-selected { background: var(--bg-active); }
+tbody tr.row-selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 td.value { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 th.is-numeric, td.is-numeric { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .cell-null { color: var(--text-muted); font-style: italic; opacity: 0.72; font-size: 12px; }

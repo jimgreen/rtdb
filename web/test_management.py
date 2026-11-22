@@ -56,7 +56,9 @@ class ManagementTests(unittest.TestCase):
         self.assertTrue(records)
         self.assertTrue(all({'id', 'timestamp', 'category', 'operation', 'status',
                              'http_status', 'method', 'path', 'duration_ms'} <= set(item) for item in records))
-        self.assertTrue(any(item['operation'] == '加载表数据' and item['status'] == 'success' for item in records))
+        self.assertTrue(any(item['operation'] == '添加数据' and item['status'] == 'success' for item in records))
+        # 高频只读查询成功不写入同步审计日志，减少磁盘 fsync 噪音。
+        self.assertFalse(any(item['operation'] == '加载表数据' and item['status'] == 'success' for item in records))
         failures = [item for item in records if item['operation'] == '添加数据' and item['status'] == 'failure']
         self.assertTrue(failures)
         self.assertEqual(failures[0]['http_status'], 422)
@@ -203,8 +205,9 @@ class ManagementTests(unittest.TestCase):
             insert.assert_not_called()
         self.assertEqual([entry['row'] for entry in self.page()['records']], [record(1), record(9)])
         logs = self.call('GET', '/api/manage/logs?limit=500')['logs']
-        for status in ('success', 'failure'):
-            self.assertTrue(any(item['operation'] == '保存前检查' and item['status'] == status for item in logs))
+        # 只读保存前检查成功不产生冗余审计日志，失败事件必须完整留痕。
+        self.assertTrue(any(item['operation'] == '保存前检查' and item['status'] == 'failure' for item in logs))
+        self.assertFalse(any(item['operation'] == '保存前检查' and item['status'] == 'success' for item in logs))
 
     def test_save_rechecks_keys_after_successful_preflight(self):
         self.insert([record(1)])

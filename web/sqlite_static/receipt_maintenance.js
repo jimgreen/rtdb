@@ -1,11 +1,31 @@
 const receiptMaintenance={
-  database:null,timer:null,seq:0,
+  database:null,timer:null,seq:0,backoffMs:2000,visibilityHandler:null,
+  scheduleNext(seq,delayMs){
+    clearTimeout(this.timer);
+    if(document.hidden){
+      if(!this.visibilityHandler){
+        this.visibilityHandler=()=>{
+          if(!document.hidden&&el('receipt-maintenance-dialog').open&&seq===this.seq){
+            this.refresh().catch(error=>{if(seq===this.seq)el('receipt-status').textContent=error.message;});
+          }
+        };
+        document.addEventListener('visibilitychange',this.visibilityHandler);
+      }
+      return;
+    }
+    this.timer=setTimeout(()=>{if(seq===this.seq&&el('receipt-maintenance-dialog').open)this.refresh().catch(error=>{if(seq===this.seq)el('receipt-status').textContent=error.message;});},delayMs);
+  },
+  cleanup(){
+    clearTimeout(this.timer);this.timer=null;this.seq+=1;this.backoffMs=2000;
+    if(this.visibilityHandler){document.removeEventListener('visibilitychange',this.visibilityHandler);this.visibilityHandler=null;}
+  },
   async open(){
     this.database=state.database;if(!this.database)throw Error('请先选择数据库');
+    this.backoffMs=2000;
     el('receipt-database').textContent=this.database;
     el('receipt-close').onclick=()=>el('receipt-maintenance-dialog').close();
     el('receipt-close-x').onclick=()=>el('receipt-maintenance-dialog').close();
-    el('receipt-maintenance-dialog').onclose=()=>{clearTimeout(this.timer);this.seq+=1;};
+    el('receipt-maintenance-dialog').onclose=()=>this.cleanup();
     bindPresetControl(el('receipt-days-preset'),el('receipt-days'));
     el('receipt-config').onclick=()=>run(async()=>{
       const days=Number(el('receipt-days').value);
@@ -19,8 +39,19 @@ const receiptMaintenance={
   async refresh(initial=false){
     clearTimeout(this.timer);
     const seq=++this.seq, targetDb=this.database;
-    const response=await workspaceFetch('/api/manage/receipt-maintenance?database='+encodeURIComponent(targetDb));
-    const result=await parseJsonResponse(response,'读取维护状态失败');
+    let result;
+    try{
+      const response=await workspaceFetch('/api/manage/receipt-maintenance?database='+encodeURIComponent(targetDb));
+      result=await parseJsonResponse(response,'读取维护状态失败');
+      this.backoffMs=2000;
+    }catch(error){
+      if(seq!==this.seq||this.database!==targetDb)return;
+      if(initial)throw error;
+      el('receipt-status').textContent=error.message;
+      this.backoffMs=Math.min(30000,this.backoffMs*2);
+      if(el('receipt-maintenance-dialog').open)this.scheduleNext(seq,this.backoffMs);
+      return;
+    }
     if(seq!==this.seq||this.database!==targetDb||(!initial&&!el('receipt-maintenance-dialog').open))return;
     if(initial)syncPresetControl(el('receipt-days-preset'),el('receipt-days'),result.days);
     const list=el('receipt-statistics');list.replaceChildren();
@@ -31,6 +62,6 @@ const receiptMaintenance={
     const error=delivery.archive_errors?.[targetDb];
     el('receipt-status').textContent=error||(archiving?'正在分批压缩…':result.pending?'日志正在同步，失败后自动重试':'当前没有待同步日志');
     if(delivery.error&&result.pending)el('receipt-status').textContent=delivery.error;
-    this.timer=setTimeout(()=>{if(seq===this.seq&&el('receipt-maintenance-dialog').open)this.refresh().catch(error=>{if(seq===this.seq)el('receipt-status').textContent=error.message;});},2000);
+    this.scheduleNext(seq,2000);
   }
 };

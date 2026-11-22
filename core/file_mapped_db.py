@@ -684,16 +684,34 @@ def _split_keyword(text: str, keyword: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _is_backslash_escaped(text: str, index: int) -> bool:
+    """判断索引位置前的连续反斜杠数量是否为奇数。"""
+    count = 0
+    pos = index - 1
+    while pos >= 0 and text[pos] == "\\":
+        count += 1
+        pos -= 1
+    return (count & 1) == 1
+
+
 def _strip_outer_parentheses(text: str) -> str:
     text = text.strip()
     while text.startswith("(") and text.endswith(")"):
         depth = 0
         quote: Optional[str] = None
         complete = True
-        for index, char in enumerate(text):
+        index = 0
+        length = len(text)
+        while index < length:
+            char = text[index]
             if quote:
-                if char == quote and (index == 0 or text[index - 1] != "\\"):
-                    quote = None
+                if char == quote:
+                    if quote == "'" and index + 1 < length and text[index + 1] == "'" and not _is_backslash_escaped(text, index):
+                        index += 2
+                        continue
+                    if not _is_backslash_escaped(text, index):
+                        quote = None
+                index += 1
                 continue
             if char in ("'", '"'):
                 quote = char
@@ -701,9 +719,10 @@ def _strip_outer_parentheses(text: str) -> str:
                 depth += 1
             elif char == ")":
                 depth -= 1
-                if depth == 0 and index != len(text) - 1:
+                if depth == 0 and index != length - 1:
                     complete = False
                     break
+            index += 1
         if complete and depth == 0:
             text = text[1:-1].strip()
         else:
@@ -715,9 +734,16 @@ def _parse_scalar(token: str) -> Any:
     token = token.strip()
     if not token:
         raise ValueError("empty SQL value")
+    # SQL 单引号字面量中连续两个单引号表示一个字面单引号，避免 ast.literal_eval 相邻串拼接丢字符。
+    if len(token) >= 2 and token[0] == "'" and token[-1] == "'":
+        inner = token[1:-1]
+        if "''" in inner and "\\" not in inner:
+            return inner.replace("''", "'")
     try:
         value = ast.literal_eval(token)
     except (ValueError, SyntaxError):
+        if len(token) >= 2 and token[0] == "'" and token[-1] == "'":
+            return token[1:-1].replace("''", "'")
         upper = token.upper()
         if upper == "NULL":
             return None
@@ -1239,6 +1265,7 @@ class _FixedRecordStore:
         # decoding a record; local publishers and close() take the write
         # permit.  Cross-process writers are still fenced by the OS lock.
         self._mapping_guard = _ReadWriteLock()
+        self._closed = False
         self._mapping_handle: Any = None
         self._mapping: Optional[mmap.mmap] = None
         self._wal_handle: Any = None
@@ -1249,9 +1276,8 @@ class _FixedRecordStore:
         # size and therefore must seek once; recovery/checkpoint truncation
         # resets it to 0.
         self._wal_position: Optional[int] = None
-        self._wal_observed_size: Optional[int] = None
-        self._wal_observed_tail_generation: Optional[int] = None
-        self._wal_observed_header_generation: Optional[int] = None
+        # 原子元组：(observed_size, observed_tail_generation, observed_header_generation)
+        self._wal_observed: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
         self._wal_write_active = False
         # Side-index updates are outside the table durability boundary, but
         # value-only commits still advance their redundant generation header.
@@ -1377,36 +1403,12 @@ class _FixedRecordStore:
             wal_size = self._wal_size()
             header = self._read_header()
             if wal_size > 0:
-                tail_frame, incomplete = self._read_wal_tail_frame(wal_size)
-                if incomplete or tail_frame is None:
-                    self._recover_locked()
-                else:
-                    tail_generation, tail_row_count, tail_entries = tail_frame
-                    matches = tail_generation < header["generation"]
-                    if tail_generation == header["generation"]:
-                        matches = int(tail_row_count) == int(header["row_count"])
-                        if matches and tail_entries:
-                            with self._mapped() as (_handle, mapping):
-                                for slot, record in tail_entries:
-                                    raw = memoryview(mapping)[
-                                        self._slot_offset(slot) : self._slot_offset(slot) + self.record_size
-                                    ]
-                                    try:
-                                        if bytes(raw) != record:
-                                            matches = False
-                                            break
-                                    finally:
-                                        raw.release()
-                    if not matches:
-                        self._recover_locked()
-                    else:
-                        self._wal_observed_size = wal_size
-                        self._wal_observed_tail_generation = tail_generation
-                        self._wal_observed_header_generation = header["generation"]
+                # 打开已有表时若存在未 checkpoint 的 WAL，统一走完整校验恢复，
+                # 防止延迟 checkpoint 窗口内历史帧未刷盘而被尾帧误判跳过。
+                self._recover_locked()
             else:
-                self._wal_observed_size = 0
-                self._wal_observed_tail_generation = None
-                self._wal_observed_header_generation = header["generation"]
+                with self._wal_probe_guard:
+                    self._wal_observed = (0, None, header["generation"])
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # A deleted/recreated table must never inherit an old WAL or equality
@@ -1550,6 +1552,7 @@ class _FixedRecordStore:
 
     def close(self) -> None:
         with self._mapping_guard:
+            self._closed = True
             mapping = self._mapping
             handle = self._mapping_handle
             self._mapping = None
@@ -1562,9 +1565,7 @@ class _FixedRecordStore:
                 wal_handle = self._wal_handle
                 self._wal_handle = None
                 self._wal_position = None
-                self._wal_observed_size = None
-                self._wal_observed_tail_generation = None
-                self._wal_observed_header_generation = None
+                self._wal_observed = (None, None, None)
                 if wal_handle is not None:
                     wal_handle.close()
         self._close_index_handles()
@@ -1731,9 +1732,9 @@ class _FixedRecordStore:
     def _ensure_mapping(self) -> tuple[Any, mmap.mmap]:
         """Return the process-local fixed-table mapping, opening it once."""
 
-        if self._mapping is not None and self._mapping_handle is not None:
-            return self._mapping_handle, self._mapping
         with self._mapping_guard:
+            if self._closed:
+                raise StorageError(f"fixed table is closed: {self.path}")
             if self._mapping is not None and self._mapping_handle is not None:
                 return self._mapping_handle, self._mapping
             handle: Any = None
@@ -1750,6 +1751,8 @@ class _FixedRecordStore:
 
     def _ensure_wal_handle(self) -> Any:
         with self._mapping_guard:
+            if self._closed:
+                raise StorageError(f"fixed table is closed: {self.path}")
             if self._wal_handle is None:
                 try:
                     self._wal_handle = _open_fixed_mapping_file(self.wal_path, create=True)
@@ -2107,6 +2110,8 @@ class _FixedRecordStore:
                 self._encode_field(value, field)
                 for value, field in zip(normalised_key, fields)
             )
+        except (SchemaError, struct.error):
+            return True, None
         except (KeyError, TypeError, ValueError, StorageError):
             return False, None
         path = self._primary_slot_path()
@@ -2510,6 +2515,8 @@ class _FixedRecordStore:
                 self._encode_field(value, field)
                 for value, field in zip(normalised_key, fields)
             )
+        except (SchemaError, struct.error):
+            return True, None
         except (KeyError, TypeError, ValueError, StorageError):
             return False, None
 
@@ -3504,8 +3511,8 @@ class _FixedRecordStore:
                 handle.flush()
                 os.fsync(handle.fileno())
                 self._wal_position = int(base_position) + len(frame)
-                self._wal_observed_size = int(self._wal_position)
-                self._wal_observed_tail_generation = int(generation)
+                _obs_size, _obs_tail, obs_hdr = self._wal_observed
+                self._wal_observed = (int(self._wal_position), int(generation), obs_hdr)
         except OSError as exc:
             raise StorageError(f"cannot append fixed WAL {self.wal_path}: {exc}") from exc
         # Writers hold the inter-process table lock, so no other writer can
@@ -3607,8 +3614,8 @@ class _FixedRecordStore:
                 handle.close()
             else:
                 self._wal_position = int(length)
-            self._wal_observed_size = int(length)
-            self._wal_observed_tail_generation = None
+            _obs_size, _obs_tail, obs_hdr = self._wal_observed
+            self._wal_observed = (int(length), None, obs_hdr)
         except OSError as exc:
             raise StorageError(f"cannot truncate fixed WAL {self.wal_path}: {exc}") from exc
         finally:
@@ -3684,59 +3691,37 @@ class _FixedRecordStore:
             header = self._read_header()
             with self._wal_probe_guard:
                 self._wal_position = None
-                self._wal_observed_size = 0
-                self._wal_observed_tail_generation = None
-                self._wal_observed_header_generation = header["generation"]
+                self._wal_observed = (0, None, header["generation"])
             return
         header = self._read_header()
+        with self._wal_probe_guard:
+            obs_size, obs_tail, obs_hdr = self._wal_observed
         if (
-            self._wal_observed_size == wal_size
-            and self._wal_observed_header_generation == header["generation"]
-            and self._wal_observed_tail_generation is not None
-            and self._wal_observed_tail_generation <= header["generation"]
+            obs_size == wal_size
+            and obs_hdr == header["generation"]
+            and obs_tail is not None
+            and obs_tail <= header["generation"]
         ):
-            return
-        tail_generation, tail_incomplete = self._read_wal_tail(wal_size)
-        if not tail_incomplete and tail_generation is not None and tail_generation < header["generation"]:
-            self._wal_observed_size = wal_size
-            self._wal_observed_tail_generation = tail_generation
-            self._wal_observed_header_generation = header["generation"]
             return
         records, valid_end, incomplete = self._read_wal()
         if not records and not incomplete:
-            self._wal_observed_size = wal_size
+            with self._wal_probe_guard:
+                self._wal_observed = (wal_size, None, header["generation"])
             return
         changed = False
         recovered_entries: list[tuple[int, bytes]] = []
         recovered_generation = header["generation"]
         recovered_row_count = header["row_count"]
+        # 延迟 checkpoint 窗口内多条已提交 WAL 帧可能尚未全部 fsync 到数据文件，
+        # 按 slot 取最后一条不高于 header['generation'] 的帧并与当前映射逐槽比对，补齐缺失写入。
+        historical_latest_by_slot: dict[int, bytes] = {}
+        latest_hist_row_count: Optional[int] = None
         for generation, row_count, entries in records:
-            if generation < header["generation"]:
-                continue
-            if generation == header["generation"]:
-                # A deferred table fsync permits the generation header to
-                # reach stable storage before one of its record pages.  Do
-                # not trust that header alone: compare the current-generation
-                # WAL bytes with the mapped slots and repair any mismatch.
-                matches = int(row_count) == int(header["row_count"])
-                if matches and entries:
-                    with self._mapped() as (_handle, mapping):
-                        for slot, record in entries:
-                            raw = memoryview(mapping)[
-                                self._slot_offset(slot) : self._slot_offset(slot) + self.record_size
-                            ]
-                            try:
-                                if bytes(raw) != record:
-                                    matches = False
-                                    break
-                            finally:
-                                raw.release()
-                if matches:
-                    continue
-                recovered_entries.extend(entries)
-                recovered_generation = generation
-                recovered_row_count = row_count
-                changed = True
+            if generation <= header["generation"]:
+                for slot, record in entries:
+                    historical_latest_by_slot[slot] = record
+                if generation == header["generation"]:
+                    latest_hist_row_count = int(row_count)
                 continue
             # 组提交在单批次大量增删循环时可合法跳代，允许单调递增的 generation。
             if generation <= recovered_generation:
@@ -3745,6 +3730,25 @@ class _FixedRecordStore:
             recovered_generation = generation
             recovered_row_count = row_count
             changed = True
+        if historical_latest_by_slot:
+            mismatched_hist: list[tuple[int, bytes]] = []
+            with self._mapped() as (_handle, mapping):
+                for slot, record in historical_latest_by_slot.items():
+                    raw = memoryview(mapping)[
+                        self._slot_offset(slot) : self._slot_offset(slot) + self.record_size
+                    ]
+                    try:
+                        if bytes(raw) != record:
+                            mismatched_hist.append((slot, record))
+                    finally:
+                        raw.release()
+            if mismatched_hist or (
+                latest_hist_row_count is not None and latest_hist_row_count != int(header["row_count"])
+            ):
+                recovered_entries = mismatched_hist + recovered_entries
+                if not changed and latest_hist_row_count is not None:
+                    recovered_row_count = latest_hist_row_count
+                changed = True
         if changed:
             self._apply_entries_and_header_locked(
                 recovered_entries,
@@ -3753,11 +3757,11 @@ class _FixedRecordStore:
             )
         if changed or incomplete:
             self._truncate_wal_locked(valid_end if incomplete else 0, known_nonempty=True)
-        self._wal_observed_size = self._wal_size()
-        self._wal_observed_tail_generation = recovered_generation if changed else (
-            records[-1][0] if records else None
-        )
-        self._wal_observed_header_generation = recovered_generation if changed else header["generation"]
+        final_wal_size = self._wal_size()
+        final_tail = recovered_generation if changed else (records[-1][0] if records else None)
+        final_header_gen = recovered_generation if changed else header["generation"]
+        with self._wal_probe_guard:
+            self._wal_observed = (final_wal_size, final_tail, final_header_gen)
         if changed:
             with self._cache_guard:
                 self._snapshot_cache = None
@@ -3791,23 +3795,18 @@ class _FixedRecordStore:
         size = self._wal_size()
         if size <= 0:
             with self._wal_probe_guard:
-                self._wal_position = None
-                self._wal_observed_size = 0
-                self._wal_observed_tail_generation = None
+                _obs_size, _obs_tail, obs_hdr = self._wal_observed
+                self._wal_observed = (0, None, obs_hdr)
             return
         header = self._read_header()
+        with self._wal_probe_guard:
+            obs_size, obs_tail, obs_hdr = self._wal_observed
         if (
-            self._wal_observed_size == size
-            and self._wal_observed_header_generation == header["generation"]
-            and self._wal_observed_tail_generation is not None
-            and self._wal_observed_tail_generation <= header["generation"]
+            obs_size == size
+            and obs_hdr == header["generation"]
+            and obs_tail is not None
+            and obs_tail <= header["generation"]
         ):
-            return
-        tail_generation, incomplete = self._read_wal_tail(size)
-        if not incomplete and tail_generation is not None and tail_generation < header["generation"]:
-            self._wal_observed_size = size
-            self._wal_observed_tail_generation = tail_generation
-            self._wal_observed_header_generation = header["generation"]
             return
         with _locked(self.lock_path, timeout=self.lock_timeout):
             self._recover_locked()
@@ -4366,14 +4365,10 @@ class _FixedRecordStore:
                         updated.update(patch_values)
                         self._validate_row(updated)
                         if primary_changed:
-                            assert primary_index is not None
                             updated_primary = tuple(updated.get(column) for column in primary_keys)
                             current_primary = tuple(current.get(column) for column in primary_keys)
                             if updated_primary != current_primary:
-                                conflicting = primary_index.get(updated_primary, ())
-                                if any(candidate != slot for candidate in conflicting) or (
-                                    updated_primary in used_primary and updated_primary != current_primary
-                                ):
+                                if updated_primary in used_primary:
                                     raise SchemaError(f"duplicate primary key {updated_primary!r}")
                                 used_primary.discard(current_primary)
                                 used_primary.add(updated_primary)
@@ -4602,7 +4597,9 @@ class _FixedRecordStore:
                 row_count,
                 sync=False,
             )
-            self._wal_observed_header_generation = int(next_generation)
+            with self._wal_probe_guard:
+                obs_size, obs_tail, _obs_hdr = self._wal_observed
+                self._wal_observed = (obs_size, obs_tail, int(next_generation))
             wal_position = self._wal_position
             if wal_position is not None and wal_position >= _FIXED_WAL_CHECKPOINT_BYTES:
                 self._checkpoint_locked()
@@ -4766,19 +4763,16 @@ class _FixedRecordStore:
                     if removal_set:
                         targeted = removal_keys_by_cache.get(cache_key)
                         if targeted is not None:
+                            # 已持有 _key_cache_guard 写锁，直接原地增量更新索引字典，消除单行写 O(N) 整表拷贝。
                             for removed_key, removed_slots in targeted.items():
-                                positions = index.get(removed_key, ())
+                                positions = updated_index.get(removed_key, ())
                                 if not positions:
                                     continue
                                 remaining = tuple(slot for slot in positions if slot not in removed_slots)
                                 if remaining:
                                     if remaining != positions:
-                                        if updated_index is index:
-                                            updated_index = dict(index)
                                         updated_index[removed_key] = remaining
-                                elif updated_index is index:
-                                    updated_index = dict(index)
-                                if not remaining:
+                                else:
                                     updated_index.pop(removed_key, None)
                         else:
                             # This is only a defensive fallback for an
@@ -4790,8 +4784,6 @@ class _FixedRecordStore:
                             }
                     additions = additions_by_columns.get(cache_key, ())
                     if additions:
-                        if updated_index is index:
-                            updated_index = dict(index)
                         for key, slot in additions:
                             updated_index[key] = tuple(updated_index.get(key, ())) + (slot,)
                     updated_cache[cache_key] = (next_generation, updated_index)
@@ -6563,10 +6555,10 @@ class Table(MutableSequence[dict[str, Any]]):
         limit: Optional[int] = None,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if limit is not None and limit < 0:
-            raise ValueError("limit must be non-negative")
-        if offset < 0:
-            raise ValueError("offset must be non-negative")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError("limit must be a non-negative integer")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
         predicate = _compile_where(where)
         fixed_equality_where: Optional[Mapping[str, Any]] = None
         if isinstance(where, Mapping) and where:
@@ -6731,8 +6723,8 @@ class Table(MutableSequence[dict[str, Any]]):
         if not isinstance(values, Mapping):
             raise TypeError("values must be a mapping")
         patch = self._normalise_row(values)
-        if limit is not None and limit < 0:
-            raise ValueError("limit must be non-negative")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError("limit must be a non-negative integer")
         predicate = _compile_where(where)
 
         indexed_where: Optional[Mapping[str, Any]] = None
@@ -6859,8 +6851,8 @@ class Table(MutableSequence[dict[str, Any]]):
         *,
         limit: Optional[int] = None,
     ) -> int:
-        if limit is not None and limit < 0:
-            raise ValueError("limit must be non-negative")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError("limit must be a non-negative integer")
         predicate = _compile_where(where)
 
         indexed_where: Optional[Mapping[str, Any]] = None
@@ -7181,8 +7173,12 @@ class Table(MutableSequence[dict[str, Any]]):
             while index < len(raw_values):
                 char = raw_values[index]
                 if quote:
-                    if char == quote and raw_values[index - 1] != "\\":
-                        quote = None
+                    if char == quote:
+                        if quote == "'" and index + 1 < len(raw_values) and raw_values[index + 1] == "'" and not _is_backslash_escaped(raw_values, index):
+                            index += 2
+                            continue
+                        if not _is_backslash_escaped(raw_values, index):
+                            quote = None
                 elif char in ("'", '"'):
                     quote = char
                 elif char == "(":
@@ -8062,7 +8058,9 @@ class _FileMappedWriterService:
             # Resolve definitions before opening a table: unknown names must
             # not silently create schema-less files.
             name = group[0]["table"]
-            if db.schema_registry is None or name not in db.schema_registry.names():
+            if db.schema_registry is None or (
+                name not in getattr(db, "_tables", ()) and name not in db.schema_registry.names()
+            ):
                 raise SchemaError("group writer requires a JSON table definition")
             table = db[name]
             store = table._fixed_store

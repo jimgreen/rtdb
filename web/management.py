@@ -128,6 +128,13 @@ class SQLiteManagement:
             query_started=time.perf_counter()
             with table._read_transaction() as connection:
                 table_total = self.manager._row_count(table, connection)
+                native_pk_notnull = True
+                if editable and table.native:
+                    pk_notnull = {
+                        row[1]: bool(row[3])
+                        for row in connection.execute(f'PRAGMA table_info({table._data_sql})')
+                    }
+                    native_pk_notnull = all(pk_notnull.get(k, False) for k in table.primary_keys)
                 with self.manager._reader(table, connection):
                     columns = [item[0] for item in connection.execute(f'SELECT * FROM {source} LIMIT 0').description]
                     order = payload.get('order')
@@ -140,9 +147,14 @@ class SQLiteManagement:
                     total = table_total if full_table else connection.execute(f'SELECT COUNT(*) FROM {source}').fetchone()[0]
                     if exporting and total > self.manager.max_rows:
                         raise APIError(413, '导出结果超过 100,000 行，请增加 SQL 过滤条件')
-                    can_seek=editable and all(table._types[k] in _INT|_FLOAT|_TEXT|_BOOL for k in table.primary_keys) and (
-                        order is None or len(table.primary_keys)==1 and order['column']==table.primary_keys[0])
-                    seek=page.get('seek') if page is not None and can_seek else None
+                    can_seek = (
+                        editable
+                        and native_pk_notnull
+                        and all(table._types[k] in _INT | _FLOAT | _TEXT | _BOOL for k in table.primary_keys)
+                        and (order is None or (len(table.primary_keys) == 1 and order['column'] == table.primary_keys[0]))
+                    )
+                    raw_seek = page.get('seek') if page is not None and can_seek else None
+                    seek = raw_seek if (raw_seek and all(v is not None for v in raw_seek.get('anchor', ()))) else None
                     if seek:
                         descending=bool(order and order['direction']=='DESC')
                         reverse=seek['backwards'];less=descending!=reverse
@@ -500,9 +512,10 @@ class SQLiteManagement:
         documents = []
         for index, name in enumerate(names):
             checkpoint(f'备份表 {name}', index, len(names))
-            documents.append(json.loads(self.export(name, {'format': 'json'})['text']))
+            documents.append(self.manager.export_document(name))
+        from .sqlite_service import json_blob
         return {'filename': 'rtdb-backup.json', 'mime': 'application/json',
-                'text': json.dumps({'format': 'rtdb-web-backup-v1', 'tables': documents}, ensure_ascii=False, indent=2)}
+                'text': json.dumps({'format': 'rtdb-web-backup-v1', 'tables': documents}, ensure_ascii=False, indent=2, default=json_blob)}
 
     def restore_documents(self, payload):
         if self.manager.native:
@@ -659,6 +672,29 @@ class SQLiteManagement:
         with write_receipts.operation(self.manager, method, parts, query, payload, self.operation_descriptor(method,parts,payload)) as context:
             return self._audited_dispatch(method,parts,query,payload,context)
 
+    @staticmethod
+    def _is_readonly_audit_exempt(method, parts, result, context):
+        """高频只读接口（含缓存命中）成功时跳过同步 fsync 审计；写操作、导入/导出/快照/维护与全部失败事件均完整留痕。"""
+        if context.get('committed') or context.get('steps_written'):
+            return False
+        if isinstance(result, dict) and result.get('ok') is False:
+            return False
+        if method == 'GET':
+            # 导出、数据检查仍审计；其余只读元数据/数据拉取跳过成功落盘
+            if len(parts) == 3 and parts[0] == 'tables' and parts[2] in ('export', 'check'):
+                return False
+            return True
+        if method == 'POST':
+            is_table_request = len(parts) == 3 and parts[0] == 'tables'
+            if parts in (['database-files', 'select'],):
+                return True
+            if is_table_request and parts[2] in ('sql', 'query-plan', 'validate-edits', 'resolve-records', 'schema-preview'):
+                # POST /tables/{t}/sql 若执行了写 SQL，result['mode'] == 'write' 或 committed=True，必须审计
+                if parts[2] == 'sql' and isinstance(result, dict) and result.get('mode') == 'write':
+                    return False
+                return True
+        return False
+
     def _audited_dispatch(self, method, parts, query, payload, context):
         category, operation, table = self.operation_descriptor(method, parts, payload)
         if method == 'GET' and (parts in (['logs'], ['log-config'], ['audit-delivery'], ['receipt-maintenance'], ['database-snapshots'], ['storage-maintenance']) or parts and parts[0]=='database-uploads'):
@@ -676,6 +712,10 @@ class SQLiteManagement:
                                           path='/api/manage/' + '/'.join(parts), table=table,
                                           duration_ms=(time.perf_counter() - started) * 1000, error=error)
             raise
+        if self._is_readonly_audit_exempt(method, parts, result, context):
+            if isinstance(result, dict) and 'timings' in result:
+                result['timings']['audit_ms'] = 0.0
+            return result
         audit_started=time.perf_counter()
         if context.get('steps_written'):
             delivery=getattr(self.manager,'audit_delivery',None)

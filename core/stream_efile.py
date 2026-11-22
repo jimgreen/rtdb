@@ -18,6 +18,18 @@ def logical_lines(stream):
             stripped = raw.lstrip()
             # 注释行与单行字段说明不进入跨行引号状态机，避免孤立引号吞噬后续数据行。
             if stripped.startswith(('<!', '//')):
+                # 超长注释行被 readline(MAX_LINE + 1) 截断时，读完该行剩余字符并校验上限。
+                if len(raw) > MAX_LINE and not raw.endswith('\n'):
+                    comment_len = len(raw)
+                    while True:
+                        extra = stream.readline(MAX_LINE + 1)
+                        if not extra:
+                            break
+                        comment_len += len(extra)
+                        if comment_len > MAX_LINE * 8:
+                            raise SchemaError(f'第 {start} 行：单条注释行过长')
+                        if extra.endswith('\n'):
+                            break
                 yield start, stripped.strip()
                 continue
         size += len(raw)
@@ -65,7 +77,7 @@ def events(stream):
             seen.add(name.casefold())
             if len(seen) > 200:
                 raise SchemaError('一次最多导入200张表')
-            props = {m[1]: (m[2] or m[3] or m[4]) for m in re.finditer(
+            props = {m[1]: (m[2] if m[2] is not None else (m[3] if m[3] is not None else m[4])) for m in re.finditer(
                 r'''(\w+)\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s]+))''', body)}
             current = dict(name=name, tag=tag, props=props, columns=[], descriptions=[], has_rows=False)
             yield 'start', number, current

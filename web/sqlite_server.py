@@ -8,6 +8,7 @@ integrity checks through one browser-oriented API.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -94,22 +95,73 @@ def _relative_metadata(payload, root):
 
 class SQLiteRequestHandler(BaseHTTPRequestHandler):
     server_version = 'RTDBSQLiteWeb/1.0'
+    protocol_version = 'HTTP/1.1'
+
+    def _release_request_context(self):
+        ctx = getattr(self, '_request_context', None)
+        if ctx is not None:
+            self._request_context = None
+            self._request_manager = None
+            workspaces = getattr(self.server, 'workspaces', None)
+            if workspaces is not None and hasattr(workspaces, 'release'):
+                workspaces.release(ctx)
+
+    def handle_one_request(self):
+        self._request_context = None
+        self._request_manager = None
+        try:
+            super().handle_one_request()
+        finally:
+            self._release_request_context()
 
     @property
     def context(self):
         if self._request_context is None:
             relative = parse_qs(urlsplit(self.path).query).get('workspace', [''])[0]
-            self._request_context = self.server.workspaces.get(relative)
+            workspaces = self.server.workspaces
+            self._request_context = workspaces.acquire(relative) if hasattr(workspaces, 'acquire') else workspaces.get(relative)
         return self._request_context
 
     @property
     def manager(self):
+        cached = getattr(self, '_request_manager', None)
+        if cached is not None:
+            return cached
         manager = self.context.sqlite_manager
         filename = parse_qs(urlsplit(self.path).query).get('database', [None])[0]
-        return manager.for_database(filename) if filename else manager
+        resolved = manager.for_database(filename) if filename else manager
+        self._request_manager = resolved
+        return resolved
+
+    def _should_log_request(self, format, args):
+        if os.environ.get('RTDB_ACCESS_LOG') == '1':
+            return True
+        if len(args) >= 2:
+            req_line = str(args[0])
+            status = str(args[1])
+            if status.startswith(('2', '3')):
+                parts = req_line.split(' ')
+                if len(parts) >= 2:
+                    method, raw_path = parts[0], parts[1]
+                    path_only = urlsplit(raw_path).path
+                    if method == 'GET' and (
+                        path_only.startswith('/static/')
+                        or path_only in ('/', '/index.html', '/favicon.ico', '/api/health')
+                        or path_only in ('/api/manage/audit-delivery', '/api/manage/receipt-maintenance', '/api/manage/logs')
+                        or '/tasks/' in path_only
+                    ):
+                        return False
+        return True
 
     def log_message(self, format, *args):
+        if not self._should_log_request(format, args):
+            return
         sys.stderr.write('%s - - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), format % args))
+
+    def _maybe_gzip(self, body):
+        if len(body) >= 1024 and 'gzip' in self.headers.get('Accept-Encoding', '').lower():
+            return gzip.compress(body, compresslevel=5), True
+        return body, False
 
     def _send_json(self, status, payload):
         encoding_started=time.perf_counter()
@@ -120,10 +172,14 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             'workspace_root' in payload or payload.get('engine') == 'sqlite'
         ):
             payload.update(strict_root=workspace.strict_root, root_id=workspace.root_id)
-        body = json.dumps(browser_value(payload), ensure_ascii=False, allow_nan=False).encode('utf-8')
+        raw_body = json.dumps(browser_value(payload), ensure_ascii=False, allow_nan=False).encode('utf-8')
+        body, compressed = self._maybe_gzip(raw_body)
         encoding_ms=(time.perf_counter()-encoding_started)*1000
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -150,7 +206,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {'error': 'internal server error', 'details': str(exc)})
 
     def _route(self):
-        self._request_context = None
+        self._release_request_context()
         if hasattr(self, '_server_ms'):
             delattr(self, '_server_ms')
         self._task_timings = {}
@@ -226,7 +282,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             return category, operation, table
         return 'system', f'{method} 操作', None
 
-    def _recorded(self, method, parts, payload, callback, *, status_code=200):
+    def _recorded(self, method, parts, payload, callback, *, status_code=200, skip_success_audit=False):
         category, operation, table = self._direct_descriptor(method, parts, payload)
         started = time.perf_counter()
         recorder = None
@@ -242,11 +298,12 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                                         duration_ms=(time.perf_counter() - started) * 1000,
                                         error=error)
             raise
-        recorder.record_operation(category=category, operation=operation, status='success',
-                                  http_status=status_code, method=method,
-                                  path=urlsplit(self.path).path, table=table,
-                                  duration_ms=(time.perf_counter() - started) * 1000,
-                                  result=result)
+        if not skip_success_audit:
+            recorder.record_operation(category=category, operation=operation, status='success',
+                                      http_status=status_code, method=method,
+                                      path=urlsplit(self.path).path, table=table,
+                                      duration_ms=(time.perf_counter() - started) * 1000,
+                                      result=result)
         return result
 
     def do_OPTIONS(self):
@@ -268,24 +325,24 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 self._static(unquote(path.removeprefix('/static/'))); return
             if parts == ['api', 'health']:
                 self._send_json(200, self._recorded('GET', parts, None,
-                    lambda: {'ok': True, 'service': 'rtdb-sqlite', **self.manager.info()})); return
+                    lambda: {'ok': True, 'service': 'rtdb-sqlite', **self.manager.info()}, skip_success_audit=True)); return
             if parts == ['api', 'sqlite', 'info']:
-                self._send_json(200, self._recorded('GET', parts, None, self.manager.info)); return
+                self._send_json(200, self._recorded('GET', parts, None, self.manager.info, skip_success_audit=True)); return
             if parts == ['api', 'sqlite', 'tables']:
-                self._send_json(200, self._recorded('GET', parts, None, self.manager.tables)); return
+                self._send_json(200, self._recorded('GET', parts, None, self.manager.tables, skip_success_audit=True)); return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'schema':
                 def read_schema():
                     with self.manager.session(parts[3]) as table:
                         from .sqlite_service import fingerprint
                         definition = table.definition.to_mapping()
                     return {'name': parts[3], 'definition': definition, 'schema_version': fingerprint(definition)}
-                self._send_json(200, self._recorded('GET', parts, None, read_schema)); return
+                self._send_json(200, self._recorded('GET', parts, None, read_schema, skip_success_audit=True)); return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'rows':
                 def read_rows():
                     limit = int(query.get('limit', ['100'])[0] or 100)
                     offset = int(query.get('offset', ['0'])[0] or 0)
                     return self.manager.rows(parts[3], where=query.get('where', [''])[0], order=query.get('order', [''])[0], limit=limit, offset=offset)
-                result = self._recorded('GET', parts, None, read_rows)
+                result = self._recorded('GET', parts, None, read_rows, skip_success_audit=True)
                 self._send_json(200, result); return
             if len(parts) == 5 and parts[:3] == ['api', 'sqlite', 'tables'] and parts[4] == 'export':
                 content, media, filename = self._recorded('GET', parts, None,
@@ -530,9 +587,13 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             '.json': 'application/json; charset=utf-8',
             '.svg': 'image/svg+xml; charset=utf-8',
         }.get(target.suffix.lower()) or (mimetypes.guess_type(target.name)[0] or 'application/octet-stream')
-        body = target.read_bytes()
+        raw_body = target.read_bytes()
+        body, compressed = self._maybe_gzip(raw_body)
         self.send_response(200)
         self.send_header('Content-Type', media)
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('ETag', etag)
         self.send_header('Cache-Control', 'no-cache')

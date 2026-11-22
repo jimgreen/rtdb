@@ -59,25 +59,36 @@ const schemaTools={
 };
 
 const auditDeliveryUI={
-  timer:null,seq:0,
+  timer:null,seq:0,backoffMs:2000,watching:false,visibilityBound:false,
+  _ensureVisibility(){
+    if(this.visibilityBound)return;
+    this.visibilityBound=true;
+    document.addEventListener('visibilitychange',()=>{
+      if(!document.hidden&&this.watching)this.poll();
+    });
+  },
   watch(){
-    clearTimeout(this.timer);this.seq+=1;
+    clearTimeout(this.timer);this.seq+=1;this.backoffMs=2000;this.watching=true;
+    this._ensureVisibility();
     const target=el('audit-warning');target.hidden=false;target.textContent='日志同步中';
     target.title='数据和审计事件已提交，正在同步日期日志';target.onclick=()=>this.poll();this.timer=setTimeout(()=>this.poll(),250);
   },
   async poll(){
     clearTimeout(this.timer);
     const seq=++this.seq, target=el('audit-warning');
+    if(document.hidden)return;
     try{
       const response=await workspaceFetch('/api/manage/audit-delivery');
       const deliveryState=await parseJsonResponse(response,'无法读取日志同步状态');
       if(seq!==this.seq)return;
-      if(!deliveryState.pending_databases.length){target.hidden=true;return;}
+      this.backoffMs=2000;
+      if(!deliveryState.pending_databases.length){this.watching=false;target.hidden=true;return;}
       target.textContent=deliveryState.error?'日志同步待重试':'日志同步中';target.title=deliveryState.error||'数据已保存，日志同步中';
     }catch(error){
       if(seq!==this.seq)return;
       target.textContent='日志同步状态未知';target.title=error.message;
+      this.backoffMs=Math.min(30000,this.backoffMs*2);
     }
-    this.timer=setTimeout(()=>{if(seq===this.seq)this.poll();},2000);
+    if(this.watching&&!document.hidden)this.timer=setTimeout(()=>{if(seq===this.seq&&this.watching)this.poll();},this.backoffMs);
   }
 };

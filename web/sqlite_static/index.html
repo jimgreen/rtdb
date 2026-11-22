@@ -14,8 +14,8 @@
         <button id="open-database-files" type="button" class="secondary topbar-icon-btn" title="选择 / 新建数据库" aria-label="选择或新建数据库" data-i18n-title="topbar.openDbFiles" data-i18n-aria-label="topbar.openDbFiles"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
         <span class="eyebrow" data-i18n="app.eyebrow">实时数据 · SQLite</span>
       </div>
-      <span id="current-database-file" class="current-database-file" aria-live="polite">未选择数据库</span>
-      <span id="connection" class="badge">连接中</span>
+      <button id="current-database-file" type="button" class="current-database-file" aria-live="polite" title="点击切换或新建数据库">未选择数据库</button>
+      <span id="connection" class="badge is-connecting">连接中</span>
     </div>
     <div class="button-row topbar-actions">
       <label class="auto-label" title="自动刷新间隔" data-i18n-title="topbar.autoRefresh"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><select id="auto-refresh" aria-label="自动刷新间隔" data-i18n-aria-label="topbar.autoRefresh"><option value="0">关闭</option><option value="2">2 秒</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label>
@@ -24,6 +24,8 @@
       <button id="toggle-bottom" type="button" class="ghost topbar-icon-btn" title="折叠 / 展开底部曲线与日志" aria-label="折叠或展开底部面板" data-i18n-title="topbar.toggleBottom" data-i18n-aria-label="topbar.toggleBottom" aria-pressed="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="14" x2="21" y2="14"/></svg></button>
       <label class="lang-label" title="切换界面语言" data-i18n-title="topbar.langTitle"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><select id="lang-select" aria-label="界面语言" data-i18n-aria-label="topbar.langAria"><option value="zh-CN">中文</option><option value="en-US">English</option><option value="ru-RU">Русский</option></select></label>
       <label class="theme-label" title="切换界面视觉风格" data-i18n-title="topbar.themeTitle"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".8"/><circle cx="17.5" cy="10.5" r=".8"/><circle cx="8.5" cy="7.5" r=".8"/><circle cx="6.5" cy="12.5" r=".8"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16c3.3 0 6-2.7 6-6 0-5-4.5-8.6-10-8.6z"/></svg><select id="theme-select" aria-label="界面风格" data-i18n-aria-label="topbar.themeAria"><option value="minimalist-light" data-i18n="theme.minimalist-light">极简明亮</option><option value="precision-dark" data-i18n="theme.precision-dark">精密暗黑</option><option value="bento-grid" data-i18n="theme.bento-grid">便当盒网格</option><option value="glassmorphism" data-i18n="theme.glassmorphism">毛玻璃拟态</option><option value="editorial" data-i18n="theme.editorial">编辑杂志</option><option value="sci-fi-cyan" data-i18n="theme.sci-fi-cyan">科幻 · 电光青</option><option value="sci-fi-purple" data-i18n="theme.sci-fi-purple">科幻 · 赛博紫</option><option value="sci-fi-matrix" data-i18n="theme.sci-fi-matrix">科幻 · 矩阵绿</option></select></label>
+      <button id="open-tools-menu" type="button" class="ghost topbar-icon-btn" title="数据库维护与工具" aria-label="数据库维护与工具" data-i18n-title="topbar.tools" data-i18n-aria-label="topbar.tools"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg></button>
+      <button id="open-shortcuts" type="button" class="ghost topbar-icon-btn" title="快捷键速查 (?)" aria-label="快捷键速查" data-i18n-title="topbar.shortcuts" data-i18n-aria-label="topbar.shortcuts"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .8c0 1.7-2.5 2-2.5 3.4"/><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></button>
       <button id="refresh" type="button" class="secondary topbar-icon-btn" title="刷新 (F5)" aria-label="刷新" data-i18n-title="topbar.refresh" data-i18n-aria-label="topbar.refresh"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg></button>
     </div>
   </header>
@@ -31,7 +33,7 @@
     <aside id="table-sidebar" class="sidebar">
       <div class="sidebar-toolbar">
         <div class="sidebar-toolbar-row"><select id="database-select" aria-label="当前数据库"><option value="">选择数据库…</option></select><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
-        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名 (Ctrl+K)" aria-label="搜索表名" title="支持英文或中文表名，Ctrl+K 快速聚焦"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short">非空</span></label></div></div>
+        <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名 (Ctrl+K)" aria-label="搜索表名" title="支持英文或中文表名，Ctrl+K 快速聚焦"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short" data-i18n="sidebar.nonemptyShort">非空</span></label></div></div>
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，方向键切表，右键打开菜单"><p class="empty">正在加载…</p></div>
       <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="调整表列表高度"></div>
@@ -70,6 +72,7 @@
             <button id="btn-import-data" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>导入</button>
             <div class="export-group"><select id="export-format" aria-label="导出格式"><option value="csv">CSV</option><option value="json">JSON</option></select><button id="btn-export-data" type="button" class="secondary small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>导出</button></div>
             <button id="btn-delete-rows" type="button" class="danger-outline small" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除</button>
+            <button id="preview-cell-edits" type="button" class="secondary small" hidden>预览变更</button>
             <button id="save-cell-edits" class="small" hidden>保存改单元格</button>
             <button id="discard-cell-edits" class="secondary small" hidden>撤销修改</button>
           </div></div>
@@ -78,8 +81,8 @@
         </div>
       </section>
       <section id="tab-schema" class="tab-panel" role="tabpanel" aria-labelledby="nav-schema">
-        <div class="panel fill-panel"><div class="panel-title"><div><h3>表结构定义</h3><p id="schema-hint" class="muted" hidden></p></div><div class="button-row wrap"><button id="check-table" class="secondary small">检查数据</button><button id="export-schema" class="secondary small">导出定义</button><button id="delete-schema" class="danger-outline small">删除空表结构</button><button id="save-schema" class="small">保存结构</button></div></div>
-          <div class="schema-head"><label>英文表名<input id="schema-name" placeholder="例如 devices"></label><label>中文表名<input id="schema-label" placeholder="例如 设备表"></label><button id="add-column" class="secondary small">＋ 添加字段</button></div>
+        <div class="panel fill-panel"><div class="panel-title"><div><h3>表结构定义</h3><p id="schema-hint" class="muted" hidden></p></div><div class="button-row wrap"><button id="schema-indexes-btn" type="button" class="secondary small">索引设置</button><button id="schema-preview-btn" type="button" class="secondary small">预览变更</button><button id="check-table" class="secondary small">检查数据</button><button id="export-schema" class="secondary small">导出定义</button><button id="delete-schema" class="danger-outline small">删除空表结构</button><button id="save-schema" class="small">保存结构</button></div></div>
+          <div class="schema-head"><label>英文表名<input id="schema-name" placeholder="例如 devices"></label><label>中文表名<input id="schema-label" placeholder="例如 设备表"></label><input id="schema-field-filter" type="search" class="schema-field-filter" placeholder="过滤字段…" aria-label="过滤字段"><button id="add-column" class="secondary small">＋ 添加字段</button></div>
           <div id="schema-fields" class="grid-wrap"></div>
         </div>
       </section>
@@ -107,7 +110,7 @@
             <button id="query-logs" class="secondary small" type="button">查询</button>
             <button id="task-history" class="secondary small" type="button">后台任务</button>
           </div>
-          <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数<span class="preset-input"><select id="log-retention-preset" aria-label="日志保留天数预设"><option value="0">永久</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义…</option></select><input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="自定义日志保留天数" hidden></span></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="secondary small" type="button">立即清理</button></div>
+          <div class="log-retention"><span id="log-summary" class="muted">尚未加载日志</span><label>保留天数<span class="preset-input"><select id="log-retention-preset" aria-label="日志保留天数预设"><option value="0">永久</option><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义…</option></select><input id="log-retention-days" type="number" min="0" max="36500" step="1" value="0" aria-label="自定义日志保留天数" hidden></span></label><button id="save-log-config" class="secondary small" type="button">保存配置</button><button id="cleanup-logs" class="danger-outline small" type="button">立即清理</button></div>
           <div id="logs" class="logs" tabindex="0" aria-label="日志内容"></div>
           <div class="log-pager"><button id="log-prev" class="secondary small" type="button">上一页</button><span id="log-page-label">第 1 / 1 页</span><button id="log-next" class="secondary small" type="button">下一页</button></div>
         </section>
@@ -425,7 +428,7 @@
     <div id="storage-candidates" class="grid-wrap" aria-label="可清理内容"></div>
     <details id="storage-protected"><summary>受保护项目</summary><ul id="storage-protected-list"></ul></details>
     <p id="storage-status" role="status" aria-live="polite"></p>
-    <div class="dialog-actions"><button id="storage-refresh" type="button" class="secondary">刷新统计 / 预览</button><button id="storage-clean" type="button" disabled>确认清理</button><button id="storage-close" type="button" class="secondary">关闭</button></div>
+    <div class="dialog-actions"><button id="storage-refresh" type="button" class="secondary">刷新统计 / 预览</button><button id="storage-clean" type="button" class="danger" disabled>确认清理</button><button id="storage-close" type="button" class="secondary">关闭</button></div>
   </dialog>
 
   <dialog id="database-snapshots-dialog" aria-labelledby="database-snapshots-title"><div class="panel-title"><h2 id="database-snapshots-title">整库快照 / 恢复</h2><button id="snapshot-close-x" type="button" class="icon" aria-label="关闭快照管理">×</button></div><p id="snapshot-source" class="muted"></p><div class="button-row"><button id="snapshot-create" type="button">生成当前库快照</button><button id="snapshot-refresh" type="button" class="secondary">刷新列表</button></div><div id="snapshot-list" class="grid-wrap" aria-label="整库快照列表"></div><form id="snapshot-restore-form"><p id="snapshot-restore-caption">选择快照后恢复为新数据库</p><div class="snapshot-target"><label>新数据库英文名<input id="snapshot-target-name" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="例如 plant_copy"></label><label>中文名称<input id="snapshot-target-label" placeholder="留空沿用英文名"></label><button id="snapshot-restore" type="submit" disabled>恢复为新库</button></div></form><p id="snapshot-status" role="status"></p><div class="dialog-actions"><button id="snapshot-close" type="button" class="secondary">关闭</button></div></dialog>
@@ -435,6 +438,23 @@
   <dialog id="csv-dialog" aria-labelledby="csv-title"><div class="panel-title"><h2 id="csv-title">CSV 流式导入</h2><button id="csv-close-x" type="button" class="icon" aria-label="关闭 CSV 导入">×</button></div><p id="csv-target" class="muted"></p><div class="schema-head"><label>CSV 文件（≤128 MiB / 10 万条）<input id="csv-file" type="file" accept=".csv"></label><label>编码<select id="csv-encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label></div><p id="csv-detail" class="muted"></p><progress id="csv-progress" aria-label="CSV 上传进度" max="1" value="0"></progress><div class="button-row"><button id="csv-start" type="button">上传并预览</button><button id="csv-pause" type="button" class="secondary">暂停</button><button id="csv-discard" type="button" class="secondary">清除临时上传</button></div><div id="csv-preview" class="grid-wrap" aria-label="CSV 样本预览"></div><div class="schema-head"><label>导入方式<select id="csv-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label><button id="csv-apply" type="button">确认导入</button></div><p id="csv-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="csv-close" type="button" class="secondary">关闭</button></div></dialog>
 
   <dialog id="draft-recovery-dialog"><form method="dialog"><div class="panel-title"><h2>发现未保存草稿</h2><button value="later" class="icon" aria-label="稍后处理">×</button></div><select id="draft-choice" aria-label="选择草稿"></select><p id="draft-recovery-caption"></p><p id="draft-recovery-warning" class="muted"></p><div class="dialog-actions"><button id="export-local-draft" type="button" class="secondary">导出草稿</button><button id="delete-local-draft" type="button" class="secondary">删除草稿</button><button value="later" class="secondary">稍后处理</button><button id="restore-local-draft" type="button">恢复草稿</button></div></form></dialog>
+
+  <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="shortcuts-title">快捷键速查</h2><button value="close" class="icon" aria-label="关闭快捷键速查">×</button></div>
+      <div class="shortcuts-grid">
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Ctrl</kbd>+<kbd>K</kbd></span><span>聚焦表名搜索</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Ctrl</kbd>+<kbd>S</kbd></span><span>保存表格或结构修改</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></span><span>撤销 / 重做单元格编辑</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>F2</kbd> / 双击</span><span>编辑当前单元格</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Delete</kbd></span><span>清空非主键单元格</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>F5</kbd></span><span>刷新当前表与结构</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Esc</kbd></span><span>取消选区 / 关闭菜单或弹窗</span></div>
+        <div class="shortcut-row"><span class="shortcut-keys"><kbd>Shift</kbd>+<kbd>F10</kbd></span><span>打开当前区域右键菜单</span></div>
+      </div>
+      <div class="dialog-actions"><button value="close" class="secondary">关闭</button></div>
+    </form>
+  </dialog>
 
   <script src="/static/i18n.js"></script>
   <script src="/static/workspace.js"></script>

@@ -25,8 +25,12 @@
       "topbar.themeTitle": "切换界面视觉风格",
       "topbar.themeAria": "界面风格",
       "topbar.refresh": "刷新 (F5)",
+      "topbar.tools": "数据库维护与工具",
+      "topbar.shortcuts": "快捷键速查 (?)",
       "topbar.noDb": "未选择数据库",
       "topbar.connecting": "连接中",
+      "chart.quickPlot": "一键绘制数值列",
+      "grid.selStats": "均值 {avg} · 最小 {min} · 最大 {max} · 求和 {sum}",
       "theme.minimalist-light": "极简明亮",
       "theme.precision-dark": "精密暗黑",
       "theme.bento-grid": "便当盒网格",
@@ -37,10 +41,18 @@
       "theme.sci-fi-matrix": "科幻 · 矩阵绿",
       "chart.leftAxis": "左轴",
       "chart.rightAxis": "右轴",
+      "chart.axisLeftShort": "左",
+      "chart.axisRightShort": "右",
+      "chart.cursor": "游标",
+      "chart.pinned": "已固定",
+      "chart.dragging": "拖拽",
       "chart.empty": "右键表格数值选区，选择“左轴曲线”或“右轴曲线”。",
       "chart.allHidden": "全部曲线已隐藏，点击右上角图例恢复显示。",
       "chart.seriesSummary": "已添加 {count} 条曲线{ordinal} · 右键选区继续添加",
       "chart.ordinalHint": " · 横轴：点序号（游标显示各点标签）",
+      "bool.intTrue": "1（是）",
+      "bool.intFalse": "0（否）",
+      "sidebar.nonemptyShort": "非空",
       "cell.invalidMenu": "非法值 ({value})",
       "cell.invalidMenuTip": "非法菜单值：{value} 不在菜单定义范围内",
       "cell.invalidChoiceTip": "非法选择值：{value} 不在选择集合范围内",
@@ -60,8 +72,12 @@
       "topbar.themeTitle": "Switch Visual Theme",
       "topbar.themeAria": "Visual theme",
       "topbar.refresh": "Refresh (F5)",
+      "topbar.tools": "Database Maintenance & Tools",
+      "topbar.shortcuts": "Keyboard Shortcuts (?)",
       "topbar.noDb": "No database selected",
       "topbar.connecting": "Connecting",
+      "chart.quickPlot": "Plot Numeric Columns",
+      "grid.selStats": "Avg {avg} · Min {min} · Max {max} · Sum {sum}",
       "theme.minimalist-light": "Minimalist Light",
       "theme.precision-dark": "Precision Dark",
       "theme.bento-grid": "Bento Grid",
@@ -72,10 +88,18 @@
       "theme.sci-fi-matrix": "Sci-Fi Matrix",
       "chart.leftAxis": "Left Axis",
       "chart.rightAxis": "Right Axis",
+      "chart.axisLeftShort": "L",
+      "chart.axisRightShort": "R",
+      "chart.cursor": "Cursor",
+      "chart.pinned": "Pinned",
+      "chart.dragging": "Dragging",
       "chart.empty": 'Right-click a numeric range in the grid and pick "Left Axis" or "Right Axis".',
       "chart.allHidden": "All series are hidden. Click legend items at top-right to restore.",
       "chart.seriesSummary": "{count} series pinned{ordinal} · Right-click selection to add more",
       "chart.ordinalHint": " · X: Point Index (hover shows labels)",
+      "bool.intTrue": "1 (True)",
+      "bool.intFalse": "0 (False)",
+      "sidebar.nonemptyShort": "Non-empty",
       "cell.invalidMenu": "Invalid ({value})",
       "cell.invalidMenuTip": "Invalid menu value: {value} is not defined in menu options",
       "cell.invalidChoiceTip": "Invalid choice value: {value} is not in the allowed set",
@@ -95,8 +119,12 @@
       "topbar.themeTitle": "Переключить тему оформления",
       "topbar.themeAria": "Тема оформления",
       "topbar.refresh": "Обновить (F5)",
+      "topbar.tools": "Инструменты и обслуживание БД",
+      "topbar.shortcuts": "Горячие клавиши (?)",
       "topbar.noDb": "БД не выбрана",
       "topbar.connecting": "Подключение",
+      "chart.quickPlot": "Построить числовые столбцы",
+      "grid.selStats": "Сред. {avg} · Мин {min} · Макс {max} · Сумма {sum}",
       "theme.minimalist-light": "Минимализм светлый",
       "theme.precision-dark": "Строгий тёмный",
       "theme.bento-grid": "Сетка Bento",
@@ -107,10 +135,18 @@
       "theme.sci-fi-matrix": "Сай-фай: Матрица",
       "chart.leftAxis": "Левая ось",
       "chart.rightAxis": "Правая ось",
+      "chart.axisLeftShort": "Л",
+      "chart.axisRightShort": "П",
+      "chart.cursor": "Курсор",
+      "chart.pinned": "Закреплено",
+      "chart.dragging": "Перетаскивание",
       "chart.empty": "Щёлкните ПКМ по числовому диапазону и выберите «Левая ось» или «Правая ось».",
       "chart.allHidden": "Все кривые скрыты. Нажмите на легенду справа сверху, чтобы показать.",
       "chart.seriesSummary": "Кривых: {count}{ordinal} · ПКМ по выделению для добавления",
       "chart.ordinalHint": " · Ось X: индекс точки",
+      "bool.intTrue": "1 (Да)",
+      "bool.intFalse": "0 (Нет)",
+      "sidebar.nonemptyShort": "Непуст.",
       "cell.invalidMenu": "Недопуст. ({value})",
       "cell.invalidMenuTip": "Недопустимое значение: {value} отсутствует в справочнике",
       "cell.invalidChoiceTip": "Недопустимое значение: {value} отсутствует в списке выбора",
@@ -133,7 +169,6 @@
     "精确匹配": ["Exact", "Точно"],
     "精确": ["Exact", "Точно"],
     "仅非空表": ["Non-empty", "Непустые"],
-    "非空": ["Non-empty", "Непуст."],
     "精确匹配表名": ["Exact table name match", "Точное совпадение имени"],
     "仅显示有记录的表": ["Show only tables with rows", "Показать только непустые таблицы"],
     "正在加载…": ["Loading…", "Загрузка…"],
@@ -182,6 +217,19 @@
 
     // 表结构页
     "表结构定义": ["Table Schema Definition", "Структура таблицы"],
+    "索引设置": ["Indexes", "Индексы"],
+    "预览变更": ["Preview Changes", "Предпросмотр"],
+    "过滤字段…": ["Filter fields…", "Фильтр полей…"],
+    "操作": ["Actions", "Действия"],
+    "快捷键速查": ["Keyboard Shortcuts", "Горячие клавиши"],
+    "聚焦表名搜索": ["Focus table search", "Поиск таблиц"],
+    "保存表格或结构修改": ["Save grid or schema edits", "Сохранить правки"],
+    "撤销 / 重做单元格编辑": ["Undo / redo cell edits", "Отменить / повторить"],
+    "编辑当前单元格": ["Edit active cell", "Изменить ячейку"],
+    "清空非主键单元格": ["Clear non-key cell", "Очистить ячейку"],
+    "刷新当前表与结构": ["Refresh current table & schema", "Обновить таблицу"],
+    "取消选区 / 关闭菜单或弹窗": ["Clear selection / close menu or dialog", "Снять выделение / закрыть"],
+    "打开当前区域右键菜单": ["Open context menu", "Открыть контекстное меню"],
     "检查数据": ["Validate Data", "Проверить данные"],
     "导出定义": ["Export Schema", "Экспорт схемы"],
     "删除空表结构": ["Drop Empty Table", "Удалить пустую"],
@@ -545,13 +593,13 @@
       ru: (_, a, b) => `Стр. ${a} / ${b}`
     },
     {
-      re: /^(\d[\d,]*)-(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*条$/,
-      en: (_, a, b, c) => `${a}-${b} / ${c} rows`,
-      ru: (_, a, b, c) => `${a}-${b} из ${c}`
+      re: /^(\d[\d,]*)\s*[-–]\s*(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*条$/,
+      en: (_, a, b, c) => `${a}–${b} / ${c} rows`,
+      ru: (_, a, b, c) => `${a}–${b} из ${c}`
     },
     {
-      re: /^已刷新\s*(.+)$/,
-      en: (_, ts) => `Refreshed ${ts}`,
+      re: /^(?:已刷新|更新于)\s*(.+)$/,
+      en: (_, ts) => `Updated ${ts}`,
       ru: (_, ts) => `Обновлено ${ts}`
     },
     {
@@ -623,11 +671,12 @@
 
   // 严格保护真实业务数据区，禁止自动翻译表单元格、表名、字段名、日志正文与用户输入
   const EXCLUDED_DATA_SELECTOR = [
-    "#data-grid tbody",
-    "#data-grid thead th",
-    "#table-list .table-item",
+    "#data-grid",
+    "#table-list",
     "#field-list",
-    "#logs .log-line",
+    "#logs",
+    "#performance-results tbody",
+    "#task-history-grid tbody",
     "#schema-preview-content",
     "#current-database-file",
     "#workspace-current",
@@ -678,6 +727,7 @@
       const translated = currentLang === "ru-RU" ? pair[1] : pair[0];
       return `${lead}${translated}${tail}`;
     }
+    if (!/[\u4e00-\u9fff]/.test(trimmed)) return raw;
     for (const rule of PATTERN_RULES) {
       const match = trimmed.match(rule.re);
       if (match) {
@@ -734,8 +784,8 @@
     const parent = node.parentElement;
     if (!parent || isExcludedElement(parent) || parent.dataset.i18n) return;
     const current = node.nodeValue || "";
-    if (!current.trim()) return;
     let orig = origTextMap.get(node);
+    if (!current.trim() && orig === undefined) return;
     if (orig === undefined) {
       orig = current;
       origTextMap.set(node, orig);
@@ -754,8 +804,20 @@
     try {
       document.documentElement.lang = currentLang;
       document.title = t("app.docTitle");
-      if (root.nodeType === 1) applyAttrsToElement(root);
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      if (root.nodeType === 1) {
+        if (isExcludedElement(root)) return;
+        applyAttrsToElement(root);
+      }
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            if (node.nodeType === 1 && isExcludedElement(node)) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+      );
       let node;
       while ((node = walker.nextNode())) {
         if (node.nodeType === 1) applyAttrsToElement(node);
@@ -832,7 +894,13 @@
   };
 
   const boot = () => {
-    applyDom(document.body || document.documentElement);
+    document.documentElement.lang = currentLang;
+    const select = document.getElementById("lang-select");
+    if (select && select.value !== currentLang) select.value = currentLang;
+    // 默认简体中文与 HTML 源码一致，启动时跳过首次全量 DOM 遍历
+    if (currentLang !== "zh-CN") {
+      applyDom(document.body || document.documentElement);
+    }
     startObserver();
   };
   if (document.readyState === "loading") {

@@ -9,6 +9,7 @@ store.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -232,18 +233,41 @@ class RTDBWebApp:
 
 class RequestHandler(BaseHTTPRequestHandler):
     server_version = "RTDBWeb/1.0"
+    protocol_version = "HTTP/1.1"
 
     @property
     def app(self) -> RTDBWebApp:
         return self.server.rtdb_app  # type: ignore[attr-defined]
 
+    def _should_log_request(self, args: tuple[Any, ...]) -> bool:
+        if os.environ.get("RTDB_ACCESS_LOG") == "1":
+            return True
+        if len(args) >= 2 and str(args[1]).startswith(("2", "3")):
+            parts = str(args[0]).split(" ")
+            if len(parts) >= 2 and parts[0] == "GET":
+                path_only = urlsplit(parts[1]).path
+                if path_only.startswith("/static/") or path_only in ("/", "/index.html", "/favicon.ico", "/api/health"):
+                    return False
+        return True
+
     def log_message(self, format: str, *args: Any) -> None:
+        if not self._should_log_request(args):
+            return
         sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
 
+    def _maybe_gzip(self, body: bytes) -> tuple[bytes, bool]:
+        if len(body) >= 1024 and "gzip" in self.headers.get("Accept-Encoding", "").lower():
+            return gzip.compress(body, compresslevel=5), True
+        return body, False
+
     def _send_json(self, status: int, payload: Any) -> None:
-        body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        raw_body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        body, compressed = self._maybe_gzip(raw_body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -383,7 +407,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_error(exc)
 
     def _send_static(self, path: str) -> None:
-        relative = "index.html" if path in {"", "/"} else path.removeprefix("/")
+        clean_path = unquote(path)
+        relative = "index.html" if clean_path in {"", "/"} else clean_path.removeprefix("/")
         if relative == "static" or relative.startswith("static/"):
             relative = relative.removeprefix("static/")
         if ".." in Path(relative).parts:
@@ -393,10 +418,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise APIError(404, "file not found")
         if not target.exists() or not target.is_file():
             raise APIError(404, "file not found")
-        body = target.read_bytes()
+        stat_info = target.stat()
+        etag = f'"{stat_info.st_mtime_ns:x}-{stat_info.st_size:x}"'
+        if_none_match = self.headers.get("If-None-Match", "")
+        if etag in [part.strip() for part in if_none_match.split(",")]:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return
+        media = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".svg": "image/svg+xml; charset=utf-8",
+        }.get(target.suffix.lower()) or (mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+        raw_body = target.read_bytes()
+        body, compressed = self._maybe_gzip(raw_body)
         self.send_response(200)
-        self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+        self.send_header("Content-Type", media)
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 

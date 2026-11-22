@@ -824,12 +824,15 @@ class SQLiteManager:
                         if integrity != 'ok':
                             item.update(status='完整性检查失败', error=f'quick_check={integrity}')
                             return item
-                    total = 0
+                    total = 0 if check_integrity else None
                     for definition in document.tables:
-                        validate_native_table(connection, definition)
-                        data = _sql_quote_name(definition.eng_name)
-                        count = connection.execute(f'SELECT COUNT(*) FROM {data}').fetchone()[0]
-                        total += count
+                        if check_integrity:
+                            validate_native_table(connection, definition)
+                            data = _sql_quote_name(definition.eng_name)
+                            count = connection.execute(f'SELECT COUNT(*) FROM {data}').fetchone()[0]
+                            total += count
+                        else:
+                            count = None
                         item['tables'].append(dict(name=definition.eng_name, row_count=count,
                             stored_fingerprint=fingerprint(definition.to_mapping()), definition_match=True))
                     item.update(status='可用（原生 SQLite）', selectable=True, rtdb=True,
@@ -1155,6 +1158,8 @@ class SQLiteManager:
             except BaseException:
                 target_json.unlink(missing_ok=True)
                 target_db.unlink(missing_ok=True)
+                for sidecar in ('-wal', '-shm', '-journal'):
+                    (self.data_dir / (target_db.name + sidecar)).unlink(missing_ok=True)
                 target_python.unlink(missing_ok=True)
                 raise
             return {'created': True, 'filename': target_db.name, 'name': name,
@@ -1811,6 +1816,16 @@ class SQLiteManager:
 
         return write_receipts.write(table, execute)
 
+    def export_document(self, name, query=None):
+        """直接返回 JSON 导出结构的字典对象，避免 backup 路径重复序列化与反序列化。"""
+        query = query or {}
+        with self.session(name) as table:
+            with table._read_transaction() as c:
+                rows, total = self._selection(table, c, query.get('where', ''), query.get('order', ''), self.max_rows)
+            if total > self.max_rows:
+                raise APIError(413, '导出结果超过 100,000 行，请增加过滤条件')
+            return {'table': name, 'definition': table.definition.to_mapping(), 'rows': rows}
+
     def export(self, name, query):
         if query.get('format', 'json') not in ('json', 'csv'):
             raise APIError(400, '仅支持 JSON 或 CSV')
@@ -1901,9 +1916,10 @@ class SQLiteManager:
                 connection.execute(f'ALTER TABLE data RENAME TO "{data_name}"')
                 connection.execute(f'ALTER TABLE metadata RENAME TO "{meta_name}"')
                 objects = connection.execute("SELECT type,name,sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", (data_name,)).fetchall()
+                from .atomic_import import rename_ddl_object
                 for kind, old_object, sql in objects:
                     connection.execute(f'DROP {kind} "{old_object}"')
-                    connection.execute(sql.replace('"' + old_object + '"', '"' + data_name + '_' + old_object + '"', 1))
+                    connection.execute(rename_ddl_object(sql, kind, old_object, data_name + '_' + old_object))
             existing._write(promote)
 
     def _native_schema_scope(self, name, payload, *, creating=False):

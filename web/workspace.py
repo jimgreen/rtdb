@@ -6,6 +6,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import threading
+import time
 from types import SimpleNamespace
 
 from .errors import APIError
@@ -48,6 +49,8 @@ class WorkspaceCatalog:
         self.default = default
         self.contexts = OrderedDict()
         self.lock = threading.RLock()
+        self._storage_cache = {}
+        self._storage_cache_ttl = 2.0
 
     def _check_path(self, path):
         if not path.is_relative_to(self.root):
@@ -80,14 +83,33 @@ class WorkspaceCatalog:
                 if stat.S_ISDIR(info.st_mode) and (recursive or entry.name.lower() in _RUNTIME_DIRECTORIES):
                     self._check_entries(entry.path, recursive=True)
 
+    @staticmethod
+    def _dir_stamp(path):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return None
+        if _is_link(info):
+            raise APIError(400, 'Web 文件路径不能使用符号链接或联接点')
+        return (info.st_mtime_ns, info.st_size)
+
     def validate_storage(self, data_dir, schema_dir):
         if not self.strict_root:
             return
+        cache_key = (data_dir, schema_dir)
+        now = time.monotonic()
+        stamp = (self._dir_stamp(data_dir), self._dir_stamp(schema_dir))
+        with self.lock:
+            cached = self._storage_cache.get(cache_key)
+            if cached is not None and cached[1] == stamp and (now - cached[0]) < self._storage_cache_ttl:
+                return
         self._check_path(data_dir)
         self._check_path(schema_dir)
         self._check_entries(data_dir, select=lambda name: name.endswith(_SQLITE_SUFFIXES)
                             or name in _RUNTIME_FILES or name in _RUNTIME_DIRECTORIES)
         self._check_entries(schema_dir)
+        with self.lock:
+            self._storage_cache[cache_key] = (now, stamp)
 
     def storage_paths(self, data_dir, schema_dir):
         """Resolve server configuration before constructing anything that writes files."""
@@ -166,6 +188,8 @@ class WorkspaceCatalog:
 
     @staticmethod
     def _is_context_idle(context):
+        if getattr(context, 'in_flight', 0) > 0:
+            return False
         with context.tasks.lock:
             if context.tasks.running_databases or context.tasks.queues:
                 return False
@@ -181,11 +205,14 @@ class WorkspaceCatalog:
         context.audit_delivery.close()
         context.sqlite_manager.close()
 
-    def get(self, relative):
+    def get(self, relative, *, _acquire=False):
         default_manager = self.default.sqlite_manager
         path = self.directory(relative) if relative else default_manager.data_dir
         if path == default_manager.data_dir:
             self.validate_storage(path, default_manager.schema_dir)
+            if _acquire:
+                with self.lock:
+                    self.default.in_flight = getattr(self.default, 'in_flight', 0) + 1
             return self.default
         schema = path / '.rtdb-schema'
         self.validate_storage(path, schema)
@@ -193,7 +220,10 @@ class WorkspaceCatalog:
         with self.lock:
             if path in self.contexts:
                 self.contexts.move_to_end(path)
-                return self.contexts[path]
+                context = self.contexts[path]
+                if _acquire:
+                    context.in_flight = getattr(context, 'in_flight', 0) + 1
+                return context
             if len(self.contexts) >= 64:
                 victim_key = next(
                     (key for key, ctx in self.contexts.items() if self._is_context_idle(ctx)),
@@ -213,7 +243,8 @@ class WorkspaceCatalog:
                 manager.close()
                 raise
             context = SimpleNamespace(sqlite_manager=manager,
-                management=SQLiteManagement(manager), tasks=tasks, audit_delivery=delivery)
+                management=SQLiteManagement(manager), tasks=tasks, audit_delivery=delivery,
+                in_flight=1 if _acquire else 0)
             self.contexts[path] = context
         if evicted is not None:
             try:
@@ -221,6 +252,18 @@ class WorkspaceCatalog:
             except Exception:
                 pass
         return context
+
+    def acquire(self, relative):
+        """获取工作区上下文并增加活跃请求引用计数，防止并发驱逐关闭。"""
+        return self.get(relative, _acquire=True)
+
+    def release(self, context):
+        """释放活跃请求引用计数。"""
+        if context is None:
+            return
+        with self.lock:
+            current = getattr(context, 'in_flight', 0)
+            context.in_flight = current - 1 if current > 0 else 0
 
     def close(self):
         with self.lock:

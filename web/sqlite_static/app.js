@@ -13,17 +13,24 @@ const state = { table: null, tables: [], definition: null, version: null, record
     x: { title: "", labelStep: 1 }
   }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null, sidebarContextTrigger: null, sidebarContextScope: null };
 let sqlHistoryItems = [], sqlHistoryActive = -1;
-state.database = null; state.databases = []; state.queryVersion = null;
+state.database = null; state.databases = []; state.queryVersion = null; state.writeSeq = 0;
 let gridCells = new WeakMap(), gridCellEntries = [], gridRowEntries = [], gridColumnEntries = [];
-let selectionFrame = null, chartDrawFrame = null, legendSignature = null, renderedQueryStamp = null, noticeTimer;
+let selectionFrame = null, chartDrawFrame = null, chartOverlayFrame = null, legendSignature = null, renderedQueryStamp = null, noticeTimer;
 let chartStaticCanvas = null, chartStaticKey = null, chartStaticHits = [];
+const menuDictCache = new Map();
+const choiceSetCache = new Map();
 function scheduleGridSelection() {
   if (selectionFrame === null) selectionFrame = requestAnimationFrame(paintGridSelection);
 }
 function scheduleChartDraw() {
+  if (chartOverlayFrame !== null) { cancelAnimationFrame(chartOverlayFrame); chartOverlayFrame = null; }
   if (chartDrawFrame === null) chartDrawFrame = requestAnimationFrame(drawChart);
 }
-const integerTypes = new Set(["int", "integer", "long"]);
+function scheduleChartOverlay() {
+  if (chartDrawFrame !== null) return;
+  if (chartOverlayFrame === null) chartOverlayFrame = requestAnimationFrame(drawChartCursorOverlay);
+}
+const integerTypes = new Set(["int", "integer", "long", "uchar", "short", "uint", "ulong", "datetime"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
 const boolTypes = new Set(["bool", "boolean"]);
 const objectTypes = new Set(["list", "array", "dict", "object", "json"]);
@@ -174,6 +181,11 @@ function loadChartSettings() {
 }
 function saveChartSettings() {
   try {
+    // 限制持久化样式数量上限（最多保留最近 64 项），防止长期使用撑爆 localStorage。
+    while (state.chartStyles.size > 64) {
+      const oldest = state.chartStyles.keys().next().value;
+      state.chartStyles.delete(oldest);
+    }
     localStorage.setItem(chartSettingsStorageKey, JSON.stringify({
       title: state.chartTitle, titleSettings: state.chartTitleSettings, axes: state.chartAxisSettings, styles: Object.fromEntries(state.chartStyles)
     }));
@@ -317,9 +329,26 @@ function renderLogs() {
   target.replaceChildren();
   if (state.auditLoaded) {
     if (!state.auditRecords.length) { target.append(node("div", "没有符合条件的日志。", "empty")); return; }
+    const catLabels = { structure: "结构", data: "数据", system: "系统" };
     for (const record of state.auditRecords) {
-      const line = node("div", formatAuditLog(record), `log-line ${record.status === "failure" ? "failure" : "success"}`);
-      line.title = record.error?.message || record.operation || "";
+      const ok = record.status !== "failure";
+      const line = node("div", null, `log-line is-structured ${ok ? "success" : "failure"}`);
+      const timeStr = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "--:--:--";
+      const timeEl = node("span", timeStr, "log-time");
+      timeEl.title = record.timestamp ? new Date(record.timestamp).toLocaleString() : "";
+      const pill = node("span", ok ? "成功" : "失败", "log-pill");
+      const cat = node("span", catLabels[record.category] || record.category || "操作", "log-cat");
+      const details = [record.operation || "操作"];
+      if (record.table) details.push(record.table);
+      if (record.error) details.push(record.error.message || JSON.stringify(record.error));
+      else if (record.result && Object.keys(record.result).length) {
+        const brief = JSON.stringify(record.result, null, 0);
+        details.push(brief.length > 140 ? `${brief.slice(0, 140)}…` : brief);
+      }
+      const msg = node("span", details.join(" · "), "log-msg");
+      const dur = node("span", record.duration_ms != null ? `${Number(record.duration_ms).toFixed(1)} ms` : "", "log-dur");
+      line.title = formatAuditLog(record);
+      line.append(timeEl, pill, cat, msg, dur);
       target.append(line);
     }
     return;
@@ -398,7 +427,7 @@ async function run(work, errorTarget = null) {
   state.busy = true; document.body.dataset.busy = "true";
   el("data-grid").setAttribute("aria-busy", "true");
   const editingControls = [...el("data-grid").querySelectorAll(".cell-editor:not(:disabled)")];
-  const auditSequence=state.auditLoadSequence||0;let failed=false;
+  const auditSequence=state.auditLoadSequence||0, writeSeqBefore=state.writeSeq||0;let failed=false;
   editingControls.forEach((control) => { control.disabled = true; });
   if (errorTarget) el(errorTarget).textContent = "";
   try { await work(); }
@@ -407,11 +436,24 @@ async function run(work, errorTarget = null) {
     state.busy = false; document.body.dataset.busy = "false";
     el("data-grid").setAttribute("aria-busy", "false");
     editingControls.forEach((control) => { if (control.isConnected) control.disabled = false; });
-    // 将审计日志刷新移出 state.busy 全局锁，避免用户操作完成后被日志拉取阻塞交互。
-    if (!failed && !backgroundTasks.pending() && (state.auditLoadSequence || 0) === auditSequence && el("tab-logs")?.classList.contains("active")) {
+    // 仅在真正发生写/结构/维护变更且「日志」Tab 处于激活态时异步刷新日志，消除只读/自动刷新冗余轮询。
+    if (!failed && !backgroundTasks.pending() && (state.writeSeq || 0) !== writeSeqBefore && (state.auditLoadSequence || 0) === auditSequence && el("tab-logs")?.classList.contains("active")) {
       void loadAuditLogs().catch(() => { /* Keep the last visible log when the log endpoint is unavailable. */ });
     }
   }
+}
+function isMutatingRequest(path, method, body) {
+  if (method === "GET" || method === "HEAD") return false;
+  const route = path.split("?")[0];
+  if (method === "POST") {
+    if (/^tables\/[^/]+\/(query-plan|validate-edits|resolve-records|schema-preview)$/.test(route)) return false;
+    if (route === "database-files/select") return false;
+    if (/^tables\/[^/]+\/sql$/.test(route)) {
+      if (body?.readonly_only) return false;
+      if (/^\s*(SELECT|WITH|EXPLAIN|PRAGMA)\b/i.test(body?.sql || "")) return false;
+    }
+  }
+  return true;
 }
 async function request(path, method = "GET", body, timing = null, { allowBackground = true } = {}) {
   const scoped = /^(tables(?:\/|$)|backup$|restore|definition-|receipt-maintenance|database-snapshots)/.test(path);
@@ -457,11 +499,14 @@ async function request(path, method = "GET", body, timing = null, { allowBackgro
   if(taskSubmission && response.status!==202){backgroundTasks.clear();if(response.ok&&taskSubmission.draftKey)await localDrafts.dropKey(taskSubmission.draftKey,taskSubmission.draftRevision);}
   reportAuditWarning(payload);
   if (!response.ok) { const error = new Error(payload.error || `请求失败 ${response.status}`); error.details = payload.details; error.status = response.status; throw error; }
+  const mutating = isMutatingRequest(path, method, body);
   if(response.status===202&&payload.task){
     const started=performance.now(),result=await backgroundTasks.follow({...payload.task,draftKey:taskSubmission?.draftKey,draftRevision:taskSubmission?.draftRevision});
     if(timing){timing.request_ms+=performance.now()-started;Object.assign(timing,backgroundTasks.lastTimings||{});}
+    if (mutating) state.writeSeq = (state.writeSeq || 0) + 1;
     return result;
   }
+  if (mutating) state.writeSeq = (state.writeSeq || 0) + 1;
   return payload;
 }
 const tablePath = (actionName, name = state.table) => `tables/${encodeURIComponent(name)}/${actionName}`;
@@ -658,8 +703,10 @@ function pendingCell(record, field) { return state.pendingEdits.get(cellKey(reco
 function updateEditActions() {
   localDrafts.schedule();
   const count = state.pendingEdits.size, drafts = draftRecords().length;
-  el("save-cell-edits").hidden = !count && !drafts;
-  el("discard-cell-edits").hidden = !count && !drafts;
+  const hasAny = Boolean(count || drafts);
+  if (el("preview-cell-edits")) el("preview-cell-edits").hidden = !hasAny;
+  el("save-cell-edits").hidden = !hasAny;
+  el("discard-cell-edits").hidden = !hasAny;
   el("save-cell-edits").textContent = drafts ? `保存修改（新增 ${drafts} 条）` : `保存改单元格（${count}）`;
   el("chart-edit-hint").textContent = [drafts ? `${drafts} 条新增记录待保存` : "", count ? `${count} 个单元格已修改` : ""].filter(Boolean).join(" · ") || "未选择修改";
   updateRecordsToolbar();
@@ -739,42 +786,79 @@ function isChoiceDisplayColumn(column) {
   const lower = disp.toLowerCase();
   return disp === CHOICE_DISPLAY_TYPE || disp === "选择" || lower === "choice_set" || lower === "set";
 }
-function parseChoiceSet(raw, dataType = "str") {
-  const text = String(raw ?? "").trim();
-  if (!text) return [];
-  const isInt = isIntegerSchemaType(dataType);
-  try {
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set();
-    const result = [];
-    for (const item of parsed) {
-      if (isInt) {
-        if (typeof item === "boolean" || item == null) continue;
-        const s = typeof item === "number"
-          ? (Number.isInteger(item) ? String(item) : "")
-          : typeof item === "string" ? item.trim() : "";
-        if (!/^-?\d+$/.test(s)) continue;
-        try {
-          const big = BigInt(s);
-          if (big < -(2n ** 63n) || big >= 2n ** 63n) continue;
-          const norm = big.toString();
-          if (seen.has(norm)) continue;
-          seen.add(norm);
-          result.push(norm);
-        } catch { continue; }
-      } else {
-        if (typeof item !== "string" && typeof item !== "number") continue;
-        const s = String(item);
-        if (!s.trim() || seen.has(s)) continue;
-        seen.add(s);
-        result.push(s);
-      }
+/** 无损解析整数 JSON 数组词元，防止 64 位大整数经 JSON.parse 舍入丢失精度。 */
+function parseIntegerJsonArrayTokens(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+  const inner = trimmed.slice(1, -1).trim();
+  if (!inner) return [];
+  const rawParts = inner.split(",");
+  const tokens = [];
+  for (const part of rawParts) {
+    const item = part.trim();
+    if (/^-?(?:0|[1-9]\d*)$/.test(item)) {
+      tokens.push(item);
+    } else if (/^"(?:-?(?:0|[1-9]\d*))"$/.test(item)) {
+      tokens.push(item.slice(1, -1));
+    } else {
+      return null;
     }
-    return result;
-  } catch {
-    return [];
   }
+  return tokens;
+}
+function getChoiceSetCache(raw, dataType = "str") {
+  const text = String(raw ?? "").trim();
+  if (!text) return { list: [], set: new Set() };
+  const isInt = isIntegerSchemaType(dataType);
+  const cacheKey = `${isInt ? "I" : "S"}:${text}`;
+  const cached = choiceSetCache.get(cacheKey);
+  if (cached) return cached;
+  const seen = new Set();
+  const result = [];
+  if (isInt) {
+    const exactTokens = parseIntegerJsonArrayTokens(text);
+    const sourceList = exactTokens ?? (() => {
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    })();
+    for (const item of sourceList) {
+      if (typeof item === "boolean" || item == null) continue;
+      const s = typeof item === "number"
+        ? (Number.isInteger(item) ? String(item) : "")
+        : typeof item === "string" ? item.trim() : "";
+      if (!/^-?\d+$/.test(s)) continue;
+      try {
+        const big = BigInt(s);
+        if (big < -(2n ** 63n) || big >= 2n ** 63n) continue;
+        const norm = big.toString();
+        if (seen.has(norm)) continue;
+        seen.add(norm);
+        result.push(norm);
+      } catch { continue; }
+    }
+  } else {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item !== "string" && typeof item !== "number") continue;
+          const s = String(item);
+          if (!s.trim() || seen.has(s)) continue;
+          seen.add(s);
+          result.push(s);
+        }
+      }
+    } catch { /* 非法 JSON 返回空集合 */ }
+  }
+  const entry = { list: result, set: seen };
+  if (choiceSetCache.size >= 256) choiceSetCache.clear();
+  choiceSetCache.set(cacheKey, entry);
+  return entry;
+}
+function parseChoiceSet(raw, dataType = "str") {
+  return getChoiceSetCache(raw, dataType).list;
 }
 function serializeChoiceSet(values, dataType = "str") {
   if (!Array.isArray(values) || !values.length) return "";
@@ -801,19 +885,32 @@ function serializeChoiceSet(values, dataType = "str") {
   }
   return list.length ? JSON.stringify(list) : "";
 }
-function parseMenuDict(raw) {
+function getMenuDictCache(raw) {
   const text = String(raw ?? "").trim();
-  if (!text) return [];
+  if (!text) return { entries: [], map: new Map() };
+  const cached = menuDictCache.get(text);
+  if (cached) return cached;
+  const entries = [];
+  const map = new Map();
   try {
     const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    return Object.entries(parsed).map(([key, value]) => ({
-      key: String(key).trim(),
-      value: value == null ? "" : String(value)
-    })).filter((item) => item.key !== "");
-  } catch {
-    return [];
-  }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [key, value] of Object.entries(parsed)) {
+        const k = String(key).trim();
+        if (!k) continue;
+        const v = value == null ? "" : String(value);
+        entries.push({ key: k, value: v });
+        map.set(k, v);
+      }
+    }
+  } catch { /* 非法 JSON 返回空菜单 */ }
+  const entry = { entries, map };
+  if (menuDictCache.size >= 256) menuDictCache.clear();
+  menuDictCache.set(text, entry);
+  return entry;
+}
+function parseMenuDict(raw) {
+  return getMenuDictCache(raw).entries;
 }
 function serializeMenuEntries(entries) {
   const dict = {};
@@ -824,11 +921,10 @@ function serializeMenuEntries(entries) {
 }
 function formatMenuDictValue(column, rawVal) {
   if (rawVal == null || rawVal === "") return null;
-  const entries = parseMenuDict(column?.disp_menu);
-  if (!entries.length) return null;
+  const { map } = getMenuDictCache(column?.disp_menu);
+  if (!map.size) return null;
   const lookup = String(rawVal).trim();
-  const matched = entries.find((item) => item.key === lookup);
-  return matched ? matched.value : null;
+  return map.has(lookup) ? map.get(lookup) : null;
 }
 function timestampToDate(value) {
   if (value == null || value === "") return null;
@@ -906,7 +1002,23 @@ function dateToDatetimeLocalValue(date) {
   const pad = (num, len = 2) => String(num).padStart(len, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
-function datetimeLocalToTimestamp(localStr, msValue, unit) {
+function extractSubMsOffset(value, unit) {
+  if (value == null || value === "" || (unit !== "us" && unit !== "ns")) return 0n;
+  const text = String(value).trim();
+  if (!/^-?\d+$/.test(text)) return 0n;
+  try {
+    const big = BigInt(text);
+    const scale = unit === "ns" ? 1000000n : 1000n;
+    const rem = big % scale;
+    return rem < 0n ? rem + scale : rem;
+  } catch { return 0n; }
+}
+function floorDivBigInt(a, b) {
+  const q = a / b;
+  const r = a % b;
+  return r < 0n ? q - 1n : q;
+}
+function datetimeLocalToTimestamp(localStr, msValue, unit, subMsOffset = 0n) {
   const text = String(localStr || "").trim();
   if (!text) return null;
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
@@ -917,9 +1029,9 @@ function datetimeLocalToTimestamp(localStr, msValue, unit) {
   const epochMs = date.getTime();
   if (!Number.isFinite(epochMs)) return null;
   const bigMs = BigInt(Math.trunc(epochMs));
-  if (unit === "s") return (bigMs / 1000n).toString();
-  if (unit === "us") return (bigMs * 1000n).toString();
-  if (unit === "ns") return (bigMs * 1000000n).toString();
+  if (unit === "s") return floorDivBigInt(bigMs, 1000n).toString();
+  if (unit === "us") return (bigMs * 1000n + (subMsOffset >= 0n && subMsOffset < 1000n ? subMsOffset : 0n)).toString();
+  if (unit === "ns") return (bigMs * 1000000n + (subMsOffset >= 0n && subMsOffset < 1000000n ? subMsOffset : 0n)).toString();
   return bigMs.toString();
 }
 function parseIntBoolValue(rawVal) {
@@ -950,23 +1062,23 @@ function formatGridDisplayValue(column, rawVal, fallbackText) {
     const invalidDetail = t("cell.invalidBoolTip", { value: fallbackText });
     return { text: invalidText, formatted: false, invalid: true, invalidDetail, rawText: fallbackText };
   } else if (isMenuDisplayColumn(column)) {
-    const entries = parseMenuDict(column.disp_menu);
-    if (entries.length) {
-      const mapped = formatMenuDictValue(column, rawVal);
-      if (mapped != null) return { text: mapped, formatted: true, invalid: false, invalidDetail: "", rawText: fallbackText };
+    const { map } = getMenuDictCache(column.disp_menu);
+    if (map.size) {
+      const lookup = String(rawVal).trim();
+      if (map.has(lookup)) return { text: map.get(lookup), formatted: true, invalid: false, invalidDetail: "", rawText: fallbackText };
       const invalidText = t("cell.invalidMenu", { value: fallbackText });
       const invalidDetail = t("cell.invalidMenuTip", { value: fallbackText });
       return { text: invalidText, formatted: false, invalid: true, invalidDetail, rawText: fallbackText };
     }
   } else if (isChoiceDisplayColumn(column)) {
-    const choices = parseChoiceSet(column.disp_menu, column.data_type);
-    if (choices.length) {
+    const { set } = getChoiceSetCache(column.disp_menu, column.data_type);
+    if (set.size) {
       const isInt = isIntegerSchemaType(column.data_type);
       let lookup = String(rawVal);
       if (isInt && /^-?\d+$/.test(lookup.trim())) {
         try { lookup = BigInt(lookup.trim()).toString(); } catch { /* 保持原文本 */ }
       }
-      if (choices.includes(lookup)) {
+      if (set.has(lookup)) {
         return { text: fallbackText, formatted: false, invalid: false, invalidDetail: "", rawText: fallbackText };
       }
       const invalidText = t("cell.invalidMenu", { value: fallbackText });
@@ -1018,8 +1130,19 @@ function renderGridCellValue(record, column, cell) {
       rememberEdit(history);
       cell.classList.toggle("cell-modified", Boolean(pendingCell(record, column.eng_name)));
       cell.classList.remove("cell-invalid");
-      cell.title = pendingCell(record, column.eng_name) ? `已修改（原值: ${nextVal}），Ctrl+S 保存` : `${nextVal === "1" ? "1（是）" : "0（否）"}`;
+      cell.title = pendingCell(record, column.eng_name) ? `已修改（原值: ${nextVal}），Ctrl+S 保存` : `${nextVal === "1" ? t("bool.intTrue") : t("bool.intFalse")}`;
       scheduleChartDraw();
+    };
+    input.onkeydown = (event) => {
+      if ((event.key === "Delete" || event.key === "Backspace") && !column.primary_key && !state.busy) {
+        event.preventDefault(); event.stopPropagation();
+        const history = editSnapshot();
+        setPendingCell(record, column, "");
+        rememberEdit(history);
+        renderGridCellValue(record, column, cell);
+        cell.querySelector(".cell-toggle")?.focus({ preventScroll: true });
+        scheduleChartDraw();
+      }
     };
     cell.replaceChildren(input);
   } else {
@@ -1054,7 +1177,7 @@ function syncGridCell(record, field) {
 function columnMenuEntries(column) {
   if (isTimeDisplayColumn(column)) return [];
   if (isIntBoolDisplayColumn(column)) {
-    return [{ value: "0", label: "0（否）" }, { value: "1", label: "1（是）" }];
+    return [{ value: "0", label: t("bool.intFalse") }, { value: "1", label: t("bool.intTrue") }];
   }
   if (isMenuDisplayColumn(column)) {
     return parseMenuDict(column?.disp_menu).map((item) => ({
@@ -1073,7 +1196,7 @@ function columnMenuOptions(column) {
 function inlineCellInput(record, column, index, cell, initialText = null) {
   const kind = columnKind(column);
   if (isReadOnlyKey(record, column) || objectTypes.has(kind) && !record.draftId) return false;
-  if (isTimeDisplayColumn(column) && initialText === null) {
+  if (isTimeDisplayColumn(column) && currentValueDisplayMode() === "display" && initialText === null) {
     openTimeEditDialog(record, column, cell);
     return true;
   }
@@ -1144,6 +1267,9 @@ function tab(name) {
     const active = button.dataset.tab === name; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active));
   });
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
+  if (name === "schema" && state.definition && !state.schemaRendered) {
+    renderSchema(state.definition);
+  }
   if (name === "data") requestAnimationFrame(drawChart);
 }
 function bottomTab(name) {
@@ -1153,7 +1279,7 @@ function bottomTab(name) {
     const panel = el(button.getAttribute("aria-controls")); panel.classList.toggle("active", active); panel.hidden = !active;
     el(`${button.dataset.bottomTab}-actions`).hidden = !active;
   });
-  if (name === "logs") run(async () => { await loadLogConfig(); await loadAuditLogs(); });
+  if (name === "logs") run(async () => { await loadAuditLogs(); });
   if (name === "chart") requestAnimationFrame(drawChart);
 }
 function filteredTables() {
@@ -1347,12 +1473,14 @@ async function resetQuickFilter() {
   await queryRows({ sql, order: null, reset: true });
   syncQuickFilterValueControl();
 }
-async function selectTable(name) {
+async function selectTable(name, { forceSchema = false } = {}) {
   if (!state.database) throw new Error("请先选择或新建数据库");
   state.queryVersion = null;
   const item = state.tables.find((entry) => entry.name === name);
   if (item?.orphan || item?.selectable === false) throw new Error(item.error || `表 ${name} 缺少可用的 SQLite 结构定义`);
-  const result = await request(tablePath("schema", name));
+  const result = (!forceSchema && item?.definition && item?.schema_version && item.row_count != null)
+    ? { definition: item.definition, version: item.schema_version, row_count: item.row_count }
+    : await request(tablePath("schema", name));
   state.table = name; state.definition = result.definition; state.version = result.version; state.tableTotal = result.row_count; state.schemaDirty = false;
   renderCurrentDatabaseFile();
   loadSqlHistory();
@@ -1365,7 +1493,10 @@ async function selectTable(name) {
   el("current-table").textContent = `${chineseName(state.definition.head)} / ${name}`;
   el("table-meta").textContent = `${state.definition.columns.length} 个字段 · 主键 ${state.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name).join(" + ")}`;
   configureQuickFilter();
-  renderTables(); renderFields(); renderSchema(state.definition); await queryRows();
+  state.schemaRendered = false;
+  renderTables(); renderFields();
+  if (el("tab-schema")?.classList.contains("active")) renderSchema(state.definition);
+  await queryRows();
   updateRecordsToolbar();
   if (!isReadOnlyDatabase()) await localDrafts.offer();
 }
@@ -1397,6 +1528,19 @@ function resetSelection() {
   configureQuickFilter();
   renderGrid(); renderFields(); configureChart(); renderTables(); updateRecordsToolbar();
 }
+function insertTextAtSqlCursor(snippet) {
+  const input = el("sql-editor");
+  if (!input) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  const before = input.value.slice(0, start), after = input.value.slice(end);
+  const needSpaceBefore = before && !/[\s(,=]$/.test(before);
+  const inserted = (needSpaceBefore ? " " : "") + snippet;
+  input.value = before + inserted + after;
+  const nextPos = start + inserted.length;
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(nextPos, nextPos);
+}
 function renderFields() {
   keepKeyFieldsVisible();
   const target = el("field-list"); target.replaceChildren();
@@ -1404,8 +1548,15 @@ function renderFields() {
     const label = node("label", null, "field-item"); const checkbox = node("input"); checkbox.type = "checkbox";
     checkbox.checked = state.fields.has(column.eng_name); checkbox.setAttribute("aria-label", `显示 ${column.eng_name}`);
     checkbox.disabled = Boolean(column.primary_key);
-    if (column.primary_key) label.title = "KEY 主键列：始终显示并冻结在左侧，可选择，不可修改";
+    label.title = column.primary_key
+      ? "KEY 主键列：始终显示并冻结在左侧；双击插入字段名到 SQL"
+      : `${column.eng_name}（${column.data_type || "str"}）；双击插入到 SQL`;
     checkbox.onchange = () => { if (checkbox.checked) state.fields.add(column.eng_name); else state.fields.delete(column.eng_name); renderGrid(); updateFieldCount(); };
+    label.ondblclick = (event) => {
+      if (event.target === checkbox) return;
+      event.preventDefault();
+      insertTextAtSqlCursor(quoteSqlIdent(column.eng_name));
+    };
     const type = node("small", displayColumnType(column), "field-type");
     type.title = `数据类型：${column.data_type || "str"}`;
     label.append(checkbox, node("span", chineseName(column)), node("small", column.eng_name, "field-name-eng"), type, node("b", column.primary_key ? "PK" : "", "key-tag"));
@@ -1549,23 +1700,57 @@ function focusFirstContextItem(menu) {
     .find((btn) => !btn.hidden && !btn.disabled && !btn.closest("[hidden]"));
   (first || menu).focus({ preventScroll: true });
 }
+function closeAllContextMenus(except = null) {
+  if (except !== "row") closeRowContextMenu();
+  if (except !== "chart") closeChartContextMenu();
+  if (except !== "schema") closeSchemaContextMenu();
+  if (except !== "sidebar") closeSidebarContextMenu();
+}
 function bindContextMenuNavigation(menu, onClose) {
   if (!menu) return;
+  let hoverTimer = null;
+  let hoverOpenedGroup = null;
+  let hoverOpenedAt = 0;
   menu.addEventListener("pointermove", (event) => {
     const group = event.target.closest(".menu-group");
     if (group && menu.contains(group)) {
-      if (!group.classList.contains("is-open")) openContextSubmenu(menu, group, false);
+      if (group.classList.contains("is-open")) {
+        clearTimeout(hoverTimer); hoverTimer = null;
+        return;
+      }
+      if (hoverOpenedGroup === group && hoverTimer !== null) return;
+      clearTimeout(hoverTimer);
+      hoverOpenedGroup = group;
+      hoverTimer = setTimeout(() => {
+        hoverTimer = null;
+        if (!menu.hidden && group.isConnected) {
+          openContextSubmenu(menu, group, false);
+          hoverOpenedAt = performance.now();
+        }
+      }, 90);
       return;
     }
-    if (event.target.closest(":scope > button")) closeContextSubmenus(menu);
+    if (event.target.closest(":scope > button")) {
+      clearTimeout(hoverTimer); hoverTimer = null; hoverOpenedGroup = null;
+      closeContextSubmenus(menu);
+    }
+  });
+  menu.addEventListener("pointerleave", () => {
+    clearTimeout(hoverTimer); hoverTimer = null; hoverOpenedGroup = null;
   });
   menu.addEventListener("click", (event) => {
     const trigger = event.target.closest(".menu-trigger");
     if (!trigger || trigger.disabled) return;
     event.stopPropagation();
+    clearTimeout(hoverTimer); hoverTimer = null;
     const group = trigger.closest(".menu-group");
-    if (group.classList.contains("is-open")) closeContextSubmenus(menu);
-    else openContextSubmenu(menu, group, false);
+    // 防止刚悬停展开就点击父项导致子菜单闪烁关闭
+    if (group.classList.contains("is-open")) {
+      if (hoverOpenedGroup === group && performance.now() - hoverOpenedAt < 320) return;
+      closeContextSubmenus(menu);
+    } else {
+      openContextSubmenu(menu, group, false);
+    }
   });
   menu.addEventListener("keydown", (event) => {
     if (event.key === "Tab") { onClose(true); return; }
@@ -1615,6 +1800,7 @@ function closeRowContextMenu(restoreFocus = false) {
 function openRowContextMenu(event, record, index) {
   event.preventDefault(); event.stopPropagation();
   if (state.busy) return;
+  closeAllContextMenus("row");
   const cell = event.target.closest("td[data-cell-field]");
   if (cell && !state.selected.has(index) && !state.selectedColumns.has(cell.dataset.cellField) && !state.selectedCells.has(cellSelectionKey(index, cell.dataset.cellField))) {
     selectGridCells(index, Number(cell.dataset.cellColumn), index, Number(cell.dataset.cellColumn));
@@ -1967,7 +2153,37 @@ function paintGridSelection() {
   });
   const model = boxModel || gridSelectionModel();
   const count = state.selectedCells.size || (model ? model.rows.length * model.columns.length : 0);
-  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "";
+  let statsSuffix = "";
+  if (count >= 2 && model) {
+    let numCount = 0, sum = 0, min = Infinity, max = -Infinity;
+    const maxSample = 2000;
+    const visit = (rowIdx, field) => {
+      if (numCount >= maxSample) return;
+      const rec = state.records[rowIdx];
+      if (!rec) return;
+      const val = chartNumber(rec.row[field]);
+      if (val === null || !Number.isFinite(val)) return;
+      numCount += 1;
+      sum += val;
+      if (val < min) min = val;
+      if (val > max) max = val;
+    };
+    if (state.selectedCells.size) {
+      for (const key of state.selectedCells) {
+        const { index: rowIdx, field } = splitCellSelectionKey(key);
+        visit(rowIdx, field);
+      }
+    } else {
+      for (const rowIdx of model.rows) {
+        for (const col of model.columns) visit(rowIdx, col.eng_name);
+      }
+    }
+    if (numCount >= 2) {
+      const fmt = (n) => Number(n.toPrecision(6)).toString();
+      statsSuffix = ` · ${t("grid.selStats", { avg: fmt(sum / numCount), min: fmt(min), max: fmt(max), sum: fmt(sum) })}`;
+    }
+  }
+  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格${statsSuffix}` : "";
   updateRecordsToolbar();
   updateAutoRefreshStatus();
 }
@@ -2049,6 +2265,37 @@ function renderGrid(windowOnly=false) {
             : direction === "ASC" ? { column: column.eng_name, direction: "DESC" } : null;
           await queryRows({ reset: true, order: nextOrder });
         });
+        if (!virtualGrid.active) {
+          const widthKey = `${state.table || "_"}:${column.eng_name}`;
+          const savedW = loadColumnWidths()[widthKey];
+          if (savedW) { header.style.width = `${savedW}px`; header.style.minWidth = `${savedW}px`; }
+          const resizer = node("span", null, "col-resize-handle");
+          resizer.setAttribute("aria-hidden", "true");
+          resizer.onclick = (event) => event.stopPropagation();
+          resizer.ondblclick = (event) => {
+            event.stopPropagation();
+            header.style.width = ""; header.style.minWidth = "";
+            saveColumnWidth(widthKey, null);
+          };
+          resizer.onpointerdown = (event) => {
+            event.preventDefault(); event.stopPropagation();
+            const startX = event.clientX, startW = header.getBoundingClientRect().width;
+            resizer.classList.add("is-resizing");
+            const onMove = (moveEv) => {
+              const nextW = Math.max(56, Math.min(640, Math.round(startW + (moveEv.clientX - startX))));
+              header.style.width = `${nextW}px`; header.style.minWidth = `${nextW}px`;
+            };
+            const onUp = () => {
+              resizer.classList.remove("is-resizing");
+              document.removeEventListener("pointermove", onMove);
+              document.removeEventListener("pointerup", onUp);
+              saveColumnWidth(widthKey, Math.round(header.getBoundingClientRect().width));
+            };
+            document.addEventListener("pointermove", onMove);
+            document.addEventListener("pointerup", onUp);
+          };
+          header.append(resizer);
+        }
         if (el("chinese-columns").checked && chineseName(column) !== column.eng_name) header.append(node("small", column.eng_name)); head.append(header);
       });
       thead.append(head); grid.append(thead);
@@ -2493,23 +2740,39 @@ function schemaFormValue(withMeta = false) {
         try {
           const parsed = JSON.parse(String(column.disp_menu));
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("必须为 JSON 对象");
+          for (const key of Object.keys(parsed)) {
+            const trimmed = String(key).trim();
+            if (!/^-?\d+$/.test(trimmed)) throw new Error(`菜单 Key "${key}" 必须为整数`);
+            const big = BigInt(trimmed);
+            if (big < -(2n ** 63n) || big >= 2n ** 63n) throw new Error(`菜单 Key "${key}" 超出 64 位整数范围`);
+          }
         } catch (error) {
           throw new Error(`${column.eng_name} 菜单选项格式无效（${error.message}），请双击选项列重新配置`);
         }
       }
       if (column.disp_type === CHOICE_DISPLAY_TYPE && isChoiceSchemaType(column.data_type) && String(column.disp_menu || "").trim()) {
         try {
-          const parsed = JSON.parse(String(column.disp_menu));
-          if (!Array.isArray(parsed)) throw new Error("必须为 JSON 数组");
+          const rawChoice = String(column.disp_menu).trim();
           const isInt = isIntegerSchemaType(column.data_type);
           const seen = new Set();
-          for (const item of parsed) {
-            if (isInt) {
-              if (typeof item !== "number" || !Number.isInteger(item)) throw new Error("整数类型字段的选择选项只能为整数");
-              const key = String(item);
+          if (isInt) {
+            const exactTokens = parseIntegerJsonArrayTokens(rawChoice);
+            if (exactTokens === null) {
+              const parsed = JSON.parse(rawChoice);
+              if (!Array.isArray(parsed)) throw new Error("必须为 JSON 数组");
+              throw new Error("整数类型字段的选择选项只能为整数");
+            }
+            for (const token of exactTokens) {
+              const big = BigInt(token);
+              if (big < -(2n ** 63n) || big >= 2n ** 63n) throw new Error(`选项 "${token}" 超出 64 位整数范围`);
+              const key = big.toString();
               if (seen.has(key)) throw new Error(`选项 "${key}" 重复`);
               seen.add(key);
-            } else {
+            }
+          } else {
+            const parsed = JSON.parse(rawChoice);
+            if (!Array.isArray(parsed)) throw new Error("必须为 JSON 数组");
+            for (const item of parsed) {
               if (typeof item !== "string") throw new Error("字符串类型字段的选择选项只能为字符串");
               if (seen.has(item)) throw new Error(`选项 "${item}" 重复`);
               seen.add(item);
@@ -2596,8 +2859,15 @@ function isLockedNativeField(_row, _property) {
 }
 function updateSchemaLocks() {
   const readOnly = isReadOnlyDatabase();
-  for (const id of ["new-table", "save-schema", "add-column", "schema-name", "schema-label", "delete-schema"]) {
-    el(id).disabled = !state.database || readOnly;
+  for (const id of ["new-table", "save-schema", "add-column", "schema-name", "schema-label", "delete-schema", "schema-preview-btn"]) {
+    if (el(id)) el(id).disabled = !state.database || readOnly;
+  }
+  if (el("schema-indexes-btn")) {
+    el("schema-indexes-btn").disabled = !state.database || readOnly || isNativeDatabase();
+    el("schema-indexes-btn").title = isNativeDatabase() ? "原生 SQLite 的索引由原表定义" : "";
+  }
+  for (const btn of el("schema-fields").querySelectorAll(".schema-row-actions button")) {
+    btn.disabled = readOnly;
   }
   const deleteSchemaButton = el("delete-schema");
   if (!deleteSchemaButton.disabled && (!state.table || state.tableTotal > 0)) {
@@ -2664,14 +2934,56 @@ function updateSchemaLocks() {
   }
   updateRecordsToolbar();
 }
-function renderSchema(definition) {
-  const originalIndexNames=Object.fromEntries(definition.columns.map(column=>[column.eng_name,column.__original_name||column.eng_name]));
-  state.schemaIndexes=definition.indexes==null?null:definition.indexes.map(fields=>fields.map(name=>originalIndexNames[name]||name));
-  el("schema-name").value = definition.head.eng_name; el("schema-label").value = chineseName(definition.head); el("schema-name").disabled = false;
-  const grid = node("table"), head = node("tr"), thead = node("thead"), body = node("tbody");
-  for (const label of ["英文名", "中文名", "类型", "主键", "默认值", "显示类型", "选项 / 格式"]) head.append(node("th", label));
-  thead.append(head); grid.append(thead);
-  for (const column of definition.columns) {
+const COLUMN_WIDTHS_STORAGE_KEY = "rtdb.grid.colWidths.v1";
+let columnWidthsCache = null;
+function loadColumnWidths() {
+  if (columnWidthsCache) return columnWidthsCache;
+  try { columnWidthsCache = JSON.parse(localStorage.getItem(COLUMN_WIDTHS_STORAGE_KEY) || "{}") || {}; } catch { columnWidthsCache = {}; }
+  return columnWidthsCache;
+}
+function saveColumnWidth(key, width) {
+  const map = loadColumnWidths();
+  if (width == null) delete map[key];
+  else {
+    map[key] = width;
+    const keys = Object.keys(map);
+    if (keys.length > 200) delete map[keys[0]];
+  }
+  try { localStorage.setItem(COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(map)); } catch { /* 忽略本地存储异常 */ }
+}
+function filterSchemaFieldRows() {
+  const keyword = (el("schema-field-filter")?.value || "").trim().toLowerCase();
+  for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
+    if (!keyword) { row.hidden = false; continue; }
+    const eng = (row.querySelector('[data-property="eng_name"]')?.value || "").toLowerCase();
+    const chn = (row.querySelector('[data-property="chn_name"]')?.value || "").toLowerCase();
+    row.hidden = !eng.includes(keyword) && !chn.includes(keyword);
+  }
+}
+function bindSchemaInputKeyNav(input, row) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation();
+      if (input.dataset.originalValue !== undefined) {
+        input.value = input.dataset.originalValue;
+        input.closest("td")?.classList.remove("schema-modified");
+      }
+      row.dataset.editing = "false"; updateSchemaLocks(); input.blur();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const prop = input.dataset.property, nextRow = row.nextElementSibling;
+      row.dataset.editing = "false"; updateSchemaLocks();
+      if (nextRow && prop) {
+        const nextInput = nextRow.querySelector(`[data-property="${prop}"]`);
+        if (nextInput && nextInput.tagName === "INPUT" && !nextInput.readOnly && !isReadOnlyDatabase()) {
+          nextRow.dataset.editing = "true"; updateSchemaLocks(); nextInput.disabled = false;
+          nextInput.focus({ preventScroll: true }); if (nextInput.select) nextInput.select();
+        }
+      }
+    }
+  });
+}
+function createSchemaFieldRow(column) {
     const row = node("tr"); row.addEventListener("contextmenu", (event) => openSchemaContextMenu(event, row));
     // 保持文本格双击编辑、单击选中，同时允许 Tab 在同一编辑行内切换而不失焦锁死。
     row.addEventListener("focusout", (event) => {
@@ -2923,7 +3235,7 @@ function renderSchema(definition) {
             return;
           }
           const currentInput = cell.querySelector('input[data-property="disp_menu"]:not([type="hidden"])');
-          if (!currentInput) return;
+          if (!currentInput || currentInput.classList.contains("schema-menu-none")) return;
           row.dataset.editing = "true"; updateSchemaLocks(); currentInput.disabled = false; currentInput.focus({ preventScroll: true });
           if (currentInput.select) currentInput.select();
         };
@@ -2993,6 +3305,7 @@ function renderSchema(definition) {
         cell.classList.toggle("schema-modified", current !== input.dataset.originalValue);
       };
       input.oninput = update; input.onchange = update;
+      if (!directEdit) bindSchemaInputKeyNav(input, row);
       cell.ondblclick = (event) => {
         event.preventDefault(); event.stopPropagation();
         if (isReadOnlyDatabase() || isLockedNativeField(row, property)) return;
@@ -3001,10 +3314,31 @@ function renderSchema(definition) {
       };
       cell.append(input); row.append(cell);
     }
+    const actCell = node("td");
+    const actBar = node("div", null, "schema-row-actions");
+    const moveUp = node("button", "↑", "ghost"); moveUp.type = "button"; moveUp.title = "上移字段"; moveUp.setAttribute("aria-label", "上移字段");
+    moveUp.onclick = () => { if (!isReadOnlyDatabase() && row.previousElementSibling) { row.parentElement.insertBefore(row, row.previousElementSibling); schemaChanged(); } };
+    const moveDown = node("button", "↓", "ghost"); moveDown.type = "button"; moveDown.title = "下移字段"; moveDown.setAttribute("aria-label", "下移字段");
+    moveDown.onclick = () => { if (!isReadOnlyDatabase() && row.nextElementSibling) { row.parentElement.insertBefore(row.nextElementSibling, row); schemaChanged(); } };
+    const delBtn = node("button", "×", "ghost is-delete"); delBtn.type = "button"; delBtn.title = "移除字段"; delBtn.setAttribute("aria-label", "移除字段");
+    delBtn.onclick = () => { if (!isReadOnlyDatabase()) { row.remove(); schemaChanged(); notice("字段已移除，保存结构后正式生效"); } };
+    actBar.append(moveUp, moveDown, delBtn);
+    actCell.append(actBar);
+    row.append(actCell);
     renderMenuControl(initialMenuNormalized, true);
     renderDefaultControl(initialDefaultRaw, true);
-    body.append(row);
-  }
+    return row;
+}
+function renderSchema(definition) {
+  state.schemaRendered = true;
+  const originalIndexNames=Object.fromEntries(definition.columns.map(column=>[column.eng_name,column.__original_name||column.eng_name]));
+  state.schemaIndexes=definition.indexes==null?null:definition.indexes.map(fields=>fields.map(name=>originalIndexNames[name]||name));
+  el("schema-name").value = definition.head.eng_name; el("schema-label").value = chineseName(definition.head); el("schema-name").disabled = false;
+  if (el("schema-field-filter")) el("schema-field-filter").value = "";
+  const grid = node("table"), head = node("tr"), thead = node("thead"), body = node("tbody");
+  for (const label of ["英文名", "中文名", "类型", "主键", "默认值", "显示类型", "选项 / 格式", "操作"]) head.append(node("th", label));
+  thead.append(head); grid.append(thead);
+  for (const column of definition.columns) body.append(createSchemaFieldRow(column));
   grid.append(body); el("schema-fields").replaceChildren(grid); updateSchemaLocks();
 }
 
@@ -3043,11 +3377,21 @@ function appendMenuOptionRow(tbody, keyVal = "", valueText = "", focusTarget = n
     renderMenuOptionsEmptyRow(tbody);
     el("menu-options-error").textContent = "";
   };
-  const onEnter = (event) => {
-    if (event.key === "Enter") { event.preventDefault(); el("menu-options-apply").click(); }
+  const onKeyNav = (col) => (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault(); el("menu-options-apply").click();
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (col === "key") { valInput.focus({ preventScroll: true }); valInput.select(); return; }
+    const nextRow = tr.nextElementSibling;
+    const nextKey = nextRow?.querySelector('input[data-menu-col="key"]');
+    if (nextKey) { nextKey.focus({ preventScroll: true }); nextKey.select(); }
+    else appendMenuOptionRow(tbody, nextMenuIntegerKey(tbody), "", "value");
   };
-  keyInput.onkeydown = onEnter;
-  valInput.onkeydown = onEnter;
+  keyInput.onkeydown = onKeyNav("key");
+  valInput.onkeydown = onKeyNav("value");
   keyTd.append(keyInput);
   valTd.append(valInput);
   actTd.append(delBtn);
@@ -3163,7 +3507,15 @@ function appendChoiceOptionRow(tbody, val = "", isInt = false, autoFocus = false
   valInput.value = val;
   valInput.setAttribute("aria-label", isInt ? "待选择值（整数）" : "待选择值（文本）");
   valInput.onkeydown = (event) => {
-    if (event.key === "Enter") { event.preventDefault(); el("choice-options-apply").click(); }
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault(); el("choice-options-apply").click();
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const nextInput = tr.nextElementSibling?.querySelector('input[data-choice-col="value"]');
+    if (nextInput) { nextInput.focus({ preventScroll: true }); nextInput.select(); }
+    else appendChoiceOptionRow(tbody, isInt ? nextChoiceIntegerValue(tbody) : "", isInt, true);
   };
   const delBtn = node("button", "删除", "danger-outline small");
   delBtn.type = "button";
@@ -3287,7 +3639,8 @@ function refreshTimeEditPreview() {
     rawEl.textContent = "NULL";
     return;
   }
-  const ts = datetimeLocalToTimestamp(dtInput.value, msInput.value, unit);
+  const subMs = timeEditDialogState?.unit === unit ? (timeEditDialogState.subMs || 0n) : 0n;
+  const ts = datetimeLocalToTimestamp(dtInput.value, msInput.value, unit, subMs);
   if (ts == null) {
     displayEl.textContent = "—";
     rawEl.textContent = "—";
@@ -3303,8 +3656,9 @@ function openTimeEditDialog(record, column, cell) {
   const pending = pendingCell(record, column.eng_name);
   const raw = pending?.raw ?? cellText(record.row[column.eng_name]);
   const unit = detectTimestampUnit(raw, column);
+  const subMs = extractSubMsOffset(raw, unit);
   const date = timestampToDate(raw);
-  timeEditDialogState = { record, column, cell };
+  timeEditDialogState = { record, column, cell, unit, subMs };
   const label = el("chinese-columns")?.checked ? chineseName(column) : column.eng_name;
   el("time-edit-title").textContent = `修改时间 · ${label}`;
   el("time-edit-error").textContent = "";
@@ -3324,13 +3678,21 @@ function openTimeEditDialog(record, column, cell) {
 function commitTimeEditValue(nextRaw) {
   if (!timeEditDialogState) return;
   const { record, column, cell } = timeEditDialogState;
+  const liveCell = gridCells.get(record)?.get(column.eng_name) || (cell?.isConnected ? cell : null);
   const history = editSnapshot();
   setPendingCell(record, column, nextRaw);
   rememberEdit(history);
-  renderGridCellValue(record, column, cell);
+  if (liveCell) renderGridCellValue(record, column, liveCell);
   scheduleChartDraw();
   el("time-edit-dialog")?.close();
-  cell?.focus({ preventScroll: true });
+}
+if (el("time-edit-dialog")) {
+  el("time-edit-dialog").addEventListener("close", () => {
+    const target = timeEditDialogState
+      ? (gridCells.get(timeEditDialogState.record)?.get(timeEditDialogState.column.eng_name) || timeEditDialogState.cell)
+      : null;
+    if (target?.isConnected) target.focus({ preventScroll: true });
+  });
 }
 if (el("time-edit-datetime")) {
   el("time-edit-datetime").oninput = refreshTimeEditPreview;
@@ -3390,7 +3752,8 @@ if (el("time-edit-apply")) {
         return;
       }
     }
-    const ts = datetimeLocalToTimestamp(dtVal, msRaw, unit);
+    const subMs = timeEditDialogState?.unit === unit ? (timeEditDialogState.subMs || 0n) : 0n;
+    const ts = datetimeLocalToTimestamp(dtVal, msRaw, unit, subMs);
     if (ts == null) {
       err.textContent = "请输入有效的日期与时间";
       el("time-edit-datetime").focus({ preventScroll: true });
@@ -3407,6 +3770,7 @@ function closeSchemaContextMenu(restoreFocus = false) {
 function openSchemaContextMenu(event, row) {
   event.preventDefault(); event.stopPropagation();
   if (state.busy) return;
+  closeAllContextMenus("schema");
   state.schemaContextRow = row;
   const menu = el("schema-context-menu"); menu.hidden = false; menu.scrollTop = 0;
   const indexes = menu.querySelector('[data-schema-action="indexes"]');
@@ -3435,6 +3799,7 @@ function closeSidebarContextMenu(restoreFocus = false) {
 function openSidebarContextMenu(event, scope = "tables") {
   event.preventDefault(); event.stopPropagation();
   if (state.busy) return;
+  closeAllContextMenus("sidebar");
   state.sidebarContextScope = scope;
   state.sidebarContextTrigger = event.target.closest("[tabindex]") || el(scope === "fields" ? "field-list" : "table-list");
   const menu = el("sidebar-context-menu");
@@ -3826,8 +4191,26 @@ function drawChart() {
   const visibleSeries = model.series.filter((series) => !state.chartHidden.has(series.key));
   const values = visibleSeries.flatMap((series) => series.points.map((point) => point.value)).filter(Number.isFinite);
   const available = visibleSeries.length && model.labels.length && values.length;
-  el("chart-empty").textContent = model.series.length && !visibleSeries.length ? t("chart.allHidden") : t("chart.empty");
-  el("chart-empty").hidden = Boolean(available); canvas.hidden = !available;
+  const emptyBox = el("chart-empty");
+  emptyBox.replaceChildren();
+  emptyBox.append(node("span", model.series.length && !visibleSeries.length ? t("chart.allHidden") : t("chart.empty")));
+  if (!available && !model.series.length && state.records.length && numericChartColumns().length) {
+    const quickBtn = action(t("chart.quickPlot"), () => {
+      const cols = numericChartColumns().slice(0, 4);
+      if (!cols.length) return;
+      state.chartPinned = false;
+      state.chartCleared = false;
+      state.chartMode = "columns";
+      el("chart-mode").value = "columns";
+      state.chartFields = new Set(cols.map((c) => c.eng_name));
+      state.selected = new Set(state.records.map((_r, idx) => idx));
+      state.selectedColumns.clear(); state.selectedCells.clear();
+      paintGridSelection();
+      drawChart();
+    }, "secondary small chart-quick-plot");
+    emptyBox.append(node("br"), quickBtn);
+  }
+  emptyBox.hidden = Boolean(available); canvas.hidden = !available;
   if (!available) { state.chartFrame = null; state.chartHits = []; return; }
   // Keep the chosen font size and a usable plot when a large title needs more height.
   if (state.chartTitle && canvas.clientHeight < chartTitleSpace() + 136) chartLayout.expand();
@@ -3869,16 +4252,25 @@ function drawChart() {
     const hasRightAxis = visibleSeries.some((series) => series.axis === "right");
     const showHorizontalGrid = (hasLeftAxis && state.chartAxisSettings.left.showGrid !== false) ||
       (hasRightAxis && state.chartAxisSettings.right.showGrid !== false);
+    const formatAxisTick = (val, span) => {
+      if (!Number.isFinite(val)) return "";
+      const absSpan = Math.abs(span);
+      if (absSpan >= 10000 || (absSpan > 0 && absSpan < 0.001)) return Number(val.toPrecision(5)).toString();
+      const decimals = absSpan >= 100 ? 0 : absSpan >= 10 ? 1 : absSpan >= 1 ? 2 : 3;
+      return val.toFixed(decimals);
+    };
+    const leftSpan = ranges.left.max - ranges.left.min;
+    const rightSpan = ranges.right ? ranges.right.max - ranges.right.min : 0;
     for (let tick = 0; tick <= 5; tick++) {
-      const value = ranges.left.min + (ranges.left.max - ranges.left.min) * tick / 5, y = pointY(value, "left");
+      const value = ranges.left.min + leftSpan * tick / 5, y = pointY(value, "left");
       if (showHorizontalGrid) {
         offscreen.save();
         offscreen.setLineDash([3, 3]);
         offscreen.beginPath(); offscreen.moveTo(left, y); offscreen.lineTo(width - right, y); offscreen.stroke();
         offscreen.restore();
       }
-      offscreen.fillStyle = theme.axisText; offscreen.textAlign = "right"; offscreen.fillText(Number(value.toPrecision(6)).toString(), left - 9, y + 4);
-      if (ranges.right) { const rightValue = ranges.right.min + (ranges.right.max - ranges.right.min) * tick / 5; offscreen.textAlign = "left"; offscreen.fillText(Number(rightValue.toPrecision(6)).toString(), width - right + 9, y + 4); }
+      offscreen.fillStyle = theme.axisText; offscreen.textAlign = "right"; offscreen.fillText(formatAxisTick(value, leftSpan), left - 9, y + 4);
+      if (ranges.right) { const rightValue = ranges.right.min + rightSpan * tick / 5; offscreen.textAlign = "left"; offscreen.fillText(formatAxisTick(rightValue, rightSpan), width - right + 9, y + 4); }
     }
     offscreen.strokeStyle = theme.axisLine; offscreen.beginPath(); offscreen.moveTo(left, top); offscreen.lineTo(left, height - bottom); offscreen.lineTo(width - right, height - bottom); offscreen.lineTo(width - right, top); offscreen.stroke();
     offscreen.fillStyle = theme.axisText; offscreen.textAlign = "center";
@@ -3907,17 +4299,34 @@ function drawChart() {
     });
     chartStaticKey = staticKey;
   }
-  context.drawImage(chartStaticCanvas, 0, 0, width, height);
   state.chartHits = chartStaticHits;
+  drawChartCursorOverlay();
+}
+function drawChartCursorOverlay() {
+  if (chartOverlayFrame !== null) { cancelAnimationFrame(chartOverlayFrame); chartOverlayFrame = null; }
+  const frame = state.chartFrame;
+  if (!frame || !chartStaticCanvas) return;
+  if (!el("tab-chart").classList.contains("active") || document.documentElement.classList.contains("chart-collapsed")) return;
+  const canvas = el("chart");
+  if (!canvas || canvas.hidden) return;
+  const context = canvas.getContext("2d");
+  const ratio = devicePixelRatio || 1;
+  const { width, height, top, bottom, labels, model, xAt } = frame;
+  const visibleSeries = model.series;
+  const theme = chartThemeTokens();
+  const axisFont = '11px "JetBrains Mono", "Consolas", "Microsoft YaHei", monospace';
+  const uiFont = '11px "Inter", "PingFang SC", "Microsoft YaHei", sans-serif';
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.drawImage(chartStaticCanvas, 0, 0, width, height);
   const cursor = state.chartCursor;
-  if (cursor.index >= 0 && cursor.index < model.labels.length) {
-    const x = pointX(cursor.index);
+  if (cursor.index >= 0 && cursor.index < labels.length) {
+    const x = xAt(cursor.index);
     context.strokeStyle = theme.cursorLine; context.setLineDash([4, 4]); context.beginPath(); context.moveTo(x, top); context.lineTo(x, height - bottom); context.stroke(); context.setLineDash([]);
     const rows = visibleSeries.map((series) => ({ series, point: series.points[cursor.index] })).filter(({ point }) => point && Number.isFinite(point.value));
-    const headerLine = `${state.chartDrag ? "拖拽" : cursor.pinned ? "已固定" : "游标"} · ${model.labels[cursor.index]}`;
+    const headerLine = `${state.chartDrag ? t("chart.dragging") : cursor.pinned ? t("chart.pinned") : t("chart.cursor")} · ${labels[cursor.index]}`;
     const entries = rows.map(({ series, point }) => ({
       color: series.style?.lineColor || series.color,
-      label: `${series.name} [${series.axis === "right" ? "右" : "左"}]${model.ordinal ? ` ${point.label}` : ""}`,
+      label: `${series.name} [${series.axis === "right" ? t("chart.axisRightShort") : t("chart.axisLeftShort")}]${model.ordinal ? ` ${point.label}` : ""}`,
       value: display(point.record.row[point.field])
     }));
     context.font = `600 ${uiFont}`;
@@ -4001,10 +4410,10 @@ function chartPointerMove(event) {
   if (state.chartDrag) { updateChartDrag(event); return; }
   if (state.chartCursor.pinned) return;
   const frame = state.chartFrame; if (!frame) return; const { x, y } = chartCanvasPoint(event);
-  if (x < frame.left || x > frame.left + frame.plotWidth || y < frame.top || y > frame.top + frame.plotHeight) { if (state.chartCursor.index !== -1) { state.chartCursor.index = -1; scheduleChartDraw(); } return; }
+  if (x < frame.left || x > frame.left + frame.plotWidth || y < frame.top || y > frame.top + frame.plotHeight) { if (state.chartCursor.index !== -1) { state.chartCursor.index = -1; scheduleChartOverlay(); } return; }
   const index = frame.labels.length <= 1 ? 0 : Math.max(0, Math.min(frame.labels.length - 1, Math.round((x - frame.left) / frame.plotWidth * (frame.labels.length - 1))));
   if (state.chartCursor.index === index && state.chartCursor.y === y) return;
-  state.chartCursor.index = index; state.chartCursor.y = y; scheduleChartDraw();
+  state.chartCursor.index = index; state.chartCursor.y = y; scheduleChartOverlay();
 }
 function chartPointerDown(event) {
   const frame = state.chartFrame; if (state.busy || !frame || event.button !== 0) return;
@@ -4023,7 +4432,7 @@ function closeChartContextMenu(restoreFocus = false) {
 function openChartContextMenu(event) {
   event.preventDefault(); event.stopPropagation();
   if (state.busy) return;
-  closeRowContextMenu();
+  closeAllContextMenus("chart");
   const menu = el("chart-context-menu"), hasSeries = buildChartModel().series.length > 0;
   menu.querySelector('[data-chart-action="clear-chart"]').disabled = !hasSeries;
   menu.querySelector('[data-chart-action="series-settings"]').disabled = !hasSeries;
@@ -4448,6 +4857,7 @@ for (const id of ["table-list", "field-list"]) {
 }
 bindContextMenuNavigation(el("row-context-menu"), closeRowContextMenu);
 bindContextMenuNavigation(el("sidebar-context-menu"), closeSidebarContextMenu);
+bindContextMenuNavigation(el("schema-context-menu"), closeSchemaContextMenu);
 document.addEventListener("click", (event) => { if (!event.target.closest("#row-context-menu")) closeRowContextMenu(); if (!event.target.closest("#chart-context-menu")) closeChartContextMenu(); if (!event.target.closest("#schema-context-menu")) closeSchemaContextMenu(); if (!event.target.closest("#sidebar-context-menu")) closeSidebarContextMenu(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("row-context-menu").hidden) { event.preventDefault(); closeRowContextMenu(true); } });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el("chart-context-menu").hidden) { event.preventDefault(); closeChartContextMenu(true); } });
@@ -4461,7 +4871,50 @@ document.addEventListener("pointercancel", finishCellSelection);
 window.addEventListener("blur", finishCellSelection);
 window.addEventListener("blur", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
 window.addEventListener("resize", () => { closeRowContextMenu(); closeChartContextMenu(); closeSchemaContextMenu(); closeSidebarContextMenu(); });
-for (const id of ["table-filter", "exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
+let tableFilterTimer = null;
+el("table-filter").addEventListener("input", () => {
+  clearTimeout(tableFilterTimer);
+  tableFilterTimer = setTimeout(renderTables, 120);
+});
+el("table-filter").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && el("table-filter").value) {
+    event.preventDefault();
+    el("table-filter").value = "";
+    renderTables();
+  } else if (event.key === "Enter") {
+    const first = filteredTables().find((item) => !item.orphan && item.selectable !== false);
+    if (first && first.name !== state.table) {
+      event.preventDefault();
+      run(async () => { if (await discardSchema() && await discardCellEdits()) await selectTable(first.name); });
+    }
+  }
+});
+for (const id of ["exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
+if (el("current-database-file")) el("current-database-file").onclick = () => run(() => openDatabaseFileDialog("server"));
+if (el("open-tools-menu")) {
+  el("open-tools-menu").onclick = (event) => {
+    event.stopPropagation();
+    const rect = el("open-tools-menu").getBoundingClientRect();
+    openSidebarContextMenu({
+      preventDefault() {},
+      stopPropagation() {},
+      target: el("open-tools-menu"),
+      clientX: rect.left,
+      clientY: rect.bottom + 6
+    }, "tables");
+  };
+}
+if (el("open-shortcuts")) el("open-shortcuts").onclick = () => el("shortcuts-dialog")?.showModal();
+document.addEventListener("keydown", (event) => {
+  if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.target.closest("input,textarea,select") && !document.querySelector("dialog[open]")) {
+    event.preventDefault();
+    el("shortcuts-dialog")?.showModal();
+  }
+});
+if (el("preview-cell-edits")) el("preview-cell-edits").onclick = () => openEditPreview();
+if (el("schema-indexes-btn")) el("schema-indexes-btn").onclick = () => run(() => schemaTools.openIndexes());
+if (el("schema-preview-btn")) el("schema-preview-btn").onclick = () => run(() => schemaTools.preview());
+if (el("schema-field-filter")) el("schema-field-filter").oninput = filterSchemaFieldRows;
 el("table-list").addEventListener("keydown", (event) => {
   if (!["ArrowDown", "ArrowUp"].includes(event.key) || state.busy) return;
   const selectable = filteredTables().filter((item) => !item.orphan && item.selectable !== false);
@@ -4617,11 +5070,24 @@ el("upload-database-file").onclick = () => run(uploadDatabaseFile, "database-fil
 el("create-database-file").onclick = () => run(createDatabaseFile);
 el("schema-name").oninput = schemaChanged; el("schema-label").oninput = schemaChanged;
 el("add-column").onclick = () => run(() => {
-  const definition = schemaFormValue(true), names = new Set(definition.columns.map((column) => column.eng_name));
-  let number = definition.columns.length + 1;
-  while (names.has(`field_${number}`)) number++;
-  definition.columns.push({ eng_name: `field_${number}`, chn_name: "新字段", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" });
-  renderSchema(definition); schemaChanged();
+  const tbody = el("schema-fields").querySelector("tbody");
+  if (!tbody) {
+    renderSchema({ head: { eng_name: el("schema-name").value.trim(), chn_name: el("schema-label").value.trim() }, columns: [{ eng_name: "field_1", chn_name: "新字段", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" }] });
+    schemaChanged();
+    return;
+  }
+  const existingNames = new Set([...tbody.querySelectorAll('[data-property="eng_name"]')].map((input) => input.value.trim()));
+  let number = tbody.children.length + 1;
+  while (existingNames.has(`field_${number}`)) number++;
+  const newCol = { eng_name: `field_${number}`, chn_name: "新字段", data_type: "str", primary_key: false, disp_type: "文本", disp_menu: "" };
+  const row = createSchemaFieldRow(newCol);
+  tbody.append(row);
+  row.dataset.editing = "true";
+  updateSchemaLocks();
+  schemaChanged();
+  row.scrollIntoView({ block: "nearest" });
+  const nameInput = row.querySelector('[data-property="eng_name"]');
+  if (nameInput) { nameInput.disabled = false; nameInput.focus({ preventScroll: true }); nameInput.select(); }
 });
 el("save-schema").onclick = () => run(saveSchema);
 el("export-schema").onclick = () => run(() => { const definition = schemaFormValue(); download(JSON.stringify(definition, null, 2), `${definition.head.eng_name || "table"}.schema.json`, "application/json"); });
@@ -4704,7 +5170,7 @@ for (const id of ["log-date", "log-category", "log-status", "log-page-size"]) el
 bindPresetControl(el("log-retention-preset"), el("log-retention-days"));
 el("task-history").onclick = () => run(()=>backgroundTasks.history());
 el("log-keyword").onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); el("query-logs").click(); } };
-el("refresh-logs").onclick = () => run(async () => { await loadLogConfig(); await loadAuditLogs(); });
+el("refresh-logs").onclick = () => run(async () => { await loadAuditLogs(); });
 el("log-prev").onclick = () => run(async () => { if (state.logQuery.page > 1) { state.logQuery.page -= 1; await loadAuditLogs(); } });
 el("log-next").onclick = () => run(async () => { if (state.logQuery.page < state.logQuery.pages) { state.logQuery.page += 1; await loadAuditLogs(); } });
 el("export-logs").onclick = () => {
@@ -4720,6 +5186,9 @@ el("save-log-config").onclick = () => run(async () => {
   notice(retention ? `日志保留期已设置为 ${retention} 天` : "日志已设置为永久保留");
 });
 el("cleanup-logs").onclick = () => run(async () => {
+  const days = Number(state.logConfig?.retention_days ?? el("log-retention-days")?.value ?? 0);
+  const desc = days > 0 ? `将按当前保留策略（${days} 天）永久清理过期操作日志，此操作不可撤销。` : "当前保留策略为永久（0 天），将执行安全检查与空日志归整，确认继续？";
+  if (!await confirmAction("立即清理日志", desc)) return;
   const result = await request("logs/cleanup", "POST", {});
   state.logDates = result.dates || state.logDates; state.logQuery.page = 1;
   renderLogDates(); await loadAuditLogs();
@@ -4752,6 +5221,9 @@ run(async () => {
   try {
     info = await request("info");
   } catch (error) {
+    el("connection").classList.remove("is-connecting", "is-online");
+    el("connection").classList.add("is-error");
+    el("connection").textContent = "连接异常";
     if (!workspacePath || ![400, 403, 404].includes(error.status)) throw error;
     const fallback = new URL(location.href);
     fallback.searchParams.delete("workspace");
@@ -4760,6 +5232,8 @@ run(async () => {
     location.replace(fallback.href);
     return;
   }
+  el("connection").classList.remove("is-connecting", "is-error");
+  el("connection").classList.add("is-online");
   el("connection").textContent = `SQLite ${info.sqlite_version} · WAL / FULL`;
   configureWorkspaceScope(info);
   if (await restoreWorkspaceSelection(info)) return;
