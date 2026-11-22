@@ -830,6 +830,17 @@
     const emptyEl = el("st-chart-empty");
     if (!canvas || !wrap) return;
 
+    const allSeries = state.settings.series || [];
+    state.legendHits = [];
+
+    if (!allSeries.length) {
+      if (emptyEl) {
+        emptyEl.textContent = tr("st.chartEmpty", null, "添加采样点后，后台将按设定周期自动记录并在此实时绘制双轴趋势曲线。");
+        emptyEl.hidden = false;
+      }
+      hideTooltip();
+    }
+
     const rect = wrap.getBoundingClientRect();
     if (rect.width < 20 || rect.height < 20) return;
 
@@ -848,17 +859,7 @@
     ctx.fillStyle = tokens.bg;
     ctx.fillRect(0, 0, width, height);
 
-    const allSeries = state.settings.series || [];
-    state.legendHits = [];
-
-    if (!allSeries.length) {
-      if (emptyEl) {
-        emptyEl.textContent = tr("st.chartEmpty", null, "添加采样点后，后台将按设定周期自动记录并在此实时绘制双轴趋势曲线。");
-        emptyEl.hidden = false;
-      }
-      hideTooltip();
-      return;
-    }
+    if (!allSeries.length) return;
 
     // 1. 绘制顶部流式图例条（参考 SCADA point-trend.js：点击切显隐、右键单曲线菜单）
     const legendTop = 8;
@@ -1382,6 +1383,75 @@
     const next = clone(state.settings);
     next.series = next.series.filter((s) => s.key !== pkey);
     if (state.focusedKey === pkey) state.focusedKey = null;
+    await saveSettings(next);
+  }
+
+  async function addManyFromCells(items, axis = "left") {
+    if (!state.database) throw new Error(tr("st.noDatabase", null, "请先选择数据库"));
+    if (!Array.isArray(items) || !items.length) return [];
+    const next = clone(state.settings);
+    const targetAxis = axis === "right" ? "right" : "left";
+    let added = 0;
+    let updated = 0;
+    for (const raw of items) {
+      const pkey = pointKey(raw.table, raw.key, raw.field);
+      const existing = next.series.find((s) => s.key === pkey);
+      if (existing) {
+        existing.axis = targetAxis;
+        existing.visible = true;
+        updated += 1;
+        continue;
+      }
+      if (next.series.length >= MAX_POINTS) {
+        if (added === 0 && updated === 0) {
+          throw new Error(tr("st.limitReached", { max: MAX_POINTS }, `最多支持定义 ${MAX_POINTS} 个采样点`));
+        }
+        break;
+      }
+      next.series.push({
+        key: pkey,
+        point: { table: raw.table, key: raw.key, field: raw.field },
+        name: raw.name || `${raw.table}[${raw.key.join(",")}].${raw.field}`,
+        unit: raw.unit || "",
+        kind: raw.kind === "switch" ? "switch" : "analog",
+        visible: true,
+        axis: targetAxis,
+        color: pickNextColor(next.series),
+        width: 2
+      });
+      added += 1;
+    }
+    await saveSettings(next, { silent: true });
+    if (state.host?.notice) {
+      state.host.notice(tr(
+        "st.batchAddedNotice",
+        { added, updated, total: added + updated },
+        `已设置 ${added + updated} 个采样点（新增 ${added}，更新 ${updated}）`
+      ));
+    }
+    return next.series;
+  }
+
+  async function removeManyFromCells(keys) {
+    const targetKeys = new Set((keys || []).filter((k) => state.seriesMap.has(k)));
+    if (!targetKeys.size) return;
+    if (targetKeys.size === 1) {
+      await confirmAndRemoveSeries([...targetKeys][0]);
+      return;
+    }
+    const title = tr("st.removeConfirmTitle", null, "移除采样点");
+    const msg = tr(
+      "st.removeManyConfirmMsg",
+      { count: targetKeys.size },
+      `确定移除选中的 ${targetKeys.size} 个采样点？移除后后台将停止对这些点采集。`
+    );
+    const ok = state.host?.confirmAction
+      ? await state.host.confirmAction(title, msg)
+      : window.confirm(msg);
+    if (!ok) return;
+    const next = clone(state.settings);
+    next.series = next.series.filter((s) => !targetKeys.has(s.key));
+    if (state.focusedKey && targetKeys.has(state.focusedKey)) state.focusedKey = null;
     await saveSettings(next);
   }
 
@@ -1995,8 +2065,10 @@
       return state.seriesMap.get(pointKey(table, key, field)) || null;
     },
     addOrUpdateFromCell,
+    addManyFromCells,
     toggleAxisForCell,
     removeFromCell,
+    removeManyFromCells,
     focusPoint,
     refresh() {
       if (!state.database) return;

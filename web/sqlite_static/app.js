@@ -1170,9 +1170,11 @@ function renderGridCellValue(record, column, cell) {
   cell.classList.toggle("cell-sample-point", Boolean(samplePoint));
   if (samplePoint) {
     cell.style.setProperty("--sample-point-color", samplePoint.color);
+    cell.dataset.sampleAxis = samplePoint.axis === "right" ? "R" : "L";
     cell.title = `${cell.title} · 采样点（${samplePoint.axis === "right" ? "右轴" : "左轴"}）`;
   } else {
     cell.style.removeProperty("--sample-point-color");
+    delete cell.dataset.sampleAxis;
   }
 }
 function syncGridCell(record, field) {
@@ -1852,21 +1854,44 @@ function openRowContextMenu(event, record, index) {
     button.title = canPlot ? `${selection.indexes.length} 行 × ${selection.columnCount} 列，${selection.mode === "rows" ? "按行绘制，KEY 为曲线名" : "按列绘制，列名为曲线名"}` : "选区中没有可绘制的数值";
   }
   const stApi = window.rtdbSampleTrends;
-  const canSampleCell = Boolean(
-    stApi && state.database && state.table && record && !record.draftId && record.ref?.key?.length
-    && sampleColumn && stApi.isSampleableType(sampleColumn.data_type)
-  );
-  const existingSample = canSampleCell ? stApi.isSamplePoint(state.table, record.ref.key, sampleColumn.eng_name) : null;
-  setDisabled("sample-add-left", !canSampleCell);
-  setDisabled("sample-add-right", !canSampleCell);
-  setDisabled("sample-locate", !existingSample);
-  setDisabled("sample-switch-axis", !existingSample);
-  setDisabled("sample-remove", !existingSample);
+  const sampleTargets = collectSampleTargets(record, sampleColumn);
+  const existingSamples = sampleTargets
+    .map((item) => ({ item, series: stApi?.isSamplePoint(item.table, item.key, item.field) || null }))
+    .filter((entry) => entry.series);
+  const directSample = (stApi && state.table && record && !record.draftId && record.ref?.key?.length && sampleColumn)
+    ? stApi.isSamplePoint(state.table, record.ref.key, sampleColumn.eng_name)
+    : null;
+  const primaryExisting = directSample
+    ? { item: { table: state.table, key: record.ref.key, field: sampleColumn.eng_name }, series: directSample }
+    : (existingSamples[0] || null);
+  state.contextRecord.sampleTargets = sampleTargets;
+  state.contextRecord.existingSamples = existingSamples;
+  state.contextRecord.primaryExisting = primaryExisting;
+
+  const canSampleAny = Boolean(stApi && state.database && sampleTargets.length);
+  setDisabled("sample-add-left", !canSampleAny);
+  setDisabled("sample-add-right", !canSampleAny);
+  setDisabled("sample-locate", !primaryExisting);
+  setDisabled("sample-switch-axis", !primaryExisting);
+  setDisabled("sample-open-board", !state.database);
+  setDisabled("sample-remove", !existingSamples.length);
+
+  const addLeftBtn = menu.querySelector('[data-action="sample-add-left"]');
+  const addRightBtn = menu.querySelector('[data-action="sample-add-right"]');
   const switchBtn = menu.querySelector('[data-action="sample-switch-axis"]');
-  if (switchBtn && existingSample) {
-    switchBtn.textContent = existingSample.axis === "right" ? "切换采样纵轴（→ 左轴）" : "切换采样纵轴（→ 右轴）";
-  } else if (switchBtn) {
-    switchBtn.textContent = "切换采样纵轴";
+  const removeBtn = menu.querySelector('[data-action="sample-remove"]');
+  const countSuffix = sampleTargets.length > 1 ? `（${sampleTargets.length} 项）` : "";
+  if (addLeftBtn) addLeftBtn.textContent = `${t("st.menuAddLeft")}${countSuffix}`;
+  if (addRightBtn) addRightBtn.textContent = `${t("st.menuAddRight")}${countSuffix}`;
+  if (switchBtn) {
+    switchBtn.textContent = primaryExisting
+      ? (primaryExisting.series.axis === "right" ? `${t("st.menuSwitchAxis")}（→ ${t("chart.leftAxis")}）` : `${t("st.menuSwitchAxis")}（→ ${t("chart.rightAxis")}）`)
+      : t("st.menuSwitchAxis");
+  }
+  if (removeBtn) {
+    removeBtn.textContent = existingSamples.length > 1
+      ? `${t("st.menuRemove")}（${existingSamples.length} 项）`
+      : t("st.menuRemove");
   }
   syncContextSubmenuGroups(menu);
   menu.hidden = false;
@@ -1929,6 +1954,46 @@ async function clearTable() {
   if (!await confirmAction("清空表", `删除 ${state.table} 全部 ${snapshot.count} 条记录（不受当前筛选条件限制）。`, state.table)) return;
   await request(tablePath("clear"), "POST", { confirm: state.table, version: snapshot.version }); log(`清空 ${state.table}`); notice("表已清空"); await queryRows({ reset: true });
 }
+function collectSampleTargets(fallbackRecord, fallbackColumn) {
+  const stApi = window.rtdbSampleTrends;
+  if (!stApi || !state.database || !state.table) return [];
+  const colMap = new Map(state.resultColumns.map((c) => [c.eng_name, c]));
+  const tableLabel = chineseName(state.definition?.head || { eng_name: state.table, chn_name: "" });
+  const results = [];
+  const seen = new Set();
+
+  const pushTarget = (rec, col) => {
+    if (!rec || rec.draftId || !rec.ref?.key?.length || !col || !stApi.isSampleableType(col.data_type)) return;
+    const pkey = stApi.pointKey(state.table, rec.ref.key, col.eng_name);
+    if (seen.has(pkey)) return;
+    seen.add(pkey);
+    const colLabel = col.chn_name || col.eng_name;
+    results.push({
+      table: state.table,
+      key: rec.ref.key,
+      field: col.eng_name,
+      name: `${tableLabel} #${rec.ref.key.join(",")} · ${colLabel}`,
+      kind: stApi.isBoolType(col.data_type) ? "switch" : "analog"
+    });
+  };
+
+  if (state.selectedCells.size) {
+    for (const cellKey of state.selectedCells) {
+      const { index, field } = splitCellSelectionKey(cellKey);
+      pushTarget(state.records[index], colMap.get(field));
+    }
+  } else if (state.selectedColumns.size) {
+    const rows = state.selected.size ? [...state.selected] : state.records.map((_r, idx) => idx);
+    for (const rIdx of rows) {
+      for (const field of state.selectedColumns) pushTarget(state.records[rIdx], colMap.get(field));
+    }
+  } else if (fallbackRecord && fallbackColumn) {
+    pushTarget(fallbackRecord, fallbackColumn);
+  } else if (state.selected.size && fallbackColumn) {
+    for (const rIdx of state.selected) pushTarget(state.records[rIdx], fallbackColumn);
+  }
+  return results;
+}
 function handleRowContextAction(actionName) {
   const context = state.contextRecord; closeRowContextMenu(); if (!context) return;
   const { record, index } = context;
@@ -1949,38 +2014,35 @@ function handleRowContextAction(actionName) {
   else if (actionName === "clear-table") run(clearTable);
   else if (actionName === "chart-left" || actionName === "chart-right") run(() => addSelectionCurves(context.selection, actionName === "chart-left" ? "left" : "right"));
   else if (actionName === "sample-add-left" || actionName === "sample-add-right") run(async () => {
-    const { sampleColumn } = context;
-    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
-    const tableLabel = chineseName(state.definition?.head || { eng_name: state.table, chn_name: "" });
-    const colLabel = sampleColumn.chn_name || sampleColumn.eng_name;
+    const targets = context.sampleTargets || [];
+    if (!targets.length || !window.rtdbSampleTrends) return;
     const axis = actionName === "sample-add-right" ? "right" : "left";
-    const kind = window.rtdbSampleTrends.isBoolType(sampleColumn.data_type) ? "switch" : "analog";
-    await window.rtdbSampleTrends.addOrUpdateFromCell({
-      table: state.table,
-      key: record.ref.key,
-      field: sampleColumn.eng_name,
-      name: `${tableLabel} #${record.ref.key.join(",")} · ${colLabel}`,
-      kind,
-      axis
-    });
+    if (targets.length === 1) {
+      await window.rtdbSampleTrends.addOrUpdateFromCell({ ...targets[0], axis });
+    } else {
+      await window.rtdbSampleTrends.addManyFromCells(targets, axis);
+    }
     renderGrid();
   });
   else if (actionName === "sample-locate") {
-    const { sampleColumn } = context;
-    if (state.table && record?.ref?.key && sampleColumn && window.rtdbSampleTrends) {
-      window.rtdbSampleTrends.focusPoint(state.table, record.ref.key, sampleColumn.eng_name);
+    const primary = context.primaryExisting;
+    if (primary && window.rtdbSampleTrends) {
+      window.rtdbSampleTrends.focusPoint(primary.item.table, primary.item.key, primary.item.field);
     }
   }
+  else if (actionName === "sample-open-board") {
+    tab("sample-trends");
+  }
   else if (actionName === "sample-switch-axis") run(async () => {
-    const { sampleColumn } = context;
-    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
-    await window.rtdbSampleTrends.toggleAxisForCell(state.table, record.ref.key, sampleColumn.eng_name);
+    const primary = context.primaryExisting;
+    if (!primary || !window.rtdbSampleTrends) return;
+    await window.rtdbSampleTrends.toggleAxisForCell(primary.item.table, primary.item.key, primary.item.field);
     renderGrid();
   });
   else if (actionName === "sample-remove") run(async () => {
-    const { sampleColumn } = context;
-    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
-    await window.rtdbSampleTrends.removeFromCell(state.table, record.ref.key, sampleColumn.eng_name);
+    const existing = context.existingSamples || [];
+    if (!existing.length || !window.rtdbSampleTrends) return;
+    await window.rtdbSampleTrends.removeManyFromCells(existing.map((entry) => entry.series.key));
     renderGrid();
   });
 }
@@ -4264,9 +4326,9 @@ function drawChart() {
   const emptyBox = el("chart-empty");
   emptyBox.replaceChildren();
   emptyBox.append(node("span", model.series.length && !visibleSeries.length ? t("chart.allHidden") : t("chart.empty")));
-  if (!available && !model.series.length && state.records.length && numericChartColumns().length) {
+  if (!available && !model.series.length && state.records.length && numericColumns().length) {
     const quickBtn = action(t("chart.quickPlot"), () => {
-      const cols = numericChartColumns().slice(0, 4);
+      const cols = numericColumns().slice(0, 4);
       if (!cols.length) return;
       state.chartPinned = false;
       state.chartCleared = false;
