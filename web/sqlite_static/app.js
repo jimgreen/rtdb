@@ -676,6 +676,185 @@ function setPendingCell(record, column, raw, updateActions = true) {
   }
   if (updateActions) updateEditActions();
 }
+const TIME_DISPLAY_TYPE = "时间类型";
+const MENU_DISPLAY_TYPE = "菜单类型";
+const DEFAULT_TIME_FORMAT = "年-月-日 时:分:秒";
+const TIME_FORMAT_PRESETS = [
+  "年-月-日 时:分:秒",
+  "年-月-日 时:分",
+  "年-月-日",
+  "月-日 时:分:秒",
+  "时:分:秒",
+  "时:分",
+  "年-月-日 时:分:秒.毫秒",
+  "YYYY-MM-DD HH:mm:ss"
+];
+const VALUE_DISPLAY_MODE_KEY = "rtdb.ui.valueDisplayMode";
+function currentValueDisplayMode() {
+  return el("value-display-mode")?.value === "raw" ? "raw" : "display";
+}
+function applyValueDisplayMode(mode, persist = true) {
+  const normalized = mode === "raw" ? "raw" : "display";
+  const select = el("value-display-mode");
+  if (select && select.value !== normalized) select.value = normalized;
+  if (persist) { try { localStorage.setItem(VALUE_DISPLAY_MODE_KEY, normalized); } catch { /* 忽略本地存储异常 */ } }
+}
+function isIntegerSchemaType(kind) {
+  const type = String(kind || "str").toLowerCase();
+  return integerTypes.has(type) || ["uchar", "short", "uint", "ulong", "datetime"].includes(type);
+}
+function isTimeDisplayColumn(column) {
+  if (!column || !isIntegerSchemaType(column.data_type)) return false;
+  const disp = String(column.disp_type || "").trim();
+  const lower = disp.toLowerCase();
+  return disp === TIME_DISPLAY_TYPE || disp === "时间" || lower === "time" || lower === "timestamp";
+}
+function isMenuDisplayColumn(column) {
+  if (!column || !isIntegerSchemaType(column.data_type)) return false;
+  const disp = String(column.disp_type || "").trim();
+  const lower = disp.toLowerCase();
+  return disp === MENU_DISPLAY_TYPE || disp === "菜单" || lower === "menu_dict" || lower === "enum_dict";
+}
+function parseMenuDict(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    return Object.entries(parsed).map(([key, value]) => ({
+      key: String(key).trim(),
+      value: value == null ? "" : String(value)
+    })).filter((item) => item.key !== "");
+  } catch {
+    return [];
+  }
+}
+function serializeMenuEntries(entries) {
+  const dict = {};
+  for (const item of entries) {
+    dict[String(item.key).trim()] = String(item.value ?? "");
+  }
+  return Object.keys(dict).length ? JSON.stringify(dict) : "";
+}
+function formatMenuDictValue(column, rawVal) {
+  if (rawVal == null || rawVal === "") return null;
+  const entries = parseMenuDict(column?.disp_menu);
+  if (!entries.length) return null;
+  const lookup = String(rawVal).trim();
+  const matched = entries.find((item) => item.key === lookup);
+  return matched ? matched.value : null;
+}
+function timestampToDate(value) {
+  if (value == null || value === "") return null;
+  let ms;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    const abs = Math.abs(value);
+    ms = abs >= 1e17 ? value / 1e6 : abs >= 1e14 ? value / 1e3 : abs >= 1e11 ? value : value * 1000;
+  } else {
+    const text = String(value).trim();
+    if (!/^-?\d+$/.test(text)) return null;
+    try {
+      const big = BigInt(text);
+      const abs = big < 0n ? -big : big;
+      if (abs >= 100000000000000000n) ms = Number(big / 1000000n);
+      else if (abs >= 100000000000000n) ms = Number(big / 1000n);
+      else if (abs >= 100000000000n) ms = Number(big);
+      else ms = Number(big) * 1000;
+    } catch { return null; }
+  }
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+function formatTimestampValue(value, format = DEFAULT_TIME_FORMAT) {
+  const date = timestampToDate(value);
+  if (!date) return null;
+  const pad = (num, len = 2) => String(num).padStart(len, "0");
+  const tokens = {
+    YYYY: String(date.getFullYear()),
+    YY: String(date.getFullYear()).slice(-2),
+    MM: pad(date.getMonth() + 1),
+    DD: pad(date.getDate()),
+    HH: pad(date.getHours()),
+    mm: pad(date.getMinutes()),
+    ss: pad(date.getSeconds()),
+    SSS: pad(date.getMilliseconds(), 3),
+    "年": String(date.getFullYear()),
+    "月": pad(date.getMonth() + 1),
+    "日": pad(date.getDate()),
+    "时": pad(date.getHours()),
+    "分": pad(date.getMinutes()),
+    "秒": pad(date.getSeconds()),
+    "毫秒": pad(date.getMilliseconds(), 3)
+  };
+  const pattern = String(format || "").trim() || DEFAULT_TIME_FORMAT;
+  return pattern.replace(/YYYY|YY|MM|DD|HH|mm|ss|SSS|毫秒|年|月|日|时|分|秒/g, (token) => tokens[token] ?? token);
+}
+function detectTimestampUnitFromValue(value) {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  if (!/^-?\d+$/.test(text)) return null;
+  try {
+    const big = BigInt(text);
+    const abs = big < 0n ? -big : big;
+    if (abs >= 100000000000000000n) return "ns";
+    if (abs >= 100000000000000n) return "us";
+    if (abs >= 100000000000n) return "ms";
+    if (abs >= 100000000n) return "s";
+    return null;
+  } catch { return null; }
+}
+function detectTimestampUnit(value, column) {
+  const direct = detectTimestampUnitFromValue(value);
+  if (direct) return direct;
+  if (column && Array.isArray(state.records)) {
+    for (const rec of state.records) {
+      const unit = detectTimestampUnitFromValue(rec?.row?.[column.eng_name]);
+      if (unit) return unit;
+    }
+  }
+  return value != null && String(value).trim() !== "" ? "s" : "ms";
+}
+function dateToDatetimeLocalValue(date) {
+  const pad = (num, len = 2) => String(num).padStart(len, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+function datetimeLocalToTimestamp(localStr, msValue, unit) {
+  const text = String(localStr || "").trim();
+  if (!text) return null;
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const [, yr, mo, dy, hr, mn, sc = "0"] = match;
+  const msNum = unit === "s" ? 0 : Math.max(0, Math.min(999, Math.trunc(Number(msValue) || 0)));
+  const date = new Date(Number(yr), Number(mo) - 1, Number(dy), Number(hr), Number(mn), Number(sc), msNum);
+  const epochMs = date.getTime();
+  if (!Number.isFinite(epochMs)) return null;
+  const bigMs = BigInt(Math.trunc(epochMs));
+  if (unit === "s") return (bigMs / 1000n).toString();
+  if (unit === "us") return (bigMs * 1000n).toString();
+  if (unit === "ns") return (bigMs * 1000000n).toString();
+  return bigMs.toString();
+}
+function formatGridDisplayValue(column, rawVal, fallbackText) {
+  if (rawVal == null || rawVal === "" || currentValueDisplayMode() !== "display") {
+    return { text: fallbackText, formatted: false, invalid: false, invalidDetail: "", rawText: fallbackText };
+  }
+  if (isTimeDisplayColumn(column)) {
+    const formatted = formatTimestampValue(rawVal, column.disp_menu || DEFAULT_TIME_FORMAT);
+    if (formatted != null) return { text: formatted, formatted: true, invalid: false, invalidDetail: "", rawText: fallbackText };
+  } else if (isMenuDisplayColumn(column)) {
+    const entries = parseMenuDict(column.disp_menu);
+    if (entries.length) {
+      const mapped = formatMenuDictValue(column, rawVal);
+      if (mapped != null) return { text: mapped, formatted: true, invalid: false, invalidDetail: "", rawText: fallbackText };
+      const invalidText = t("cell.invalidMenu", { value: fallbackText });
+      const invalidDetail = t("cell.invalidMenuTip", { value: fallbackText });
+      return { text: invalidText, formatted: false, invalid: true, invalidDetail, rawText: fallbackText };
+    }
+  }
+  return { text: fallbackText, formatted: false, invalid: false, invalidDetail: "", rawText: fallbackText };
+}
 function isNumericColumn(column) {
   const kind = columnKind(column);
   return integerTypes.has(kind) || floatTypes.has(kind);
@@ -684,11 +863,13 @@ function renderGridCellValue(record, column, cell) {
   const pending = pendingCell(record, column.eng_name);
   const rawVal = record.row[column.eng_name];
   const isNull = !pending && !record.draftId && rawVal == null;
-  const value = pending ? pending.raw : record.draftId ? cellText(rawVal) : display(rawVal);
+  const baseText = pending ? pending.raw : record.draftId ? cellText(rawVal) : display(rawVal);
+  const formatSource = pending ? pending.raw : rawVal;
+  const shown = isNull ? { text: baseText, formatted: false, invalid: false, invalidDetail: "", rawText: baseText } : formatGridDisplayValue(column, formatSource, baseText);
   cell.classList.toggle("is-numeric", isNumericColumn(column));
   if (state.editable && boolTypes.has(columnKind(column)) && !isReadOnlyKey(record, column)) {
     const input = node("input"); input.type = "checkbox"; input.className = "cell-toggle";
-    input.checked = value === "true" || value === true; input.indeterminate = value === "NULL" || value === "";
+    input.checked = baseText === "true" || baseText === true; input.indeterminate = baseText === "NULL" || baseText === "";
     input.setAttribute("aria-label", `${record.ref?.key.join(" / ") || `新增${record.draftId}`} ${column.eng_name}`);
     input.onchange = () => {
       if (state.busy) { renderGridCellValue(record, column, cell); return; }
@@ -701,11 +882,21 @@ function renderGridCellValue(record, column, cell) {
     };
     cell.replaceChildren(input);
   } else {
-    const span = node("span", value, isNull ? "cell-value cell-null" : "cell-value");
+    const span = node("span", shown.text, isNull ? "cell-value cell-null" : "cell-value");
     cell.replaceChildren(span);
   }
   cell.classList.toggle("cell-modified", Boolean(pending));
-  cell.title = isReadOnlyKey(record, column) ? "KEY 主键列：可选择，不可修改，冻结在左侧" : record.draftId ? "待新增记录：双击填写，KEY 必填；保存后写入数据库" : pending ? "已修改，保存前仅保留在当前页面" : value;
+  cell.classList.toggle("cell-invalid", Boolean(shown.invalid));
+  const displayTip = shown.invalid
+    ? shown.invalidDetail
+    : shown.formatted ? `${shown.text}（原值: ${shown.rawText}）` : shown.text;
+  cell.title = isReadOnlyKey(record, column)
+    ? (shown.invalid ? shown.invalidDetail : "KEY 主键列：可选择，不可修改，冻结在左侧")
+    : record.draftId
+      ? (shown.invalid ? shown.invalidDetail : "待新增记录：双击填写，KEY 必填；保存后写入数据库")
+      : pending
+        ? `${shown.invalid ? `${shown.invalidDetail} · ` : ""}已修改${shown.formatted ? `（原值: ${shown.rawText}）` : ""}，保存前仅保留在当前页面`
+        : displayTip;
 }
 function syncGridCell(record, field) {
   const cell = gridCells.get(record)?.get(field);
@@ -719,15 +910,31 @@ function syncGridCell(record, field) {
   input.closest("td")?.classList.toggle("cell-modified", Boolean(pending));
   input.closest("td")?.setAttribute("title", pending ? "已修改，保存前仅保留在当前页面" : value || "NULL");
 }
+function columnMenuEntries(column) {
+  if (isTimeDisplayColumn(column)) return [];
+  if (isMenuDisplayColumn(column)) {
+    return parseMenuDict(column?.disp_menu).map((item) => ({
+      value: item.key,
+      label: item.value ? `${item.value} (${item.key})` : item.key
+    }));
+  }
+  return column?.disp_menu
+    ? String(column.disp_menu).split("|").map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
+    : [];
+}
 function columnMenuOptions(column) {
-  return column?.disp_menu ? String(column.disp_menu).split("|").map((item) => item.trim()).filter(Boolean) : [];
+  return columnMenuEntries(column).map((item) => item.value);
 }
 function inlineCellInput(record, column, index, cell, initialText = null) {
   const kind = columnKind(column);
   if (isReadOnlyKey(record, column) || objectTypes.has(kind) && !record.draftId) return false;
+  if (isTimeDisplayColumn(column) && initialText === null) {
+    openTimeEditDialog(record, column, cell);
+    return true;
+  }
   if (cell.querySelector(".cell-toggle")) { cell.querySelector(".cell-toggle").focus({ preventScroll: true }); return true; }
   if (cell.querySelector(".cell-editor")) return true;
-  const menu = columnMenuOptions(column);
+  const menu = columnMenuEntries(column);
   const useSelect = menu.length > 0 || boolTypes.has(kind);
   const pending = pendingCell(record, column.eng_name), raw = pending?.raw ?? cellText(record.row[column.eng_name]);
   const before = structuredClone(record.row[column.eng_name]), history = editSnapshot();
@@ -738,7 +945,7 @@ function inlineCellInput(record, column, index, cell, initialText = null) {
     if (boolTypes.has(kind)) {
       input.append(new Option("true（是）", "true"), new Option("false（否）", "false"));
     } else {
-      for (const item of menu) input.append(new Option(item, item));
+      for (const item of menu) input.append(new Option(item.label, item.value));
     }
     if (raw !== "" && ![...input.options].some((option) => option.value === raw)) {
       input.append(new Option(`${raw}（当前）`, raw));
@@ -914,7 +1121,7 @@ function syncQuickFilterValueControl() {
   if (resetBtn) resetBtn.hidden = !hasField && !customSql;
   if (!needsValue) return;
   const column = quickFilterColumns().find((item) => item.eng_name === fieldName);
-  const kind = columnKind(column), menu = columnMenuOptions(column);
+  const kind = columnKind(column), menu = columnMenuEntries(column);
   const previous = el("filter-value")?.value ?? "";
   let control;
   if (boolTypes.has(kind)) {
@@ -924,8 +1131,8 @@ function syncQuickFilterValueControl() {
   } else if (menu.length && op !== "LIKE") {
     control = node("select"); control.id = "filter-value"; control.setAttribute("aria-label", "筛选值");
     control.append(new Option("选择值…", ""));
-    for (const item of menu) control.append(new Option(item, item));
-    if (menu.includes(previous)) control.value = previous;
+    for (const item of menu) control.append(new Option(item.label, item.value));
+    if (menu.some((item) => item.value === previous)) control.value = previous;
   } else {
     control = node("input"); control.id = "filter-value"; control.type = "text"; control.placeholder = op === "LIKE" ? "包含关键词" : "筛选值";
     control.setAttribute("aria-label", "筛选值"); control.value = previous;
@@ -1878,7 +2085,7 @@ function fieldDefault(column) {
 const ROW_NULL_SENTINEL = "__RTDB_NULL__";
 function createFieldEditorControl(column, initialValue, { allowNullOption = false } = {}) {
   const kind = column.data_type.toLowerCase();
-  const menu = columnMenuOptions(column);
+  const menu = columnMenuEntries(column);
   const isSelect = boolTypes.has(kind) || menu.length > 0;
   const input = node(isSelect ? "select" : objectTypes.has(kind) ? "textarea" : "input");
   input.dataset.field = column.eng_name;
@@ -1888,9 +2095,15 @@ function createFieldEditorControl(column, initialValue, { allowNullOption = fals
     if (boolTypes.has(kind)) {
       input.append(new Option("是 / true", "true"), new Option("否 / false", "false"));
     } else {
-      const options = new Set(menu);
-      if (initialValue != null && String(initialValue) !== "") options.add(String(initialValue));
-      for (const item of options) input.append(new Option(item, item));
+      const seen = new Set();
+      for (const item of menu) {
+        if (seen.has(item.value)) continue;
+        seen.add(item.value);
+        input.append(new Option(item.label, item.value));
+      }
+      if (initialValue != null && String(initialValue) !== "" && !seen.has(String(initialValue))) {
+        input.append(new Option(`${initialValue}（当前）`, String(initialValue)));
+      }
     }
     if (initialValue == null) {
       input.value = allowNullOption ? ROW_NULL_SENTINEL : (input.options[0]?.value ?? "");
@@ -2114,6 +2327,17 @@ function schemaFormValue(withMeta = false) {
       const defaultControl = row.querySelector('[data-property="default_value"]');
       const isSelectDefault = defaultControl?.tagName === "SELECT";
       column.chn_name = chineseName(column);
+      if (column.disp_type === TIME_DISPLAY_TYPE && isIntegerSchemaType(column.data_type) && !String(column.disp_menu || "").trim()) {
+        column.disp_menu = DEFAULT_TIME_FORMAT;
+      }
+      if (column.disp_type === MENU_DISPLAY_TYPE && isIntegerSchemaType(column.data_type) && String(column.disp_menu || "").trim()) {
+        try {
+          const parsed = JSON.parse(String(column.disp_menu));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("必须为 JSON 对象");
+        } catch (error) {
+          throw new Error(`${column.eng_name} 菜单选项格式无效（${error.message}），请双击选项列重新配置`);
+        }
+      }
       const rawDefault = column.default_value;
       delete column.default_value;
       if (rawDefault.trim()) {
@@ -2134,9 +2358,12 @@ function schemaFormValue(withMeta = false) {
 }
 function schemaChanged() { state.schemaDirty = true; localDrafts.schedule(); updateAutoRefreshStatus(); }
 const schemaDisplayTypes = ["文本", "整数", "浮点数", "布尔", "下拉框"];
+function schemaDisplayTypesFor(kind) {
+  return isIntegerSchemaType(kind) ? [...schemaDisplayTypes, TIME_DISPLAY_TYPE, MENU_DISPLAY_TYPE] : [...schemaDisplayTypes];
+}
 function schemaDefaultDisplayType(kind) {
   const type = String(kind || "str").toLowerCase();
-  if (integerTypes.has(type) || ["uchar", "short", "uint", "ulong", "datetime"].includes(type)) return "整数";
+  if (isIntegerSchemaType(type)) return "整数";
   if (floatTypes.has(type)) return "浮点数";
   if (boolTypes.has(type)) return "布尔";
   return "文本";
@@ -2144,9 +2371,17 @@ function schemaDefaultDisplayType(kind) {
 function normalizeSchemaDisplayType(raw, dataType, dispMenu = "") {
   const fallback = schemaDefaultDisplayType(dataType);
   const text = String(raw ?? "").trim();
+  const allowed = schemaDisplayTypesFor(dataType);
   if (!text) return String(dispMenu || "").trim() ? "下拉框" : fallback;
-  if (schemaDisplayTypes.includes(text)) return text;
+  if (allowed.includes(text)) return text;
   const lower = text.toLowerCase();
+  if (isIntegerSchemaType(dataType) && (text === TIME_DISPLAY_TYPE || text === "时间" || lower === "time" || lower === "timestamp")) {
+    return TIME_DISPLAY_TYPE;
+  }
+  if (isIntegerSchemaType(dataType) && (text === MENU_DISPLAY_TYPE || text === "菜单" || lower === "menu_dict" || lower === "enum_dict")) {
+    return MENU_DISPLAY_TYPE;
+  }
+  if (text === TIME_DISPLAY_TYPE || text === "时间" || text === MENU_DISPLAY_TYPE || text === "菜单") return fallback;
   if (text === "数字") return fallback !== "文本" ? fallback : "整数";
   if (["int", "integer", "long", "short", "uchar", "uint", "ulong", "datetime", "keyid"].includes(lower)) return "整数";
   if (["float", "double", "real", "number", "decimal"].includes(lower)) return "浮点数";
@@ -2184,6 +2419,17 @@ function updateSchemaLocks() {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
       const cell = input.closest("td");
+      if (input.type === "hidden") continue;
+      if (input.classList.contains("schema-menu-json")) {
+        input.disabled = readOnly;
+        const tip = readOnly ? "当前数据库只读，不可修改" : "双击配置菜单选项";
+        input.title = tip;
+        if (cell) {
+          cell.classList.toggle("schema-locked", readOnly);
+          cell.title = tip;
+        }
+        continue;
+      }
       const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
       const locked = isLockedNativeField(row, input.dataset.property);
       const isLocked = readOnly || locked;
@@ -2199,6 +2445,18 @@ function updateSchemaLocks() {
         cell.title = tip;
       }
     }
+    for (const ctrl of row.querySelectorAll("[data-time-role]")) {
+      const cell = ctrl.closest("td");
+      ctrl.disabled = readOnly;
+      const tip = readOnly
+        ? "当前数据库只读，不可修改"
+        : ctrl.dataset.timeRole === "preset" ? "选择时间显示格式" : "输入自定义时间格式（如 年-月-日 时:分:秒、时:分:秒、时:分）";
+      ctrl.title = tip;
+      if (cell) {
+        cell.classList.toggle("schema-locked", readOnly);
+        if (ctrl.dataset.timeRole === "preset") cell.title = tip;
+      }
+    }
     row.classList.toggle("schema-editing", editing);
   }
   updateRecordsToolbar();
@@ -2208,7 +2466,7 @@ function renderSchema(definition) {
   state.schemaIndexes=definition.indexes==null?null:definition.indexes.map(fields=>fields.map(name=>originalIndexNames[name]||name));
   el("schema-name").value = definition.head.eng_name; el("schema-label").value = chineseName(definition.head); el("schema-name").disabled = false;
   const grid = node("table"), head = node("tr"), thead = node("thead"), body = node("tbody");
-  for (const label of ["英文名", "中文名", "类型", "主键", "默认值", "显示类型", "选项（| 分隔）"]) head.append(node("th", label));
+  for (const label of ["英文名", "中文名", "类型", "主键", "默认值", "显示类型", "选项 / 格式"]) head.append(node("th", label));
   thead.append(head); grid.append(thead);
   for (const column of definition.columns) {
     const row = node("tr"); row.addEventListener("contextmenu", (event) => openSchemaContextMenu(event, row));
@@ -2224,15 +2482,43 @@ function renderSchema(definition) {
     const originalName = column.__original_name || (state.table && state.definition?.columns.some((item) => item.eng_name === column.eng_name) ? column.eng_name : "");
     if (originalName) row.dataset.originalName = originalName;
     let defaultCell = null;
+    let menuCell = null;
+    const initialMenuRaw = column.disp_menu ?? "";
+    const initialMenuNormalized = displayType === TIME_DISPLAY_TYPE
+      ? (String(initialMenuRaw).trim() || DEFAULT_TIME_FORMAT)
+      : displayType === MENU_DISPLAY_TYPE
+        ? serializeMenuEntries(parseMenuDict(initialMenuRaw))
+        : initialMenuRaw;
     const initialDefaultRaw = column.default_value == null ? "" : cellText(column.default_value);
     const initialDefaultText = column.default_value == null ? "" : typeof column.default_value === "string" && !integerTypes.has(columnKind(column)) ? JSON.stringify(column.default_value) : cellText(column.default_value);
+
+    const syncDisplayTypeOptions = (dataTypeValue, preferredDisplayType) => {
+      const displayInput = row.querySelector('[data-property="disp_type"]');
+      if (!displayInput) return;
+      const allowed = schemaDisplayTypesFor(dataTypeValue);
+      const nextValue = allowed.includes(preferredDisplayType) ? preferredDisplayType : schemaDefaultDisplayType(dataTypeValue);
+      displayInput.replaceChildren();
+      for (const kind of new Set([...allowed, nextValue])) displayInput.append(new Option(kind, kind));
+      displayInput.value = nextValue;
+      displayInput.closest("td")?.classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+    };
+
     const renderDefaultControl = (rawValue, isInitial = false) => {
       if (!defaultCell) return;
       const typeValue = row.querySelector('[data-property="data_type"]')?.value || column.data_type;
-      const menuRaw = row.querySelector('[data-property="disp_menu"]')?.value ?? column.disp_menu ?? "";
+      const dispTypeValue = row.querySelector('[data-property="disp_type"]')?.value || displayType;
+      const menuRaw = row.querySelector('[data-property="disp_menu"]')?.value ?? initialMenuRaw;
       const kind = String(typeValue || "str").toLowerCase();
-      const menu = menuRaw ? menuRaw.split("|").map((item) => item.trim()).filter(Boolean) : [];
-      const useSelect = boolTypes.has(kind) || menu.length > 0;
+      const isTimeMode = dispTypeValue === TIME_DISPLAY_TYPE && isIntegerSchemaType(kind);
+      const isMenuMode = dispTypeValue === MENU_DISPLAY_TYPE && isIntegerSchemaType(kind);
+      const menuEntries = isTimeMode
+        ? []
+        : isMenuMode
+          ? parseMenuDict(menuRaw).map((item) => ({ value: item.key, label: item.value ? `${item.value} (${item.key})` : item.key }))
+          : menuRaw
+            ? String(menuRaw).split("|").map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
+            : [];
+      const useSelect = boolTypes.has(kind) || menuEntries.length > 0;
       const existing = defaultCell.querySelector('[data-property="default_value"]');
       const originalValue = existing ? existing.dataset.originalValue : (useSelect ? initialDefaultRaw : initialDefaultText);
       const input = node(useSelect ? "select" : "input");
@@ -2247,7 +2533,7 @@ function renderSchema(definition) {
         if (boolTypes.has(kind)) {
           input.append(new Option("true（是）", "true"), new Option("false（否）", "false"));
         } else {
-          for (const item of menu) input.append(new Option(item, item));
+          for (const item of menuEntries) input.append(new Option(item.label, item.value));
         }
         if (normalized !== "" && ![...input.options].some((option) => option.value === normalized)) {
           input.append(new Option(`${normalized}（当前）`, normalized));
@@ -2268,6 +2554,112 @@ function renderSchema(definition) {
       defaultCell.replaceChildren(input);
       defaultCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
     };
+
+    const renderMenuControl = (rawMenuValue, isInitial = false) => {
+      if (!menuCell) return;
+      const typeValue = row.querySelector('[data-property="data_type"]')?.value || column.data_type;
+      const dispTypeValue = row.querySelector('[data-property="disp_type"]')?.value || displayType;
+      const isTimeMode = dispTypeValue === TIME_DISPLAY_TYPE && isIntegerSchemaType(typeValue);
+      const isMenuMode = dispTypeValue === MENU_DISPLAY_TYPE && isIntegerSchemaType(typeValue);
+      const existing = menuCell.querySelector('[data-property="disp_menu"]');
+      const originalValue = existing ? existing.dataset.originalValue : initialMenuNormalized;
+      if (isTimeMode) {
+        const formatVal = String(rawMenuValue || "").trim() || DEFAULT_TIME_FORMAT;
+        const isPreset = TIME_FORMAT_PRESETS.includes(formatVal);
+        const wrap = node("div", null, `schema-time-format${isPreset ? "" : " is-custom"}`);
+        const hidden = node("input");
+        hidden.type = "hidden";
+        hidden.dataset.property = "disp_menu";
+        hidden.dataset.originalValue = originalValue;
+        hidden.value = formatVal;
+
+        const preset = node("select");
+        preset.dataset.timeRole = "preset";
+        preset.setAttribute("aria-label", `${column.eng_name || "新字段"} 时间格式`);
+        for (const fmt of TIME_FORMAT_PRESETS) preset.append(new Option(fmt, fmt));
+        preset.append(new Option("自定义…", "__custom__"));
+        preset.value = isPreset ? formatVal : "__custom__";
+
+        const custom = node("input");
+        custom.type = "text";
+        custom.dataset.timeRole = "custom";
+        custom.placeholder = DEFAULT_TIME_FORMAT;
+        custom.value = formatVal;
+        custom.hidden = isPreset;
+        custom.setAttribute("aria-label", `${column.eng_name || "新字段"} 自定义时间格式`);
+
+        const commitTimeFormat = (nextFormat) => {
+          hidden.value = nextFormat;
+          schemaChanged();
+          menuCell.classList.toggle("schema-modified", String(hidden.value) !== hidden.dataset.originalValue);
+        };
+        preset.onchange = () => {
+          if (preset.value === "__custom__") {
+            wrap.classList.add("is-custom");
+            custom.hidden = false;
+            custom.value = hidden.value || DEFAULT_TIME_FORMAT;
+            custom.focus({ preventScroll: true });
+            custom.select();
+          } else {
+            wrap.classList.remove("is-custom");
+            custom.hidden = true;
+            custom.value = preset.value;
+            commitTimeFormat(preset.value);
+          }
+        };
+        custom.oninput = () => commitTimeFormat(custom.value.trim() || DEFAULT_TIME_FORMAT);
+        custom.onchange = () => commitTimeFormat(custom.value.trim() || DEFAULT_TIME_FORMAT);
+
+        wrap.append(preset, custom, hidden);
+        menuCell.replaceChildren(wrap);
+        menuCell.classList.toggle("schema-modified", !isInitial && String(hidden.value) !== hidden.dataset.originalValue);
+      } else if (isMenuMode) {
+        const jsonVal = serializeMenuEntries(parseMenuDict(rawMenuValue));
+        const input = node("input");
+        input.type = "text";
+        input.readOnly = true;
+        input.className = "schema-menu-json";
+        input.dataset.property = "disp_menu";
+        input.dataset.originalValue = originalValue;
+        input.value = jsonVal;
+        input.placeholder = "双击配置菜单选项";
+        input.title = "双击配置菜单选项";
+        input.setAttribute("aria-label", `${column.eng_name || "新字段"} 菜单选项 JSON`);
+        menuCell.replaceChildren(input);
+        menuCell.title = "双击配置菜单选项";
+        menuCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
+      } else {
+        const input = node("input");
+        input.dataset.property = "disp_menu";
+        input.dataset.originalValue = originalValue;
+        input.value = rawMenuValue ?? "";
+        input.placeholder = "选项1|选项2";
+        input.setAttribute("aria-label", `${column.eng_name || "新字段"} disp_menu`);
+        const onMenuChange = () => {
+          schemaChanged();
+          const displayInput = row.querySelector('[data-property="disp_type"]');
+          const hasMenu = Boolean(String(input.value || "").trim());
+          if (displayInput && displayInput.value !== TIME_DISPLAY_TYPE && displayInput.value !== MENU_DISPLAY_TYPE) {
+            if (hasMenu && displayInput.value === schemaDefaultDisplayType(previousKind)) {
+              displayInput.value = "下拉框";
+              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+            } else if (!hasMenu && displayInput.value === "下拉框") {
+              displayInput.value = schemaDefaultDisplayType(previousKind);
+              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+            }
+          }
+          const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
+          renderDefaultControl(prevDefault, false);
+          updateSchemaLocks();
+          menuCell.classList.toggle("schema-modified", String(input.value) !== input.dataset.originalValue);
+        };
+        input.oninput = onMenuChange;
+        input.onchange = onMenuChange;
+        menuCell.replaceChildren(input);
+        menuCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
+      }
+    };
+
     for (const property of ["eng_name", "chn_name", "data_type", "primary_key", "default_value", "disp_type", "disp_menu"]) {
       const cell = node("td");
       if (property === "default_value") {
@@ -2276,6 +2668,36 @@ function renderSchema(definition) {
           event.preventDefault(); event.stopPropagation();
           const currentInput = cell.querySelector('[data-property="default_value"]');
           if (!currentInput || currentInput.tagName === "SELECT" || isReadOnlyDatabase() || isLockedNativeField(row, property)) return;
+          row.dataset.editing = "true"; updateSchemaLocks(); currentInput.disabled = false; currentInput.focus({ preventScroll: true });
+          if (currentInput.select) currentInput.select();
+        };
+        row.append(cell);
+        continue;
+      }
+      if (property === "disp_menu") {
+        menuCell = cell;
+        cell.ondblclick = (event) => {
+          event.preventDefault(); event.stopPropagation();
+          if (isReadOnlyDatabase() || isLockedNativeField(row, property)) return;
+          const menuJsonInput = cell.querySelector("input.schema-menu-json");
+          if (menuJsonInput) {
+            const fieldLabel = row.querySelector('[data-property="eng_name"]')?.value?.trim() || column.eng_name || "新字段";
+            openMenuOptionsDialog({
+              fieldName: fieldLabel,
+              rawMenu: menuJsonInput.value,
+              onApply: (nextJson) => {
+                menuJsonInput.value = nextJson;
+                schemaChanged();
+                menuCell.classList.toggle("schema-modified", String(menuJsonInput.value) !== menuJsonInput.dataset.originalValue);
+                const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
+                renderDefaultControl(prevDefault, false);
+                updateSchemaLocks();
+              }
+            });
+            return;
+          }
+          const currentInput = cell.querySelector('input[data-property="disp_menu"]:not([type="hidden"])');
+          if (!currentInput) return;
           row.dataset.editing = "true"; updateSchemaLocks(); currentInput.disabled = false; currentInput.focus({ preventScroll: true });
           if (currentInput.select) currentInput.select();
         };
@@ -2292,7 +2714,9 @@ function renderSchema(definition) {
           : ["int", "float", "str", "bool", "json", "list", "dict", "datetime"];
         for (const kind of new Set([...types, column.data_type])) input.append(new Option(kind, kind));
       }
-      if (property === "disp_type") for (const kind of new Set([...schemaDisplayTypes, displayType])) input.append(new Option(kind, kind));
+      if (property === "disp_type") {
+        for (const kind of new Set([...schemaDisplayTypesFor(previousKind), displayType])) input.append(new Option(kind, kind));
+      }
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
       else input.value = property === "chn_name" ? chineseName(column) : property === "disp_type" ? displayType : column[property] ?? "";
       input.dataset.originalValue = input.type === "checkbox" ? String(input.checked) : input.value;
@@ -2300,26 +2724,37 @@ function renderSchema(definition) {
         schemaChanged();
         if (property === "data_type") {
           const displayInput = row.querySelector('[data-property="disp_type"]');
-          if (displayInput.value === schemaDefaultDisplayType(previousKind)) {
-            displayInput.value = schemaDefaultDisplayType(input.value);
-            displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
-          }
+          const prevDisplay = displayInput?.value || displayType;
+          const nextPreferred = prevDisplay === schemaDefaultDisplayType(previousKind)
+            ? schemaDefaultDisplayType(input.value)
+            : prevDisplay;
+          const wasTime = prevDisplay === TIME_DISPLAY_TYPE;
+          const wasMenu = prevDisplay === MENU_DISPLAY_TYPE;
+          syncDisplayTypeOptions(input.value, nextPreferred);
           previousKind = input.value;
+          const nowTime = displayInput?.value === TIME_DISPLAY_TYPE;
+          const nowMenu = displayInput?.value === MENU_DISPLAY_TYPE;
+          const currentMenuVal = menuCell?.querySelector('[data-property="disp_menu"]')?.value ?? "";
+          let nextMenuVal = currentMenuVal;
+          if (wasTime && !nowTime && TIME_FORMAT_PRESETS.includes(currentMenuVal)) nextMenuVal = "";
+          if (wasMenu && !nowMenu && String(currentMenuVal).trim().startsWith("{")) nextMenuVal = "";
+          renderMenuControl(nextMenuVal, false);
           const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
           renderDefaultControl(prevDefault, false);
           updateSchemaLocks();
-        } else if (property === "disp_menu") {
-          const displayInput = row.querySelector('[data-property="disp_type"]');
-          const hasMenu = Boolean(String(input.value || "").trim());
-          if (displayInput) {
-            if (hasMenu && displayInput.value === schemaDefaultDisplayType(previousKind)) {
-              displayInput.value = "下拉框";
-              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
-            } else if (!hasMenu && displayInput.value === "下拉框") {
-              displayInput.value = schemaDefaultDisplayType(previousKind);
-              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+        } else if (property === "disp_type") {
+          const currentMenuVal = menuCell?.querySelector('[data-property="disp_menu"]')?.value ?? "";
+          let nextMenuVal = currentMenuVal;
+          if (input.value === TIME_DISPLAY_TYPE) {
+            if (!String(currentMenuVal).trim() || String(currentMenuVal).includes("|") || String(currentMenuVal).trim().startsWith("{")) {
+              nextMenuVal = DEFAULT_TIME_FORMAT;
             }
+          } else if (input.value === MENU_DISPLAY_TYPE) {
+            nextMenuVal = serializeMenuEntries(parseMenuDict(currentMenuVal));
+          } else if (TIME_FORMAT_PRESETS.includes(String(currentMenuVal).trim()) || String(currentMenuVal).trim().startsWith("{")) {
+            nextMenuVal = "";
           }
+          renderMenuControl(nextMenuVal, false);
           const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
           renderDefaultControl(prevDefault, false);
           updateSchemaLocks();
@@ -2336,10 +2771,267 @@ function renderSchema(definition) {
       };
       cell.append(input); row.append(cell);
     }
+    renderMenuControl(initialMenuNormalized, true);
     renderDefaultControl(initialDefaultRaw, true);
     body.append(row);
   }
   grid.append(body); el("schema-fields").replaceChildren(grid); updateSchemaLocks();
+}
+
+// 菜单类型选项表格弹窗（支持 Key / Value 增删改与 JSON dict 校验序列化）
+let menuOptionsDialogState = null;
+function renderMenuOptionsEmptyRow(tbody) {
+  if (tbody.querySelector("tr[data-menu-row]")) return;
+  const tr = node("tr", null, "menu-options-empty-row");
+  const td = node("td", "暂无菜单项，点击“添加选项”新增", "menu-options-empty");
+  td.colSpan = 3;
+  tr.append(td);
+  tbody.append(tr);
+}
+function appendMenuOptionRow(tbody, keyVal = "", valueText = "", focusTarget = null) {
+  tbody.querySelector(".menu-options-empty-row")?.remove();
+  const tr = node("tr");
+  tr.dataset.menuRow = "1";
+  const keyTd = node("td"), valTd = node("td"), actTd = node("td");
+  const keyInput = node("input");
+  keyInput.type = "text";
+  keyInput.inputMode = "numeric";
+  keyInput.dataset.menuCol = "key";
+  keyInput.placeholder = "0";
+  keyInput.value = keyVal;
+  keyInput.setAttribute("aria-label", "Key（整数）");
+  const valInput = node("input");
+  valInput.type = "text";
+  valInput.dataset.menuCol = "value";
+  valInput.placeholder = "显示名称";
+  valInput.value = valueText;
+  valInput.setAttribute("aria-label", "Value（显示值）");
+  const delBtn = node("button", "删除", "danger-outline small");
+  delBtn.type = "button";
+  delBtn.onclick = () => {
+    tr.remove();
+    renderMenuOptionsEmptyRow(tbody);
+    el("menu-options-error").textContent = "";
+  };
+  const onEnter = (event) => {
+    if (event.key === "Enter") { event.preventDefault(); el("menu-options-apply").click(); }
+  };
+  keyInput.onkeydown = onEnter;
+  valInput.onkeydown = onEnter;
+  keyTd.append(keyInput);
+  valTd.append(valInput);
+  actTd.append(delBtn);
+  tr.append(keyTd, valTd, actTd);
+  tbody.append(tr);
+  if (focusTarget === "value") { valInput.focus({ preventScroll: true }); valInput.select(); }
+  else if (focusTarget === "key") { keyInput.focus({ preventScroll: true }); keyInput.select(); }
+}
+function nextMenuIntegerKey(tbody) {
+  const keys = [...tbody.querySelectorAll('input[data-menu-col="key"]')]
+    .map((input) => input.value.trim())
+    .filter((text) => /^-?\d+$/.test(text))
+    .map((text) => BigInt(text));
+  if (!keys.length) return "0";
+  let maxKey = keys[0];
+  for (const k of keys) if (k > maxKey) maxKey = k;
+  return (maxKey + 1n).toString();
+}
+function openMenuOptionsDialog({ fieldName, rawMenu, onApply }) {
+  const dialog = el("menu-options-dialog");
+  const tbody = el("menu-options-body");
+  if (!dialog || !tbody) return;
+  menuOptionsDialogState = { onApply };
+  el("menu-options-title").textContent = fieldName ? `菜单选项配置 · ${fieldName}` : "菜单选项配置";
+  el("menu-options-error").textContent = "";
+  tbody.replaceChildren();
+  const entries = parseMenuDict(rawMenu);
+  if (entries.length) {
+    for (const item of entries) appendMenuOptionRow(tbody, item.key, item.value);
+  } else {
+    renderMenuOptionsEmptyRow(tbody);
+  }
+  dialog.showModal();
+  const firstInput = tbody.querySelector("input");
+  if (firstInput) firstInput.focus({ preventScroll: true });
+  else el("menu-options-add")?.focus({ preventScroll: true });
+}
+if (el("menu-options-add")) {
+  el("menu-options-add").onclick = () => {
+    const tbody = el("menu-options-body");
+    el("menu-options-error").textContent = "";
+    appendMenuOptionRow(tbody, nextMenuIntegerKey(tbody), "", "value");
+  };
+}
+if (el("menu-options-cancel")) el("menu-options-cancel").onclick = () => el("menu-options-dialog")?.close();
+if (el("menu-options-close-x")) el("menu-options-close-x").onclick = () => el("menu-options-dialog")?.close();
+if (el("menu-options-apply")) {
+  el("menu-options-apply").onclick = () => {
+    const tbody = el("menu-options-body"), err = el("menu-options-error");
+    err.textContent = "";
+    const rows = [...tbody.querySelectorAll("tr[data-menu-row]")];
+    const entries = [];
+    const seen = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const keyInput = rows[i].querySelector('input[data-menu-col="key"]');
+      const valInput = rows[i].querySelector('input[data-menu-col="value"]');
+      const key = keyInput.value.trim();
+      const val = valInput.value.trim();
+      if (!key && !val) continue;
+      if (!/^-?\d+$/.test(key)) {
+        err.textContent = `第 ${i + 1} 行 Key 必须是整数`;
+        keyInput.focus({ preventScroll: true });
+        return;
+      }
+      try {
+        const big = BigInt(key);
+        if (big < -(2n ** 63n) || big >= 2n ** 63n) throw new Error("range");
+      } catch {
+        err.textContent = `第 ${i + 1} 行 Key 超出 64 位整数范围`;
+        keyInput.focus({ preventScroll: true });
+        return;
+      }
+      const normKey = BigInt(key).toString();
+      if (seen.has(normKey)) {
+        err.textContent = `Key "${normKey}" 重复，请保持唯一`;
+        keyInput.focus({ preventScroll: true });
+        return;
+      }
+      seen.add(normKey);
+      entries.push({ key: normKey, value: val });
+    }
+    const jsonText = serializeMenuEntries(entries);
+    if (menuOptionsDialogState?.onApply) menuOptionsDialogState.onApply(jsonText);
+    el("menu-options-dialog")?.close();
+  };
+}
+
+// 时间类型单元格修改窗（可视化日期/时间/毫秒选择 + 自动识别存储单位 + 实时预览）
+let timeEditDialogState = null;
+function refreshTimeEditPreview() {
+  const dtInput = el("time-edit-datetime"), msInput = el("time-edit-ms"), unitSelect = el("time-edit-unit");
+  const displayEl = el("time-edit-preview-display"), rawEl = el("time-edit-preview-raw");
+  const msLabel = el("time-edit-ms-label");
+  if (!dtInput || !msInput || !unitSelect) return;
+  const unit = unitSelect.value || "ms";
+  const hideMs = unit === "s";
+  msInput.disabled = hideMs;
+  if (msLabel) msLabel.style.opacity = hideMs ? "0.48" : "";
+  if (!dtInput.value) {
+    displayEl.textContent = "NULL";
+    rawEl.textContent = "NULL";
+    return;
+  }
+  const ts = datetimeLocalToTimestamp(dtInput.value, msInput.value, unit);
+  if (ts == null) {
+    displayEl.textContent = "—";
+    rawEl.textContent = "—";
+    return;
+  }
+  const fmt = timeEditDialogState?.column?.disp_menu || DEFAULT_TIME_FORMAT;
+  displayEl.textContent = formatTimestampValue(ts, fmt) || ts;
+  rawEl.textContent = ts;
+}
+function openTimeEditDialog(record, column, cell) {
+  const dialog = el("time-edit-dialog");
+  if (!dialog) return;
+  const pending = pendingCell(record, column.eng_name);
+  const raw = pending?.raw ?? cellText(record.row[column.eng_name]);
+  const unit = detectTimestampUnit(raw, column);
+  const date = timestampToDate(raw);
+  timeEditDialogState = { record, column, cell };
+  const label = el("chinese-columns")?.checked ? chineseName(column) : column.eng_name;
+  el("time-edit-title").textContent = `修改时间 · ${label}`;
+  el("time-edit-error").textContent = "";
+  el("time-edit-unit").value = unit;
+  if (date) {
+    el("time-edit-datetime").value = dateToDatetimeLocalValue(date);
+    el("time-edit-ms").value = String(date.getMilliseconds());
+  } else {
+    el("time-edit-datetime").value = "";
+    el("time-edit-ms").value = "0";
+  }
+  el("time-edit-clear").hidden = Boolean(column.primary_key);
+  refreshTimeEditPreview();
+  dialog.showModal();
+  el("time-edit-datetime").focus({ preventScroll: true });
+}
+function commitTimeEditValue(nextRaw) {
+  if (!timeEditDialogState) return;
+  const { record, column, cell } = timeEditDialogState;
+  const history = editSnapshot();
+  setPendingCell(record, column, nextRaw);
+  rememberEdit(history);
+  renderGridCellValue(record, column, cell);
+  scheduleChartDraw();
+  el("time-edit-dialog")?.close();
+  cell?.focus({ preventScroll: true });
+}
+if (el("time-edit-datetime")) {
+  el("time-edit-datetime").oninput = refreshTimeEditPreview;
+  el("time-edit-datetime").onchange = refreshTimeEditPreview;
+  el("time-edit-datetime").onkeydown = (event) => {
+    if (event.key === "Enter") { event.preventDefault(); el("time-edit-apply").click(); }
+  };
+}
+if (el("time-edit-ms")) {
+  el("time-edit-ms").oninput = refreshTimeEditPreview;
+  el("time-edit-ms").onchange = refreshTimeEditPreview;
+  el("time-edit-ms").onkeydown = (event) => {
+    if (event.key === "Enter") { event.preventDefault(); el("time-edit-apply").click(); }
+  };
+}
+if (el("time-edit-unit")) el("time-edit-unit").onchange = refreshTimeEditPreview;
+if (el("time-edit-now")) {
+  el("time-edit-now").onclick = () => {
+    const now = new Date();
+    el("time-edit-datetime").value = dateToDatetimeLocalValue(now);
+    el("time-edit-ms").value = String(now.getMilliseconds());
+    el("time-edit-error").textContent = "";
+    refreshTimeEditPreview();
+  };
+}
+if (el("time-edit-clear")) {
+  el("time-edit-clear").onclick = () => {
+    el("time-edit-datetime").value = "";
+    el("time-edit-ms").value = "0";
+    el("time-edit-error").textContent = "";
+    refreshTimeEditPreview();
+  };
+}
+if (el("time-edit-cancel")) el("time-edit-cancel").onclick = () => { el("time-edit-dialog")?.close(); timeEditDialogState?.cell?.focus({ preventScroll: true }); };
+if (el("time-edit-close-x")) el("time-edit-close-x").onclick = () => { el("time-edit-dialog")?.close(); timeEditDialogState?.cell?.focus({ preventScroll: true }); };
+if (el("time-edit-apply")) {
+  el("time-edit-apply").onclick = () => {
+    const err = el("time-edit-error");
+    err.textContent = "";
+    const dtVal = el("time-edit-datetime").value.trim();
+    if (!dtVal) {
+      if (timeEditDialogState?.column?.primary_key) {
+        err.textContent = "主键时间字段不能为空";
+        el("time-edit-datetime").focus({ preventScroll: true });
+        return;
+      }
+      commitTimeEditValue("");
+      return;
+    }
+    const msRaw = el("time-edit-ms").value.trim();
+    const unit = el("time-edit-unit").value || "ms";
+    if (unit !== "s" && msRaw !== "") {
+      const msNum = Number(msRaw);
+      if (!Number.isInteger(msNum) || msNum < 0 || msNum > 999) {
+        err.textContent = "毫秒必须是 0–999 的整数";
+        el("time-edit-ms").focus({ preventScroll: true });
+        return;
+      }
+    }
+    const ts = datetimeLocalToTimestamp(dtVal, msRaw, unit);
+    if (ts == null) {
+      err.textContent = "请输入有效的日期与时间";
+      el("time-edit-datetime").focus({ preventScroll: true });
+      return;
+    }
+    commitTimeEditValue(ts);
+  };
 }
 function closeSchemaContextMenu(restoreFocus = false) {
   const menu = el("schema-context-menu"), row = state.schemaContextRow;
@@ -3257,6 +3949,7 @@ if (el("theme-select")) el("theme-select").onchange = () => applyTheme(el("theme
 i18n.onChange(() => {
   chartStaticKey = null;
   legendSignature = null;
+  if (state.table && typeof renderGrid === "function") renderGrid();
   if (typeof drawChart === "function" && el("tab-chart")) requestAnimationFrame(drawChart);
 });
 
@@ -3448,6 +4141,10 @@ el("page-size").onchange = () => {
   });
 };
 el("chinese-columns").onchange = () => { renderGrid(); drawChart(); };
+if (el("value-display-mode")) {
+  try { applyValueDisplayMode(localStorage.getItem(VALUE_DISPLAY_MODE_KEY) || "display", false); } catch { applyValueDisplayMode("display", false); }
+  el("value-display-mode").onchange = () => { applyValueDisplayMode(el("value-display-mode").value); renderGrid(); };
+}
 el("prev").onclick = () => run(() => queryRows({ offset: Math.max(0, state.offset - Number(el("page-size").value)), pageCursor:state.previousCursor }));
 el("next").onclick = () => run(() => queryRows({ offset: state.offset + Number(el("page-size").value), pageCursor:state.nextCursor }));
 el("page-number").onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); el("go-page").click(); } };

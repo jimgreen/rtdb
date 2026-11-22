@@ -40,7 +40,9 @@
       "chart.empty": "右键表格数值选区，选择“左轴曲线”或“右轴曲线”。",
       "chart.allHidden": "全部曲线已隐藏，点击右上角图例恢复显示。",
       "chart.seriesSummary": "已添加 {count} 条曲线{ordinal} · 右键选区继续添加",
-      "chart.ordinalHint": " · 横轴：点序号（游标显示各点标签）"
+      "chart.ordinalHint": " · 横轴：点序号（游标显示各点标签）",
+      "cell.invalidMenu": "非法值 ({value})",
+      "cell.invalidMenuTip": "非法菜单值：{value} 不在菜单定义范围内"
     },
     "en-US": {
       "app.docTitle": "RTDB Studio",
@@ -71,7 +73,9 @@
       "chart.empty": 'Right-click a numeric range in the grid and pick "Left Axis" or "Right Axis".',
       "chart.allHidden": "All series are hidden. Click legend items at top-right to restore.",
       "chart.seriesSummary": "{count} series pinned{ordinal} · Right-click selection to add more",
-      "chart.ordinalHint": " · X: Point Index (hover shows labels)"
+      "chart.ordinalHint": " · X: Point Index (hover shows labels)",
+      "cell.invalidMenu": "Invalid ({value})",
+      "cell.invalidMenuTip": "Invalid menu value: {value} is not defined in menu options"
     },
     "ru-RU": {
       "app.docTitle": "Терминал RTDB",
@@ -102,7 +106,9 @@
       "chart.empty": "Щёлкните ПКМ по числовому диапазону и выберите «Левая ось» или «Правая ось».",
       "chart.allHidden": "Все кривые скрыты. Нажмите на легенду справа сверху, чтобы показать.",
       "chart.seriesSummary": "Кривых: {count}{ordinal} · ПКМ по выделению для добавления",
-      "chart.ordinalHint": " · Ось X: индекс точки"
+      "chart.ordinalHint": " · Ось X: индекс точки",
+      "cell.invalidMenu": "Недопуст. ({value})",
+      "cell.invalidMenuTip": "Недопустимое значение: {value} отсутствует в справочнике"
     }
   };
 
@@ -147,6 +153,10 @@
     "执行": ["Run", "Выполнить"],
     "执行 SQL（Enter / Ctrl+Enter）": ["Execute SQL (Enter / Ctrl+Enter)", "Выполнить SQL (Enter / Ctrl+Enter)"],
     "中文列名": ["CN Headers", "Имена CN"],
+    "数值显示模式": ["Value display mode", "Режим отображения значений"],
+    "切换显示原值或显示值": ["Switch between formatted value and raw value", "Переключить форматированное или исходное значение"],
+    "显示值": ["Display", "Формат"],
+    "原值": ["Raw", "Исходн."],
     "未选择表": ["No Table", "Таблица не выбрана"],
     "新增": ["Add", "Добавить"],
     "批量修改": ["Batch Edit", "Масс. правка"],
@@ -182,11 +192,34 @@
     "默认值": ["Default", "По умолч."],
     "显示类型": ["Widget", "Виджет"],
     "选项（| 分隔）": ["Options (| separated)", "Варианты (через |)"],
+    "选项 / 格式": ["Options / Format", "Опции / Формат"],
     "文本": ["Text", "Текст"],
     "整数": ["Integer", "Целое"],
     "浮点数": ["Float", "Дробное"],
     "布尔": ["Boolean", "Логич."],
     "下拉框": ["Select", "Список"],
+    "时间类型": ["Datetime", "Дата/время"],
+    "菜单类型": ["Enum Menu", "Справочник"],
+    "菜单选项配置": ["Menu Options", "Варианты меню"],
+    "＋ 添加选项": ["+ Add Option", "+ Добавить"],
+    "Key（整数）": ["Key (Int)", "Ключ (целое)"],
+    "Value（显示值）": ["Value (Label)", "Значение (метка)"],
+    "操作": ["Action", "Действие"],
+    "确定": ["OK", "ОК"],
+    "双击配置菜单选项": ["Double-click to edit menu options", "Двойной клик — настройка меню"],
+    "暂无菜单项，点击“添加选项”新增": ['No options yet. Click "+ Add Option" to add.', "Нет элементов. Нажмите «+ Добавить»."],
+    "修改时间": ["Edit Datetime", "Изменить время"],
+    "日期与时间": ["Date & Time", "Дата и время"],
+    "毫秒": ["Milliseconds", "Миллисекунды"],
+    "存储单位": ["Storage Unit", "Единица хранения"],
+    "毫秒 (13位)": ["Milliseconds (13 digits)", "Миллисекунды (13 зн.)"],
+    "秒 (10位)": ["Seconds (10 digits)", "Секунды (10 зн.)"],
+    "微秒 (16位)": ["Microseconds (16 digits)", "Микросекунды (16 зн.)"],
+    "纳秒 (19位)": ["Nanoseconds (19 digits)", "Наносекунды (19 зн.)"],
+    "当前时间": ["Now", "Сейчас"],
+    "清空 (NULL)": ["Clear (NULL)", "Очистить (NULL)"],
+    "显示预览": ["Display Preview", "Предпросмотр"],
+    "写入时间戳": ["Stored Timestamp", "Метка времени"],
     "未设置": ["None", "Не задано"],
     "双击或 F2 编辑": ["Double-click or press F2 to edit", "Двойной клик или F2 для правки"],
 

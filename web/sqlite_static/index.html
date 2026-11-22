@@ -58,7 +58,8 @@
           </div>
           <label class="page-size-label">每页<select id="page-size"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
           <button id="query" title="执行 SQL（Enter / Ctrl+Enter）"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>执行</button>
-          <label class="check-label"><input id="chinese-columns" type="checkbox" checked>中文列名</label></div>
+          <label class="check-label"><input id="chinese-columns" type="checkbox" checked>中文列名</label>
+          <select id="value-display-mode" aria-label="数值显示模式" title="切换显示原值或显示值"><option value="display">显示值</option><option value="raw">原值</option></select></div>
         </div>
         <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="调整查询区域高度"></div>
         <div id="records-panel" class="panel records-panel"><div class="panel-title records-header">
@@ -309,6 +310,42 @@
     <div class="panel-title"><h2 id="schema-preview-title">结构变更预览</h2><button type="button" id="close-schema-preview-x" class="icon" aria-label="关闭结构预览">×</button></div>
     <pre id="schema-preview-content"></pre><p id="schema-preview-status"></p>
     <div class="dialog-actions"><button type="button" id="close-schema-preview" class="secondary">关闭</button></div>
+  </dialog>
+
+  <dialog id="menu-options-dialog" aria-labelledby="menu-options-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="menu-options-title">菜单选项配置</h2><button type="button" id="menu-options-close-x" class="icon" aria-label="关闭菜单选项配置">×</button></div>
+      <div class="menu-options-toolbar"><button type="button" id="menu-options-add" class="secondary small">＋ 添加选项</button></div>
+      <div class="grid-wrap menu-options-grid">
+        <table>
+          <thead><tr><th>Key（整数）</th><th>Value（显示值）</th><th>操作</th></tr></thead>
+          <tbody id="menu-options-body"></tbody>
+        </table>
+      </div>
+      <p id="menu-options-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="menu-options-cancel" class="secondary">取消</button><button type="button" id="menu-options-apply">确定</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="time-edit-dialog" aria-labelledby="time-edit-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="time-edit-title">修改时间</h2><button type="button" id="time-edit-close-x" class="icon" aria-label="关闭时间修改窗">×</button></div>
+      <div class="time-edit-grid">
+        <label class="time-edit-main">日期与时间<input id="time-edit-datetime" type="datetime-local" step="1"></label>
+        <label id="time-edit-ms-label">毫秒<input id="time-edit-ms" type="number" min="0" max="999" step="1" value="0"></label>
+        <label>存储单位<select id="time-edit-unit"><option value="ms">毫秒 (13位)</option><option value="s">秒 (10位)</option><option value="us">微秒 (16位)</option><option value="ns">纳秒 (19位)</option></select></label>
+      </div>
+      <div class="time-edit-quick">
+        <button type="button" id="time-edit-now" class="secondary small">当前时间</button>
+        <button type="button" id="time-edit-clear" class="secondary small">清空 (NULL)</button>
+      </div>
+      <div class="time-edit-preview">
+        <div><span>显示预览</span><code id="time-edit-preview-display">—</code></div>
+        <div><span>写入时间戳</span><code id="time-edit-preview-raw">—</code></div>
+      </div>
+      <p id="time-edit-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="time-edit-cancel" class="secondary">取消</button><button type="button" id="time-edit-apply">确定</button></div>
+    </form>
   </dialog>
 
   <div id="sidebar-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表索引操作" hidden>
