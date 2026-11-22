@@ -43,7 +43,8 @@
       "chart.ordinalHint": " · 横轴：点序号（游标显示各点标签）",
       "cell.invalidMenu": "非法值 ({value})",
       "cell.invalidMenuTip": "非法菜单值：{value} 不在菜单定义范围内",
-      "cell.invalidChoiceTip": "非法选择值：{value} 不在选择集合范围内"
+      "cell.invalidChoiceTip": "非法选择值：{value} 不在选择集合范围内",
+      "cell.invalidBoolTip": "非法布尔值：{value} 只能取值 0 或 1"
     },
     "en-US": {
       "app.docTitle": "RTDB Studio",
@@ -77,7 +78,8 @@
       "chart.ordinalHint": " · X: Point Index (hover shows labels)",
       "cell.invalidMenu": "Invalid ({value})",
       "cell.invalidMenuTip": "Invalid menu value: {value} is not defined in menu options",
-      "cell.invalidChoiceTip": "Invalid choice value: {value} is not in the allowed set"
+      "cell.invalidChoiceTip": "Invalid choice value: {value} is not in the allowed set",
+      "cell.invalidBoolTip": "Invalid boolean value: {value} must be 0 or 1"
     },
     "ru-RU": {
       "app.docTitle": "Терминал RTDB",
@@ -111,7 +113,8 @@
       "chart.ordinalHint": " · Ось X: индекс точки",
       "cell.invalidMenu": "Недопуст. ({value})",
       "cell.invalidMenuTip": "Недопустимое значение: {value} отсутствует в справочнике",
-      "cell.invalidChoiceTip": "Недопустимое значение: {value} отсутствует в списке выбора"
+      "cell.invalidChoiceTip": "Недопустимое значение: {value} отсутствует в списке выбора",
+      "cell.invalidBoolTip": "Недопустимое логическое значение: {value} должно быть 0 или 1"
     }
   };
 
@@ -200,7 +203,8 @@
     "整数": ["Integer", "Целое"],
     "浮点数": ["Float", "Дробное"],
     "布尔": ["Boolean", "Логич."],
-    "下拉框": ["Select", "Список"],
+    "0（否）": ["0 (False)", "0 (Нет)"],
+    "1（是）": ["1 (True)", "1 (Да)"],
     "时间类型": ["Datetime", "Дата/время"],
     "菜单类型": ["Enum Menu", "Справочник"],
     "选择类型": ["Choice Set", "Набор выбора"],
