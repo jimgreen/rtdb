@@ -42,7 +42,8 @@
       "chart.seriesSummary": "已添加 {count} 条曲线{ordinal} · 右键选区继续添加",
       "chart.ordinalHint": " · 横轴：点序号（游标显示各点标签）",
       "cell.invalidMenu": "非法值 ({value})",
-      "cell.invalidMenuTip": "非法菜单值：{value} 不在菜单定义范围内"
+      "cell.invalidMenuTip": "非法菜单值：{value} 不在菜单定义范围内",
+      "cell.invalidChoiceTip": "非法选择值：{value} 不在选择集合范围内"
     },
     "en-US": {
       "app.docTitle": "RTDB Studio",
@@ -75,7 +76,8 @@
       "chart.seriesSummary": "{count} series pinned{ordinal} · Right-click selection to add more",
       "chart.ordinalHint": " · X: Point Index (hover shows labels)",
       "cell.invalidMenu": "Invalid ({value})",
-      "cell.invalidMenuTip": "Invalid menu value: {value} is not defined in menu options"
+      "cell.invalidMenuTip": "Invalid menu value: {value} is not defined in menu options",
+      "cell.invalidChoiceTip": "Invalid choice value: {value} is not in the allowed set"
     },
     "ru-RU": {
       "app.docTitle": "Терминал RTDB",
@@ -108,7 +110,8 @@
       "chart.seriesSummary": "Кривых: {count}{ordinal} · ПКМ по выделению для добавления",
       "chart.ordinalHint": " · Ось X: индекс точки",
       "cell.invalidMenu": "Недопуст. ({value})",
-      "cell.invalidMenuTip": "Недопустимое значение: {value} отсутствует в справочнике"
+      "cell.invalidMenuTip": "Недопустимое значение: {value} отсутствует в справочнике",
+      "cell.invalidChoiceTip": "Недопустимое значение: {value} отсутствует в списке выбора"
     }
   };
 
@@ -200,7 +203,14 @@
     "下拉框": ["Select", "Список"],
     "时间类型": ["Datetime", "Дата/время"],
     "菜单类型": ["Enum Menu", "Справочник"],
+    "选择类型": ["Choice Set", "Набор выбора"],
     "菜单选项配置": ["Menu Options", "Варианты меню"],
+    "选择选项配置": ["Choice Options", "Варианты выбора"],
+    "待选择值": ["Option Value", "Значение"],
+    "待选择值（整数）": ["Option Value (Int)", "Значение (целое)"],
+    "待选择值（文本）": ["Option Value (String)", "Значение (строка)"],
+    "双击配置选择选项": ["Double-click to edit choice set", "Двойной клик — настройка выбора"],
+    "暂无待选项，点击“添加选项”新增": ['No options yet. Click "+ Add Option" to add.', "Нет вариантов. Нажмите «+ Добавить»."],
     "＋ 添加选项": ["+ Add Option", "+ Добавить"],
     "Key（整数）": ["Key (Int)", "Ключ (целое)"],
     "Value（显示值）": ["Value (Label)", "Значение (метка)"],
@@ -359,6 +369,10 @@
     "暂停上传": ["Pause Upload", "Пауза"],
     "清除临时上传": ["Discard Upload", "Удалить временный"],
     "规则与上限": ["Limits & Rules", "Правила и лимиты"],
+    "E 文件上限 128 MiB、每表 10 万条，临时上传保留 24 小时可续传；重复主键追加跳过，合并/替换取末条。": [
+      "E file limit: 128 MiB, 100k rows/table; resumable for 24h. Duplicate keys: append skips, merge/replace keeps last.",
+      "Лимит E-файла: 128 МиБ, 100 тыс. строк/табл., докачка 24 ч. Дубли PK: добавление пропускает, слияние/замена — последняя."
+    ],
     "尚未预览": ["Not previewed yet", "Нет предпросмотра"],
     "确认并生成/更新": ["Apply & Generate", "Применить"],
 
@@ -486,6 +500,11 @@
       "Все кривые скрыты. Нажмите на легенду справа сверху, чтобы показать."
     ],
     "当前条件下没有记录": ["No matching rows", "Нет записей по условию"],
+    "当前 SQL 查询没有记录。": ["No rows returned by current SQL query.", "Текущий SQL-запрос не вернул строк."],
+    "当前数据库只读": ["Current database is read-only", "Текущая БД только для чтения"],
+    "选项1|选项2": ["Option1|Option2", "Вариант1|Вариант2"],
+    "显示名称": ["Display label", "Название"],
+    "输入选项文本": ["Enter option text", "Введите текст варианта"],
     "暂无数据表": ["No tables found", "Таблицы не найдены"],
     "表为空": ["Empty table", "Пустая таблица"],
     "已连接": ["Connected", "Подключено"],
@@ -537,9 +556,59 @@
       ru: (_, s) => `Авто ${s} с`
     },
     {
-      re: /^保存改单元格\s*\((\d+)\)$/,
+      re: /^保存改单元格[（(](\d+)[）)]$/,
       en: (_, n) => `Save Edits (${n})`,
       ru: (_, n) => `Сохранить (${n})`
+    },
+    {
+      re: /^保存修改[（(]新增\s*(\d+)\s*条[）)]$/,
+      en: (_, n) => `Save (+${n} new)`,
+      ru: (_, n) => `Сохранить (+${n} нов.)`
+    },
+    {
+      re: /^已选\s*(\d[\d,]*)\s*个单元格$/,
+      en: (_, n) => `${n} cells selected`,
+      ru: (_, n) => `Выбрано ячеек: ${n}`
+    },
+    {
+      re: /^已选\s*(\d[\d,]*)\s*条记录$/,
+      en: (_, n) => `${n} rows selected`,
+      ru: (_, n) => `Выбрано строк: ${n}`
+    },
+    {
+      re: /^(\d[\d,]*)\s*个单元格已修改$/,
+      en: (_, n) => `${n} cells modified`,
+      ru: (_, n) => `Изменено ячеек: ${n}`
+    },
+    {
+      re: /^(\d[\d,]*)\s*条新增记录待保存$/,
+      en: (_, n) => `${n} new rows pending`,
+      ru: (_, n) => `Новых строк: ${n}`
+    },
+    {
+      re: /^(\d[\d,]*)\s*条新增记录待保存\s*·\s*(\d[\d,]*)\s*个单元格已修改$/,
+      en: (_, a, b) => `${a} new rows · ${b} cells modified`,
+      ru: (_, a, b) => `Новых: ${a} · Изм. ячеек: ${b}`
+    },
+    {
+      re: /^修改时间\s*·\s*(.+)$/,
+      en: (_, col) => `Edit Datetime · ${col}`,
+      ru: (_, col) => `Изменить время · ${col}`
+    },
+    {
+      re: /^菜单选项配置\s*·\s*(.+)$/,
+      en: (_, col) => `Menu Options · ${col}`,
+      ru: (_, col) => `Варианты меню · ${col}`
+    },
+    {
+      re: /^选择选项配置\s*·\s*(.+)$/,
+      en: (_, col) => `Choice Options · ${col}`,
+      ru: (_, col) => `Варианты выбора · ${col}`
+    },
+    {
+      re: /^(.+)（原值:\s*(.+)）$/,
+      en: (_, shown, raw) => `${shown} (Raw: ${raw})`,
+      ru: (_, shown, raw) => `${shown} (Исх.: ${raw})`
     },
     {
       re: /^已添加\s*(\d+)\s*条曲线(\s*·\s*横轴：点序号（游标显示各点标签）)?\s*·\s*右键选区继续添加$/,

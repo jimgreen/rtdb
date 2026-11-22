@@ -327,6 +327,21 @@
     </form>
   </dialog>
 
+  <dialog id="choice-options-dialog" aria-labelledby="choice-options-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="choice-options-title">选择选项配置</h2><button type="button" id="choice-options-close-x" class="icon" aria-label="关闭选择选项配置">×</button></div>
+      <div class="menu-options-toolbar"><button type="button" id="choice-options-add" class="secondary small">＋ 添加选项</button></div>
+      <div class="grid-wrap choice-options-grid">
+        <table>
+          <thead><tr><th id="choice-options-value-head">待选择值</th><th>操作</th></tr></thead>
+          <tbody id="choice-options-body"></tbody>
+        </table>
+      </div>
+      <p id="choice-options-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="choice-options-cancel" class="secondary">取消</button><button type="button" id="choice-options-apply">确定</button></div>
+    </form>
+  </dialog>
+
   <dialog id="time-edit-dialog" aria-labelledby="time-edit-title">
     <form method="dialog">
       <div class="panel-title"><h2 id="time-edit-title">修改时间</h2><button type="button" id="time-edit-close-x" class="icon" aria-label="关闭时间修改窗">×</button></div>

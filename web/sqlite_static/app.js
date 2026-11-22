@@ -678,6 +678,7 @@ function setPendingCell(record, column, raw, updateActions = true) {
 }
 const TIME_DISPLAY_TYPE = "时间类型";
 const MENU_DISPLAY_TYPE = "菜单类型";
+const CHOICE_DISPLAY_TYPE = "选择类型";
 const DEFAULT_TIME_FORMAT = "年-月-日 时:分:秒";
 const TIME_FORMAT_PRESETS = [
   "年-月-日 时:分:秒",
@@ -703,6 +704,13 @@ function isIntegerSchemaType(kind) {
   const type = String(kind || "str").toLowerCase();
   return integerTypes.has(type) || ["uchar", "short", "uint", "ulong", "datetime"].includes(type);
 }
+function isStringSchemaType(kind) {
+  const type = String(kind || "str").toLowerCase();
+  return ["str", "string", "text", "char", "varchar"].includes(type);
+}
+function isChoiceSchemaType(kind) {
+  return isIntegerSchemaType(kind) || isStringSchemaType(kind);
+}
 function isTimeDisplayColumn(column) {
   if (!column || !isIntegerSchemaType(column.data_type)) return false;
   const disp = String(column.disp_type || "").trim();
@@ -714,6 +722,74 @@ function isMenuDisplayColumn(column) {
   const disp = String(column.disp_type || "").trim();
   const lower = disp.toLowerCase();
   return disp === MENU_DISPLAY_TYPE || disp === "菜单" || lower === "menu_dict" || lower === "enum_dict";
+}
+function isChoiceDisplayColumn(column) {
+  if (!column || !isChoiceSchemaType(column.data_type)) return false;
+  const disp = String(column.disp_type || "").trim();
+  const lower = disp.toLowerCase();
+  return disp === CHOICE_DISPLAY_TYPE || disp === "选择" || lower === "choice_set" || lower === "set";
+}
+function parseChoiceSet(raw, dataType = "str") {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  const isInt = isIntegerSchemaType(dataType);
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const result = [];
+    for (const item of parsed) {
+      if (isInt) {
+        if (typeof item === "boolean" || item == null) continue;
+        const s = typeof item === "number"
+          ? (Number.isInteger(item) ? String(item) : "")
+          : typeof item === "string" ? item.trim() : "";
+        if (!/^-?\d+$/.test(s)) continue;
+        try {
+          const big = BigInt(s);
+          if (big < -(2n ** 63n) || big >= 2n ** 63n) continue;
+          const norm = big.toString();
+          if (seen.has(norm)) continue;
+          seen.add(norm);
+          result.push(norm);
+        } catch { continue; }
+      } else {
+        if (typeof item !== "string" && typeof item !== "number") continue;
+        const s = String(item);
+        if (!s.trim() || seen.has(s)) continue;
+        seen.add(s);
+        result.push(s);
+      }
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+function serializeChoiceSet(values, dataType = "str") {
+  if (!Array.isArray(values) || !values.length) return "";
+  if (isIntegerSchemaType(dataType)) {
+    const seen = new Set();
+    const parts = [];
+    for (const raw of values) {
+      const s = String(raw ?? "").trim();
+      if (!/^-?\d+$/.test(s)) continue;
+      const norm = BigInt(s).toString();
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      parts.push(norm);
+    }
+    return parts.length ? `[${parts.join(",")}]` : "";
+  }
+  const seen = new Set();
+  const list = [];
+  for (const raw of values) {
+    const s = String(raw ?? "");
+    if (!s.trim() || seen.has(s)) continue;
+    seen.add(s);
+    list.push(s);
+  }
+  return list.length ? JSON.stringify(list) : "";
 }
 function parseMenuDict(raw) {
   const text = String(raw ?? "").trim();
@@ -852,6 +928,21 @@ function formatGridDisplayValue(column, rawVal, fallbackText) {
       const invalidDetail = t("cell.invalidMenuTip", { value: fallbackText });
       return { text: invalidText, formatted: false, invalid: true, invalidDetail, rawText: fallbackText };
     }
+  } else if (isChoiceDisplayColumn(column)) {
+    const choices = parseChoiceSet(column.disp_menu, column.data_type);
+    if (choices.length) {
+      const isInt = isIntegerSchemaType(column.data_type);
+      let lookup = String(rawVal);
+      if (isInt && /^-?\d+$/.test(lookup.trim())) {
+        try { lookup = BigInt(lookup.trim()).toString(); } catch { /* 保持原文本 */ }
+      }
+      if (choices.includes(lookup)) {
+        return { text: fallbackText, formatted: false, invalid: false, invalidDetail: "", rawText: fallbackText };
+      }
+      const invalidText = t("cell.invalidMenu", { value: fallbackText });
+      const invalidDetail = t("cell.invalidChoiceTip", { value: fallbackText });
+      return { text: invalidText, formatted: false, invalid: true, invalidDetail, rawText: fallbackText };
+    }
   }
   return { text: fallbackText, formatted: false, invalid: false, invalidDetail: "", rawText: fallbackText };
 }
@@ -917,6 +1008,9 @@ function columnMenuEntries(column) {
       value: item.key,
       label: item.value ? `${item.value} (${item.key})` : item.key
     }));
+  }
+  if (isChoiceDisplayColumn(column)) {
+    return parseChoiceSet(column?.disp_menu, column?.data_type).map((item) => ({ value: item, label: item }));
   }
   return column?.disp_menu
     ? String(column.disp_menu).split("|").map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
@@ -1804,18 +1898,18 @@ function paintGridSelection() {
     if (nonContiguousCells) {
       // 不连续 Ctrl 多选按各选中格的四邻精确绘制外框，避免圈入未选单元格。
       if (selected) {
-        if (!state.selectedCells.has(cellSelectionKey(row - 1, field))) shadows.push("inset 0 2px #4e8fec");
-        if (!state.selectedCells.has(cellSelectionKey(row + 1, field))) shadows.push("inset 0 -2px #4e8fec");
+        if (!state.selectedCells.has(cellSelectionKey(row - 1, field))) shadows.push("inset 0 2px var(--accent)");
+        if (!state.selectedCells.has(cellSelectionKey(row + 1, field))) shadows.push("inset 0 -2px var(--accent)");
         const prevField = columns[column - 1]?.eng_name, nextField = columns[column + 1]?.eng_name;
-        if (!prevField || !state.selectedCells.has(cellSelectionKey(row, prevField))) shadows.push("inset 2px 0 #4e8fec");
-        if (!nextField || !state.selectedCells.has(cellSelectionKey(row, nextField))) shadows.push("inset -2px 0 #4e8fec");
+        if (!prevField || !state.selectedCells.has(cellSelectionKey(row, prevField))) shadows.push("inset 2px 0 var(--accent)");
+        if (!nextField || !state.selectedCells.has(cellSelectionKey(row, nextField))) shadows.push("inset -2px 0 var(--accent)");
       }
     } else {
       const boxed = Boolean(boxModel && boxRows.has(row) && boxColumns.has(column));
-      if (boxed && row === firstRow) shadows.push("inset 0 2px #4e8fec");
-      if (boxed && row === lastRow) shadows.push("inset 0 -2px #4e8fec");
-      if (boxed && column === firstColumn) shadows.push("inset 2px 0 #4e8fec");
-      if (boxed && column === lastColumn) shadows.push("inset -2px 0 #4e8fec");
+      if (boxed && row === firstRow) shadows.push("inset 0 2px var(--accent)");
+      if (boxed && row === lastRow) shadows.push("inset 0 -2px var(--accent)");
+      if (boxed && column === firstColumn) shadows.push("inset 2px 0 var(--accent)");
+      if (boxed && column === lastColumn) shadows.push("inset -2px 0 var(--accent)");
     }
     const shadow = shadows.join(", ");
     if (entry.shadow !== shadow) { cell.style.boxShadow = shadow; entry.shadow = shadow; }
@@ -2338,6 +2432,28 @@ function schemaFormValue(withMeta = false) {
           throw new Error(`${column.eng_name} 菜单选项格式无效（${error.message}），请双击选项列重新配置`);
         }
       }
+      if (column.disp_type === CHOICE_DISPLAY_TYPE && isChoiceSchemaType(column.data_type) && String(column.disp_menu || "").trim()) {
+        try {
+          const parsed = JSON.parse(String(column.disp_menu));
+          if (!Array.isArray(parsed)) throw new Error("必须为 JSON 数组");
+          const isInt = isIntegerSchemaType(column.data_type);
+          const seen = new Set();
+          for (const item of parsed) {
+            if (isInt) {
+              if (typeof item !== "number" || !Number.isInteger(item)) throw new Error("整数类型字段的选择选项只能为整数");
+              const key = String(item);
+              if (seen.has(key)) throw new Error(`选项 "${key}" 重复`);
+              seen.add(key);
+            } else {
+              if (typeof item !== "string") throw new Error("字符串类型字段的选择选项只能为字符串");
+              if (seen.has(item)) throw new Error(`选项 "${item}" 重复`);
+              seen.add(item);
+            }
+          }
+        } catch (error) {
+          throw new Error(`${column.eng_name} 选择选项格式无效（${error.message}），请双击选项列重新配置`);
+        }
+      }
       const rawDefault = column.default_value;
       delete column.default_value;
       if (rawDefault.trim()) {
@@ -2359,7 +2475,9 @@ function schemaFormValue(withMeta = false) {
 function schemaChanged() { state.schemaDirty = true; localDrafts.schedule(); updateAutoRefreshStatus(); }
 const schemaDisplayTypes = ["文本", "整数", "浮点数", "布尔", "下拉框"];
 function schemaDisplayTypesFor(kind) {
-  return isIntegerSchemaType(kind) ? [...schemaDisplayTypes, TIME_DISPLAY_TYPE, MENU_DISPLAY_TYPE] : [...schemaDisplayTypes];
+  if (isIntegerSchemaType(kind)) return [...schemaDisplayTypes, TIME_DISPLAY_TYPE, MENU_DISPLAY_TYPE, CHOICE_DISPLAY_TYPE];
+  if (isStringSchemaType(kind)) return [...schemaDisplayTypes, CHOICE_DISPLAY_TYPE];
+  return [...schemaDisplayTypes];
 }
 function schemaDefaultDisplayType(kind) {
   const type = String(kind || "str").toLowerCase();
@@ -2381,7 +2499,10 @@ function normalizeSchemaDisplayType(raw, dataType, dispMenu = "") {
   if (isIntegerSchemaType(dataType) && (text === MENU_DISPLAY_TYPE || text === "菜单" || lower === "menu_dict" || lower === "enum_dict")) {
     return MENU_DISPLAY_TYPE;
   }
-  if (text === TIME_DISPLAY_TYPE || text === "时间" || text === MENU_DISPLAY_TYPE || text === "菜单") return fallback;
+  if (isChoiceSchemaType(dataType) && (text === CHOICE_DISPLAY_TYPE || text === "选择" || lower === "choice_set" || lower === "set")) {
+    return CHOICE_DISPLAY_TYPE;
+  }
+  if (text === TIME_DISPLAY_TYPE || text === "时间" || text === MENU_DISPLAY_TYPE || text === "菜单" || text === CHOICE_DISPLAY_TYPE || text === "选择") return fallback;
   if (text === "数字") return fallback !== "文本" ? fallback : "整数";
   if (["int", "integer", "long", "short", "uchar", "uint", "ulong", "datetime", "keyid"].includes(lower)) return "整数";
   if (["float", "double", "real", "number", "decimal"].includes(lower)) return "浮点数";
@@ -2420,9 +2541,9 @@ function updateSchemaLocks() {
     for (const input of row.querySelectorAll("[data-property]")) {
       const cell = input.closest("td");
       if (input.type === "hidden") continue;
-      if (input.classList.contains("schema-menu-json")) {
+      if (input.classList.contains("schema-menu-json") || input.classList.contains("schema-choice-json")) {
         input.disabled = readOnly;
-        const tip = readOnly ? "当前数据库只读，不可修改" : "双击配置菜单选项";
+        const tip = readOnly ? "当前数据库只读，不可修改" : input.classList.contains("schema-choice-json") ? "双击配置选择选项" : "双击配置菜单选项";
         input.title = tip;
         if (cell) {
           cell.classList.toggle("schema-locked", readOnly);
@@ -2488,7 +2609,9 @@ function renderSchema(definition) {
       ? (String(initialMenuRaw).trim() || DEFAULT_TIME_FORMAT)
       : displayType === MENU_DISPLAY_TYPE
         ? serializeMenuEntries(parseMenuDict(initialMenuRaw))
-        : initialMenuRaw;
+        : displayType === CHOICE_DISPLAY_TYPE
+          ? serializeChoiceSet(parseChoiceSet(initialMenuRaw, previousKind), previousKind)
+          : initialMenuRaw;
     const initialDefaultRaw = column.default_value == null ? "" : cellText(column.default_value);
     const initialDefaultText = column.default_value == null ? "" : typeof column.default_value === "string" && !integerTypes.has(columnKind(column)) ? JSON.stringify(column.default_value) : cellText(column.default_value);
 
@@ -2511,13 +2634,16 @@ function renderSchema(definition) {
       const kind = String(typeValue || "str").toLowerCase();
       const isTimeMode = dispTypeValue === TIME_DISPLAY_TYPE && isIntegerSchemaType(kind);
       const isMenuMode = dispTypeValue === MENU_DISPLAY_TYPE && isIntegerSchemaType(kind);
+      const isChoiceMode = dispTypeValue === CHOICE_DISPLAY_TYPE && isChoiceSchemaType(kind);
       const menuEntries = isTimeMode
         ? []
         : isMenuMode
           ? parseMenuDict(menuRaw).map((item) => ({ value: item.key, label: item.value ? `${item.value} (${item.key})` : item.key }))
-          : menuRaw
-            ? String(menuRaw).split("|").map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
-            : [];
+          : isChoiceMode
+            ? parseChoiceSet(menuRaw, kind).map((item) => ({ value: item, label: item }))
+            : menuRaw
+              ? String(menuRaw).split("|").map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
+              : [];
       const useSelect = boolTypes.has(kind) || menuEntries.length > 0;
       const existing = defaultCell.querySelector('[data-property="default_value"]');
       const originalValue = existing ? existing.dataset.originalValue : (useSelect ? initialDefaultRaw : initialDefaultText);
@@ -2561,6 +2687,7 @@ function renderSchema(definition) {
       const dispTypeValue = row.querySelector('[data-property="disp_type"]')?.value || displayType;
       const isTimeMode = dispTypeValue === TIME_DISPLAY_TYPE && isIntegerSchemaType(typeValue);
       const isMenuMode = dispTypeValue === MENU_DISPLAY_TYPE && isIntegerSchemaType(typeValue);
+      const isChoiceMode = dispTypeValue === CHOICE_DISPLAY_TYPE && isChoiceSchemaType(typeValue);
       const existing = menuCell.querySelector('[data-property="disp_menu"]');
       const originalValue = existing ? existing.dataset.originalValue : initialMenuNormalized;
       if (isTimeMode) {
@@ -2628,6 +2755,21 @@ function renderSchema(definition) {
         menuCell.replaceChildren(input);
         menuCell.title = "双击配置菜单选项";
         menuCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
+      } else if (isChoiceMode) {
+        const jsonVal = serializeChoiceSet(parseChoiceSet(rawMenuValue, typeValue), typeValue);
+        const input = node("input");
+        input.type = "text";
+        input.readOnly = true;
+        input.className = "schema-choice-json";
+        input.dataset.property = "disp_menu";
+        input.dataset.originalValue = originalValue;
+        input.value = jsonVal;
+        input.placeholder = "双击配置选择选项";
+        input.title = "双击配置选择选项";
+        input.setAttribute("aria-label", `${column.eng_name || "新字段"} 选择选项 JSON`);
+        menuCell.replaceChildren(input);
+        menuCell.title = "双击配置选择选项";
+        menuCell.classList.toggle("schema-modified", !isInitial && String(input.value) !== input.dataset.originalValue);
       } else {
         const input = node("input");
         input.dataset.property = "disp_menu";
@@ -2639,7 +2781,7 @@ function renderSchema(definition) {
           schemaChanged();
           const displayInput = row.querySelector('[data-property="disp_type"]');
           const hasMenu = Boolean(String(input.value || "").trim());
-          if (displayInput && displayInput.value !== TIME_DISPLAY_TYPE && displayInput.value !== MENU_DISPLAY_TYPE) {
+          if (displayInput && ![TIME_DISPLAY_TYPE, MENU_DISPLAY_TYPE, CHOICE_DISPLAY_TYPE].includes(displayInput.value)) {
             if (hasMenu && displayInput.value === schemaDefaultDisplayType(previousKind)) {
               displayInput.value = "下拉框";
               displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
@@ -2696,6 +2838,25 @@ function renderSchema(definition) {
             });
             return;
           }
+          const choiceJsonInput = cell.querySelector("input.schema-choice-json");
+          if (choiceJsonInput) {
+            const fieldLabel = row.querySelector('[data-property="eng_name"]')?.value?.trim() || column.eng_name || "新字段";
+            const currentDataType = row.querySelector('[data-property="data_type"]')?.value || column.data_type;
+            openChoiceOptionsDialog({
+              fieldName: fieldLabel,
+              dataType: currentDataType,
+              rawMenu: choiceJsonInput.value,
+              onApply: (nextJson) => {
+                choiceJsonInput.value = nextJson;
+                schemaChanged();
+                menuCell.classList.toggle("schema-modified", String(choiceJsonInput.value) !== choiceJsonInput.dataset.originalValue);
+                const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
+                renderDefaultControl(prevDefault, false);
+                updateSchemaLocks();
+              }
+            });
+            return;
+          }
           const currentInput = cell.querySelector('input[data-property="disp_menu"]:not([type="hidden"])');
           if (!currentInput) return;
           row.dataset.editing = "true"; updateSchemaLocks(); currentInput.disabled = false; currentInput.focus({ preventScroll: true });
@@ -2730,28 +2891,36 @@ function renderSchema(definition) {
             : prevDisplay;
           const wasTime = prevDisplay === TIME_DISPLAY_TYPE;
           const wasMenu = prevDisplay === MENU_DISPLAY_TYPE;
+          const wasChoice = prevDisplay === CHOICE_DISPLAY_TYPE;
           syncDisplayTypeOptions(input.value, nextPreferred);
           previousKind = input.value;
           const nowTime = displayInput?.value === TIME_DISPLAY_TYPE;
           const nowMenu = displayInput?.value === MENU_DISPLAY_TYPE;
+          const nowChoice = displayInput?.value === CHOICE_DISPLAY_TYPE;
           const currentMenuVal = menuCell?.querySelector('[data-property="disp_menu"]')?.value ?? "";
           let nextMenuVal = currentMenuVal;
           if (wasTime && !nowTime && TIME_FORMAT_PRESETS.includes(currentMenuVal)) nextMenuVal = "";
           if (wasMenu && !nowMenu && String(currentMenuVal).trim().startsWith("{")) nextMenuVal = "";
+          if (wasChoice && !nowChoice && String(currentMenuVal).trim().startsWith("[")) nextMenuVal = "";
+          if (nowChoice) nextMenuVal = serializeChoiceSet(parseChoiceSet(currentMenuVal, input.value), input.value);
           renderMenuControl(nextMenuVal, false);
           const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
           renderDefaultControl(prevDefault, false);
           updateSchemaLocks();
         } else if (property === "disp_type") {
+          const currentDataType = row.querySelector('[data-property="data_type"]')?.value || column.data_type;
           const currentMenuVal = menuCell?.querySelector('[data-property="disp_menu"]')?.value ?? "";
+          const trimmedMenu = String(currentMenuVal).trim();
           let nextMenuVal = currentMenuVal;
           if (input.value === TIME_DISPLAY_TYPE) {
-            if (!String(currentMenuVal).trim() || String(currentMenuVal).includes("|") || String(currentMenuVal).trim().startsWith("{")) {
+            if (!trimmedMenu || trimmedMenu.includes("|") || trimmedMenu.startsWith("{") || trimmedMenu.startsWith("[")) {
               nextMenuVal = DEFAULT_TIME_FORMAT;
             }
           } else if (input.value === MENU_DISPLAY_TYPE) {
             nextMenuVal = serializeMenuEntries(parseMenuDict(currentMenuVal));
-          } else if (TIME_FORMAT_PRESETS.includes(String(currentMenuVal).trim()) || String(currentMenuVal).trim().startsWith("{")) {
+          } else if (input.value === CHOICE_DISPLAY_TYPE) {
+            nextMenuVal = serializeChoiceSet(parseChoiceSet(currentMenuVal, currentDataType), currentDataType);
+          } else if (TIME_FORMAT_PRESETS.includes(trimmedMenu) || trimmedMenu.startsWith("{") || trimmedMenu.startsWith("[")) {
             nextMenuVal = "";
           }
           renderMenuControl(nextMenuVal, false);
@@ -2902,6 +3071,142 @@ if (el("menu-options-apply")) {
     const jsonText = serializeMenuEntries(entries);
     if (menuOptionsDialogState?.onApply) menuOptionsDialogState.onApply(jsonText);
     el("menu-options-dialog")?.close();
+  };
+}
+
+// 选择类型选项表格弹窗（按字段类型严格校验整数/字符串且禁止重复，按 JSON 数组集合存储）
+let choiceOptionsDialogState = null;
+function renderChoiceOptionsEmptyRow(tbody) {
+  if (tbody.querySelector("tr[data-choice-row]")) return;
+  const tr = node("tr", null, "menu-options-empty-row");
+  const td = node("td", "暂无待选项，点击“添加选项”新增", "menu-options-empty");
+  td.colSpan = 2;
+  tr.append(td);
+  tbody.append(tr);
+}
+function appendChoiceOptionRow(tbody, val = "", isInt = false, autoFocus = false) {
+  tbody.querySelector(".menu-options-empty-row")?.remove();
+  const tr = node("tr");
+  tr.dataset.choiceRow = "1";
+  const valTd = node("td"), actTd = node("td");
+  const valInput = node("input");
+  valInput.type = "text";
+  if (isInt) {
+    valInput.inputMode = "numeric";
+    valInput.dataset.choiceInt = "1";
+    valInput.placeholder = "0";
+  } else {
+    valInput.placeholder = "输入选项文本";
+  }
+  valInput.dataset.choiceCol = "value";
+  valInput.value = val;
+  valInput.setAttribute("aria-label", isInt ? "待选择值（整数）" : "待选择值（文本）");
+  valInput.onkeydown = (event) => {
+    if (event.key === "Enter") { event.preventDefault(); el("choice-options-apply").click(); }
+  };
+  const delBtn = node("button", "删除", "danger-outline small");
+  delBtn.type = "button";
+  delBtn.onclick = () => {
+    tr.remove();
+    renderChoiceOptionsEmptyRow(tbody);
+    el("choice-options-error").textContent = "";
+  };
+  valTd.append(valInput);
+  actTd.append(delBtn);
+  tr.append(valTd, actTd);
+  tbody.append(tr);
+  if (autoFocus) { valInput.focus({ preventScroll: true }); valInput.select(); }
+}
+function nextChoiceIntegerValue(tbody) {
+  const vals = [...tbody.querySelectorAll('input[data-choice-col="value"]')]
+    .map((input) => input.value.trim())
+    .filter((text) => /^-?\d+$/.test(text))
+    .map((text) => BigInt(text));
+  if (!vals.length) return "0";
+  let maxVal = vals[0];
+  for (const v of vals) if (v > maxVal) maxVal = v;
+  return (maxVal + 1n).toString();
+}
+function openChoiceOptionsDialog({ fieldName, dataType, rawMenu, onApply }) {
+  const dialog = el("choice-options-dialog");
+  const tbody = el("choice-options-body");
+  if (!dialog || !tbody) return;
+  const isInt = isIntegerSchemaType(dataType);
+  choiceOptionsDialogState = { dataType, isInt, onApply };
+  el("choice-options-title").textContent = fieldName ? `选择选项配置 · ${fieldName}` : "选择选项配置";
+  el("choice-options-value-head").textContent = isInt ? "待选择值（整数）" : "待选择值（文本）";
+  el("choice-options-error").textContent = "";
+  tbody.replaceChildren();
+  const items = parseChoiceSet(rawMenu, dataType);
+  if (items.length) {
+    for (const item of items) appendChoiceOptionRow(tbody, item, isInt, false);
+  } else {
+    renderChoiceOptionsEmptyRow(tbody);
+  }
+  dialog.showModal();
+  const firstInput = tbody.querySelector("input");
+  if (firstInput) firstInput.focus({ preventScroll: true });
+  else el("choice-options-add")?.focus({ preventScroll: true });
+}
+if (el("choice-options-add")) {
+  el("choice-options-add").onclick = () => {
+    const tbody = el("choice-options-body");
+    const isInt = Boolean(choiceOptionsDialogState?.isInt);
+    el("choice-options-error").textContent = "";
+    appendChoiceOptionRow(tbody, isInt ? nextChoiceIntegerValue(tbody) : "", isInt, true);
+  };
+}
+if (el("choice-options-cancel")) el("choice-options-cancel").onclick = () => el("choice-options-dialog")?.close();
+if (el("choice-options-close-x")) el("choice-options-close-x").onclick = () => el("choice-options-dialog")?.close();
+if (el("choice-options-apply")) {
+  el("choice-options-apply").onclick = () => {
+    const tbody = el("choice-options-body"), err = el("choice-options-error");
+    const isInt = Boolean(choiceOptionsDialogState?.isInt);
+    err.textContent = "";
+    const rows = [...tbody.querySelectorAll("tr[data-choice-row]")];
+    const values = [];
+    const seen = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const input = rows[i].querySelector('input[data-choice-col="value"]');
+      const raw = input.value;
+      if (!raw.trim()) continue;
+      if (isInt) {
+        const trimmed = raw.trim();
+        if (!/^-?\d+$/.test(trimmed)) {
+          err.textContent = `第 ${i + 1} 行只能输入整数`;
+          input.focus({ preventScroll: true });
+          return;
+        }
+        try {
+          const big = BigInt(trimmed);
+          if (big < -(2n ** 63n) || big >= 2n ** 63n) throw new Error("range");
+        } catch {
+          err.textContent = `第 ${i + 1} 行整数超出 64 位范围`;
+          input.focus({ preventScroll: true });
+          return;
+        }
+        const norm = BigInt(trimmed).toString();
+        if (seen.has(norm)) {
+          err.textContent = `选项 "${norm}" 重复，不能重复`;
+          input.focus({ preventScroll: true });
+          return;
+        }
+        seen.add(norm);
+        values.push(norm);
+      } else {
+        const strVal = raw.trim();
+        if (seen.has(strVal)) {
+          err.textContent = `选项 "${strVal}" 重复，不能重复`;
+          input.focus({ preventScroll: true });
+          return;
+        }
+        seen.add(strVal);
+        values.push(strVal);
+      }
+    }
+    const jsonText = serializeChoiceSet(values, choiceOptionsDialogState?.dataType || "str");
+    if (choiceOptionsDialogState?.onApply) choiceOptionsDialogState.onApply(jsonText);
+    el("choice-options-dialog")?.close();
   };
 }
 

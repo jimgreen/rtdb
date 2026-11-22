@@ -632,7 +632,8 @@ h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
 /* 等宽数字工具集 */
 .count, #table-count, #field-count, #row-range, #page-total, #page-number,
 #records-table-meta, #last-refresh, #log-summary, #log-page-label,
-th.row-header, td.is-numeric, #storage-statistics .kpi-value, #receipt-statistics dd {
+th.row-header, td.is-numeric, #storage-statistics .kpi-value, #receipt-statistics dd,
+.time-edit-preview code, .menu-options-grid input[data-menu-col="key"] {
   font-variant-numeric: tabular-nums;
 }
 
@@ -1095,6 +1096,8 @@ tbody tr { transition: background-color 100ms ease; }
 tbody tr:nth-child(even) { background: var(--table-stripe); }
 tbody tr:hover { background: var(--table-hover); }
 tbody tr.selected { background: var(--bg-active); }
+tbody tr.selected > th.row-header,
+tbody tr.selected > td:first-child { box-shadow: inset 3px 0 var(--accent); }
 
 th.row-corner, th.row-header {
   width: 36px;
@@ -1354,21 +1357,26 @@ td.cell-invalid .cell-value { color: var(--danger); }
 #schema-fields td .schema-time-format > input:focus { outline: none; box-shadow: none; }
 #schema-fields td.schema-locked .schema-time-format > select,
 #schema-fields td.schema-locked .schema-time-format > input { color: var(--text-muted); -webkit-text-fill-color: var(--text-muted); opacity: 0.88; }
-#schema-fields td > input.schema-menu-json {
+#schema-fields td > input.schema-menu-json,
+#schema-fields td > input.schema-choice-json {
   font-family: var(--font-mono);
   font-size: 12px;
   cursor: pointer;
 }
 #menu-options-dialog { width: min(560px, calc(100vw - 32px)); }
+#choice-options-dialog { width: min(460px, calc(100vw - 32px)); }
 .menu-options-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
-.menu-options-grid { max-height: 46vh; overflow: auto; margin-top: 0; }
-.menu-options-grid table { width: 100%; table-layout: fixed; }
+.menu-options-grid, .choice-options-grid { max-height: 46vh; overflow: auto; margin-top: 0; }
+.menu-options-grid table, .choice-options-grid table { width: 100%; table-layout: fixed; }
 .menu-options-grid th:nth-child(1), .menu-options-grid td:nth-child(1) { width: 32%; }
 .menu-options-grid th:nth-child(2), .menu-options-grid td:nth-child(2) { width: 52%; }
 .menu-options-grid th:nth-child(3), .menu-options-grid td:nth-child(3) { width: 16%; text-align: center; }
-.menu-options-grid td { padding: 4px 6px; }
-.menu-options-grid input { width: 100%; height: 28px; padding: 3px 8px; font-size: 12px; }
-.menu-options-grid input[data-menu-col="key"] { font-family: var(--font-mono); }
+.choice-options-grid th:nth-child(1), .choice-options-grid td:nth-child(1) { width: 78%; }
+.choice-options-grid th:nth-child(2), .choice-options-grid td:nth-child(2) { width: 22%; text-align: center; }
+.menu-options-grid td, .choice-options-grid td { padding: 4px 6px; }
+.menu-options-grid input, .choice-options-grid input { width: 100%; height: 28px; padding: 3px 8px; font-size: 12px; }
+.menu-options-grid input[data-menu-col="key"],
+.choice-options-grid input[data-choice-int="1"] { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .menu-options-empty { text-align: center; color: var(--text-muted); padding: 18px 10px !important; }
 #time-edit-dialog { width: min(480px, calc(100vw - 32px)); }
 .time-edit-grid { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 12px; }
@@ -1933,14 +1941,24 @@ html[data-theme="glassmorphism"] .operation-notice {
 html[data-theme="glassmorphism"] dialog,
 html[data-theme="glassmorphism"] .row-context-menu,
 html[data-theme="glassmorphism"] .submenu,
+html[data-theme="glassmorphism"] .sql-history-list,
 html[data-theme="glassmorphism"] #workspace-picker {
   background: rgba(15, 23, 42, 0.94);
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
-html[data-theme="glassmorphism"] .table-wrap,
+html[data-theme="glassmorphism"] .grid-wrap,
 html[data-theme="glassmorphism"] .chart-area {
   background: rgba(15, 23, 42, 0.72);
+}
+html[data-theme="glassmorphism"] #data-grid thead th,
+html[data-theme="glassmorphism"] #data-grid th.row-header,
+html[data-theme="glassmorphism"] #schema-fields th {
+  background: rgba(18, 28, 48, 0.94);
+}
+html[data-theme="glassmorphism"] #data-grid .cell-editor,
+html[data-theme="glassmorphism"] #data-grid select.cell-editor {
+  background: rgba(15, 23, 42, 0.96) !important;
 }
 
 /* 5. 编辑杂志（Editorial）：衬线标题字距与零阴影纸张分隔线 */
