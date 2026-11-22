@@ -2144,3 +2144,510 @@ html[data-theme="sci-fi-matrix"] .badge {
 html[data-theme="sci-fi-matrix"] .brand-mark {
   box-shadow: 0 0 14px rgba(0, 230, 118, 0.34);
 }
+
+
+/* ==========================================================================
+   采样点定义与实时双轴采样点曲线板 (Sample Trends · 适配全部 8 套主题)
+   ========================================================================== */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* 数据表单元格采样点彩色圆点标识（零 DOM 侵入，不影响双击编辑与复制） */
+#data-grid td.cell-sample-point {
+  position: relative;
+  padding-left: 18px;
+  background-image: linear-gradient(90deg, var(--accent-soft) 0%, transparent 40%);
+}
+#data-grid td.cell-sample-point::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: var(--sample-point-color, var(--accent));
+  box-shadow: 0 0 0 2px var(--bg-surface);
+  pointer-events: none;
+}
+
+/* 采样点曲线板主 Tab 分栏容器 */
+.sample-trends-tab.active {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.st-list-pane,
+.st-chart-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 110px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 10px;
+  gap: 6px;
+}
+
+.st-pane-hidden {
+  display: none !important;
+}
+
+.st-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  flex: 0 0 auto;
+}
+
+.st-toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.st-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.st-toolbar select,
+.st-toolbar input[type="number"],
+.st-toolbar input[type="datetime-local"] {
+  min-height: 28px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.st-toolbar select option,
+.st-inline-axis option,
+.st-ed-axis option,
+.st-ed-width option,
+#st-add-dialog select option {
+  background: var(--bg-option);
+  color: var(--text-primary);
+}
+
+.st-toolbar input[type="number"] {
+  width: 68px;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-fixed-range-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.st-count-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上半区：采样点定义表 */
+.st-list-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.st-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+
+.st-table th,
+.st-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.st-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.st-table tbody tr:nth-child(even) {
+  background: var(--table-stripe);
+}
+
+.st-table tbody tr:hover {
+  background: var(--table-hover);
+}
+
+.st-table tbody tr.is-focused {
+  background: var(--bg-selected);
+}
+
+.st-th-vis {
+  width: 32px;
+  text-align: center;
+}
+
+.st-col-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.st-color-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--bg-surface);
+}
+
+.st-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.st-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.st-val-warn {
+  color: var(--warning-text);
+  font-weight: 500;
+}
+
+.st-kind-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.st-kind-pill.is-switch {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+  color: var(--success);
+}
+
+.st-kind-pill.is-analog {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent);
+}
+
+.st-col-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.st-inline-axis {
+  min-height: 24px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.st-list-empty {
+  text-align: center !important;
+  color: var(--text-muted);
+  padding: 20px 12px !important;
+  white-space: normal !important;
+}
+
+/* 中区：双向可拖拽与快捷全屏分隔条 */
+.st-splitter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 18px;
+  margin: 2px 0;
+  cursor: row-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.st-splitter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--border);
+  border-radius: 2px;
+  transition: background var(--transition), height var(--transition);
+}
+
+.st-splitter:hover::before,
+.st-splitter.is-dragging::before {
+  height: 3px;
+  background: var(--accent);
+}
+
+.st-splitter-grip {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background var(--transition);
+}
+
+.st-splitter:hover .st-splitter-grip,
+.st-splitter.is-dragging .st-splitter-grip {
+  background: var(--accent);
+}
+
+.st-splitter-btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 16px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.st-splitter-btn:hover,
+.st-splitter-btn.is-active {
+  background: var(--accent-btn);
+  border-color: var(--accent-btn);
+  color: var(--accent-btn-text);
+}
+
+body.st-resizing,
+body.st-resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+/* 下半区：采样点实时双轴曲线板 */
+.st-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.st-range-text {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.st-chart-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 150px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.st-chart-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.st-chart-empty {
+  position: absolute;
+  inset: 16% 12%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.st-chart-tooltip {
+  position: absolute;
+  top: 38px;
+  right: 12px;
+  max-width: min(56%, 360px);
+  max-height: calc(100% - 48px);
+  overflow: hidden;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.st-chart-tooltip.is-left {
+  right: auto;
+  left: 12px;
+}
+
+/* 弹窗内部表单布局 */
+.st-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 10px 0;
+}
+
+.st-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.st-axes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.st-axis-box {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.st-axis-box legend {
+  padding: 0 4px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.st-axis-box label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.st-axis-box input[type="number"],
+.st-axis-box input[type="text"] {
+  width: 120px;
+}
+
+.st-series-dialog-body {
+  display: grid;
+  gap: 8px;
+  max-height: min(55vh, 420px);
+  overflow: auto;
+  margin: 10px 0;
+  padding-right: 4px;
+}
+
+.st-series-edit-row {
+  display: grid;
+  grid-template-columns: 22px 34px minmax(140px, 1fr) 74px 76px 64px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.st-series-edit-row input[type="color"] {
+  width: 30px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .st-form-grid,
+  .st-axes-grid {
+    grid-template-columns: 1fr;
+  }
+  .st-series-edit-row {
+    grid-template-columns: 22px 34px 1fr 1fr;
+  }
+}

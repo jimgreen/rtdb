@@ -24,6 +24,7 @@ from .errors import APIError
 from .audit import status_for_exception
 from .sqlite_service import SQLiteManager, browser_value
 from .management import SQLiteManagement
+from .sample_points import SampleTrendRegistry, read_sample_points
 from .tasks import TaskRegistry
 from core import SchemaError
 from core.sqlite_db import SQLiteBusyError
@@ -147,7 +148,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                     if method == 'GET' and (
                         path_only.startswith('/static/')
                         or path_only in ('/', '/index.html', '/favicon.ico', '/api/health')
-                        or path_only in ('/api/manage/audit-delivery', '/api/manage/receipt-maintenance', '/api/manage/logs')
+                        or path_only in ('/api/manage/audit-delivery', '/api/manage/receipt-maintenance', '/api/manage/logs', '/api/manage/sample-trends')
                         or '/tasks/' in path_only
                     ):
                         return False
@@ -309,7 +310,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, If-Match')
         self.end_headers()
 
     def do_GET(self):
@@ -450,6 +451,54 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
                 duration_ms=(time.perf_counter() - started) * 1000, result=result,
             )
             self._send_json(201, result)
+            return True
+        if parts == ['api', 'manage', 'sample-trends']:
+            started = time.perf_counter()
+            manager = self.manager
+            history = self.context.sample_trends.for_manager(manager)
+            if method == 'GET':
+                raw_after = (query or {}).get('after_ms', ['0'])[0]
+                try:
+                    after_ms = int(raw_after or 0)
+                except (TypeError, ValueError) as error:
+                    raise APIError(400, 'after_ms 必须为整数') from error
+                result = history.get(after_ms)
+                self._server_ms = (time.perf_counter() - started) * 1000
+                self._send_json(200, result)
+                return True
+            if method == 'PUT':
+                expected_revision = self.headers.get('If-Match')
+                try:
+                    result = history.put(payload, expected_revision=expected_revision)
+                except Exception as error:
+                    manager.record_operation(
+                        category='system', operation='更新采样点配置', status='failure',
+                        http_status=status_for_exception(error), method='PUT',
+                        path='/api/manage/sample-trends',
+                        duration_ms=(time.perf_counter() - started) * 1000, error=error,
+                    )
+                    raise
+                manager.record_operation(
+                    category='system', operation='更新采样点配置', status='success',
+                    http_status=200, method='PUT',
+                    path='/api/manage/sample-trends',
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    result={'series_count': len(result.get('settings', {}).get('series', [])),
+                            'interval_seconds': result.get('settings', {}).get('interval_seconds'),
+                            'retention_seconds': result.get('settings', {}).get('retention_seconds')},
+                )
+                self._server_ms = (time.perf_counter() - started) * 1000
+                self._send_json(200, result)
+                return True
+            raise APIError(405, '采样点接口仅支持 GET / PUT')
+        if parts == ['api', 'manage', 'sample-trends', 'read'] and method == 'POST':
+            started = time.perf_counter()
+            points = payload.get('points') if isinstance(payload, dict) else None
+            if not isinstance(points, list):
+                raise APIError(400, 'points 必须是采样点数组')
+            readings = read_sample_points(self.manager, points)
+            self._server_ms = (time.perf_counter() - started) * 1000
+            self._send_json(200, {'readings': readings})
             return True
         if len(parts)==3 and parts[2]=='tasks' and method=='GET':
             self._send_json(200,{'tasks':self.context.tasks.recent()})
@@ -610,6 +659,8 @@ class SQLiteHTTPServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if hasattr(self, 'sample_trends'):
+            self.sample_trends.close()
         if hasattr(self, 'workspaces'):
             self.workspaces.close()
         if hasattr(self, 'tasks'):
@@ -643,6 +694,7 @@ def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=Non
         server.tasks = TaskRegistry(manager.data_dir/'.web-tasks', manager)
         from .write_receipts import AuditDelivery
         server.audit_delivery = manager.audit_delivery = AuditDelivery(manager)
+        server.sample_trends = SampleTrendRegistry(manager.data_dir)
     except BaseException:
         server.server_close()
         raise

@@ -45,6 +45,7 @@
       <nav class="tabs" role="tablist" aria-label="管理功能">
         <button id="nav-data" class="tab active" role="tab" aria-selected="true" aria-controls="tab-data" data-tab="data">结果展示</button>
         <button id="nav-schema" class="tab" role="tab" aria-selected="false" aria-controls="tab-schema" data-tab="schema">表结构</button>
+        <button id="nav-sample-trends" class="tab" role="tab" aria-selected="false" aria-controls="tab-sample-trends" data-tab="sample-trends"><span data-i18n="st.tabTitle">采样点曲线板</span><span id="sample-trends-badge" class="tab-badge" hidden></span></button>
       </nav>
       <section id="tab-data" class="tab-panel data-tab active" role="tabpanel" aria-labelledby="nav-data">
         <div id="query-panel" class="panel query-panel"><div class="query-controls">
@@ -84,6 +85,76 @@
         <div class="panel fill-panel"><div class="panel-title"><div><h3>表结构定义</h3><p id="schema-hint" class="muted" hidden></p></div><div class="button-row wrap"><button id="schema-indexes-btn" type="button" class="secondary small">索引设置</button><button id="schema-preview-btn" type="button" class="secondary small">预览变更</button><button id="check-table" class="secondary small">检查数据</button><button id="export-schema" class="secondary small">导出定义</button><button id="delete-schema" class="danger-outline small">删除空表结构</button><button id="save-schema" class="small">保存结构</button></div></div>
           <div class="schema-head"><label>英文表名<input id="schema-name" placeholder="例如 devices"></label><label>中文表名<input id="schema-label" placeholder="例如 设备表"></label><input id="schema-field-filter" type="search" class="schema-field-filter" placeholder="过滤字段…" aria-label="过滤字段"><button id="add-column" class="secondary small">＋ 添加字段</button></div>
           <div id="schema-fields" class="grid-wrap"></div>
+        </div>
+      </section>
+      <section id="tab-sample-trends" class="tab-panel sample-trends-tab" role="tabpanel" aria-labelledby="nav-sample-trends">
+        <div id="st-list-pane" class="panel st-list-pane">
+          <div class="st-toolbar">
+            <div class="st-toolbar-group">
+              <strong data-i18n="st.listTitle">采样点定义</strong>
+              <span id="st-point-count" class="st-count-pill">0 / 24</span>
+              <button id="st-add-btn" type="button" class="small" data-i18n="st.btnAdd">＋ 添加采样点</button>
+            </div>
+            <div class="st-toolbar-group">
+              <label><span data-i18n="st.intervalLabel">采样周期</span><select id="st-interval" aria-label="采样周期"><option value="1">1s</option><option value="2">2s</option><option value="5" selected>5s</option><option value="10">10s</option><option value="15">15s</option><option value="30">30s</option><option value="60">60s</option></select></label>
+              <label><span data-i18n="st.retentionLabel">后台留存</span><span class="preset-input"><select id="st-retention-preset" aria-label="后台留存预设"><option value="15">15 min</option><option value="30">30 min</option><option value="60" selected>60 min</option><option value="180">3 h</option><option value="360">6 h</option><option value="720">12 h</option><option value="1440">24 h</option><option value="custom" data-i18n="st.customOpt">自定义…</option></select><input id="st-retention-custom" type="number" min="1" max="1440" step="1" value="60" aria-label="自定义留存分钟数" hidden></span></label>
+              <button id="st-save-policy" type="button" class="secondary small" data-i18n="st.btnSavePolicy">保存配置</button>
+            </div>
+          </div>
+          <div class="grid-wrap st-list-grid">
+            <table class="st-table">
+              <thead>
+                <tr>
+                  <th class="st-th-vis" aria-label="显隐"></th>
+                  <th data-i18n="st.colName">名称</th>
+                  <th data-i18n="st.colTarget">表 · 字段</th>
+                  <th data-i18n="st.colKey">主键</th>
+                  <th data-i18n="st.colKind">类型</th>
+                  <th data-i18n="st.colLatest">最近值</th>
+                  <th data-i18n="st.colTime">采样时间</th>
+                  <th data-i18n="st.colActions">纵轴 / 操作</th>
+                </tr>
+              </thead>
+              <tbody id="st-list-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="st-splitter" class="st-splitter" role="separator" aria-orientation="horizontal" aria-label="调整采样列表与曲线板高度">
+          <button id="st-btn-chart-full" type="button" class="st-splitter-btn" title="隐藏列表，全屏显示曲线板" data-i18n-title="st.tipChartFull">▲</button>
+          <span class="st-splitter-grip" aria-hidden="true"></span>
+          <button id="st-btn-list-full" type="button" class="st-splitter-btn" title="隐藏曲线板，全屏显示采样点列表" data-i18n-title="st.tipListFull">▼</button>
+        </div>
+        <div id="st-chart-pane" class="panel st-chart-pane">
+          <div class="st-toolbar st-chart-toolbar">
+            <div class="st-toolbar-group">
+              <label><span data-i18n="st.rangeModeLabel">时间区间</span><select id="st-range-mode" aria-label="时间区间模式"><option value="rolling" data-i18n="st.modeRolling">跟随当前</option><option value="fixed" data-i18n="st.modeFixed">固定起止</option></select></label>
+              <label><span data-i18n="st.windowLabel">窗口</span><select id="st-window-minutes" aria-label="显示窗口"><option value="5">5 min</option><option value="15" selected>15 min</option><option value="30">30 min</option><option value="60">60 min</option><option value="180">3 h</option><option value="360">6 h</option><option value="720">12 h</option><option value="1440">24 h</option></select></label>
+              <label><span data-i18n="st.stepLabel">对齐步长</span><select id="st-step-seconds" aria-label="对齐步长"><option value="0" data-i18n="st.stepAuto">自动</option><option value="5">5s</option><option value="15">15s</option><option value="30">30s</option><option value="60">60s</option></select></label>
+              <span id="st-fixed-range-wrap" class="st-fixed-range-wrap" hidden>
+                <input id="st-range-from" type="datetime-local" step="1" aria-label="开始时间">
+                <span>~</span>
+                <input id="st-range-until" type="datetime-local" step="1" aria-label="结束时间">
+              </span>
+            </div>
+            <div class="st-toolbar-group">
+              <button id="st-zoom-in" type="button" class="secondary small" data-i18n="st.btnZoomIn">放大</button>
+              <button id="st-zoom-out" type="button" class="secondary small" data-i18n="st.btnZoomOut">缩小</button>
+              <button id="st-zoom-reset" type="button" class="secondary small" data-i18n="st.btnReset">重置</button>
+              <button id="st-axes-btn" type="button" class="secondary small" data-i18n="st.btnAxes">纵轴</button>
+              <button id="st-series-btn" type="button" class="secondary small" data-i18n="st.btnSeries">曲线</button>
+              <button id="st-export-csv" type="button" class="secondary small" data-i18n="st.btnExportCsv">导出 CSV</button>
+            </div>
+          </div>
+          <div class="st-status-bar">
+            <span id="st-range-text" class="st-range-text">—</span>
+            <span id="st-status-text" class="muted"></span>
+            <span id="st-error-text" class="error-text" role="alert" hidden></span>
+          </div>
+          <div id="st-chart-wrap" class="st-chart-wrap">
+            <canvas id="st-canvas" aria-label="采样点实时趋势曲线"></canvas>
+            <div id="st-chart-empty" class="st-chart-empty" hidden></div>
+            <div id="st-chart-tooltip" class="st-chart-tooltip" hidden></div>
+          </div>
         </div>
       </section>
       <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="调整底部区域高度"></div>
@@ -263,6 +334,16 @@
       <div class="submenu" role="menu" hidden>
         <button type="button" role="menuitem" data-action="chart-left">添加至左轴曲线</button>
         <button type="button" role="menuitem" data-action="chart-right">添加至右轴曲线</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span data-i18n="st.menuGroup">采样点</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="sample-add-left" data-i18n="st.menuAddLeft">设为采样点（左轴）</button>
+        <button type="button" role="menuitem" data-action="sample-add-right" data-i18n="st.menuAddRight">设为采样点（右轴）</button>
+        <button type="button" role="menuitem" data-action="sample-locate" data-i18n="st.menuLocate">在采样曲线板中定位</button>
+        <button type="button" role="menuitem" data-action="sample-switch-axis" data-i18n="st.menuSwitchAxis">切换采样纵轴</button>
+        <button type="button" role="menuitem" data-action="sample-remove" class="danger" data-i18n="st.menuRemove">移除采样点</button>
       </div>
     </div>
     <hr>
@@ -456,6 +537,71 @@
     </form>
   </dialog>
 
+  <div id="st-chart-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="采样曲线操作" hidden>
+    <div id="st-cm-series-group">
+      <button type="button" role="menuitem" data-st-action="switch-axis" data-i18n="st.cmToRight">切换至右轴</button>
+      <button type="button" role="menuitem" data-st-action="toggle-visible" data-i18n="st.cmHide">隐藏此曲线</button>
+      <button type="button" role="menuitem" data-st-action="remove-series" class="danger" data-i18n="st.cmRemove">移除此曲线</button>
+      <hr>
+    </div>
+    <button type="button" role="menuitem" data-st-action="axes-settings" data-i18n="st.cmAxes">纵轴设置…</button>
+    <button type="button" role="menuitem" data-st-action="series-settings" data-i18n="st.cmSeries">曲线设置…</button>
+    <hr>
+    <button type="button" role="menuitem" data-st-action="zoom-in" data-i18n="st.btnZoomIn">放大</button>
+    <button type="button" role="menuitem" data-st-action="zoom-out" data-i18n="st.btnZoomOut">缩小</button>
+    <button type="button" role="menuitem" data-st-action="zoom-reset" data-i18n="st.btnReset">重置</button>
+    <button type="button" role="menuitem" data-st-action="export-csv" data-i18n="st.btnExportCsv">导出 CSV</button>
+  </div>
+
+  <dialog id="st-add-dialog" aria-labelledby="st-add-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="st-add-title" data-i18n="st.addDialogTitle">添加采样点</h2><button type="button" id="st-add-close-x" class="icon" aria-label="关闭">×</button></div>
+      <div class="st-form-grid">
+        <label><span data-i18n="st.fieldTable">数据表</span><select id="st-add-table"></select></label>
+        <label><span data-i18n="st.fieldRow">记录行（主键）</span><select id="st-add-row"></select></label>
+        <label><span data-i18n="st.fieldColumn">数值 / 布尔字段</span><select id="st-add-field"></select></label>
+        <label><span data-i18n="st.axisLabel">纵轴</span><select id="st-add-axis"><option value="left" data-i18n="chart.leftAxis">左轴</option><option value="right" data-i18n="chart.rightAxis">右轴</option></select></label>
+        <label><span data-i18n="st.colName">显示名称</span><input id="st-add-name" type="text" maxlength="120"></label>
+        <label><span data-i18n="st.colUnit">单位（可选）</span><input id="st-add-unit" type="text" maxlength="24" placeholder="kV / A / ℃"></label>
+      </div>
+      <p id="st-add-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="st-add-cancel" class="secondary">取消</button><button type="button" id="st-add-confirm">确定</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="st-axes-dialog" aria-labelledby="st-axes-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="st-axes-title" data-i18n="st.axesDialogTitle">纵轴设置</h2><button type="button" id="st-axes-close-x" class="icon" aria-label="关闭">×</button></div>
+      <div class="st-axes-grid">
+        <fieldset class="st-axis-box">
+          <legend data-i18n="chart.leftAxis">左轴</legend>
+          <label class="check-label"><input id="st-axis-left-auto" type="checkbox" checked><span data-i18n="st.axisAuto">自动范围</span></label>
+          <label><span data-i18n="st.axisMin">最小值</span><input id="st-axis-left-min" type="number" step="any"></label>
+          <label><span data-i18n="st.axisMax">最大值</span><input id="st-axis-left-max" type="number" step="any"></label>
+          <label><span data-i18n="st.colUnit">单位</span><input id="st-axis-left-unit" type="text" maxlength="24"></label>
+        </fieldset>
+        <fieldset class="st-axis-box">
+          <legend data-i18n="chart.rightAxis">右轴</legend>
+          <label class="check-label"><input id="st-axis-right-auto" type="checkbox" checked><span data-i18n="st.axisAuto">自动范围</span></label>
+          <label><span data-i18n="st.axisMin">最小值</span><input id="st-axis-right-min" type="number" step="any"></label>
+          <label><span data-i18n="st.axisMax">最大值</span><input id="st-axis-right-max" type="number" step="any"></label>
+          <label><span data-i18n="st.colUnit">单位</span><input id="st-axis-right-unit" type="text" maxlength="24"></label>
+        </fieldset>
+      </div>
+      <p id="st-axes-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="st-axes-cancel" class="secondary">取消</button><button type="button" id="st-axes-apply">应用</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="st-series-dialog" aria-labelledby="st-series-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="st-series-title" data-i18n="st.seriesDialogTitle">曲线设置</h2><button type="button" id="st-series-close-x" class="icon" aria-label="关闭">×</button></div>
+      <div id="st-series-dialog-body" class="st-series-dialog-body"></div>
+      <p id="st-series-error" class="error-text" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="st-series-cancel" class="secondary">取消</button><button type="button" id="st-series-apply">应用</button></div>
+    </form>
+  </dialog>
+
   <script src="/static/i18n.js"></script>
   <script src="/static/workspace.js"></script>
   <script src="/static/performance.js"></script>
@@ -471,6 +617,7 @@
   <script src="/static/drafts.js"></script>
   <script src="/static/virtual_grid.js"></script>
   <script src="/static/schema_tools.js"></script>
+  <script src="/static/sample_trends.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

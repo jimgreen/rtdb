@@ -11,13 +11,14 @@ from types import SimpleNamespace
 
 from .errors import APIError
 from .management import SQLiteManagement
+from .sample_points import SampleTrendRegistry
 from .sqlite_service import SQLiteManager, is_listed_database
 from .tasks import TaskRegistry
 from .write_receipts import AuditDelivery
 
 
 _RUNTIME_DIRECTORIES = {
-    '.web-archive', '.web-snapshots', '.web-tasks', '.web-uploads', 'rtdb-operation-logs',
+    '.rtdb-trends', '.web-archive', '.web-snapshots', '.web-tasks', '.web-uploads', 'rtdb-operation-logs',
 }
 _RUNTIME_FILES = {
     '.web-storage.json', '.web-storage.lock', 'rtdb-operation-log.jsonl',
@@ -190,6 +191,9 @@ class WorkspaceCatalog:
     def _is_context_idle(context):
         if getattr(context, 'in_flight', 0) > 0:
             return False
+        sample_trends = getattr(context, 'sample_trends', None)
+        if sample_trends is not None and sample_trends.has_active_samplers():
+            return False
         with context.tasks.lock:
             if context.tasks.running_databases or context.tasks.queues:
                 return False
@@ -201,6 +205,9 @@ class WorkspaceCatalog:
 
     @staticmethod
     def _close_context(context):
+        sample_trends = getattr(context, 'sample_trends', None)
+        if sample_trends is not None:
+            sample_trends.close()
         context.tasks.close()
         context.audit_delivery.close()
         context.sqlite_manager.close()
@@ -234,17 +241,21 @@ class WorkspaceCatalog:
                 evicted = self.contexts.pop(victim_key)
             manager = SQLiteManager(path, schema, strict_paths=self.strict_root)
             tasks = None
+            sample_trends = None
             try:
                 tasks = TaskRegistry(path / '.web-tasks', manager)
                 delivery = manager.audit_delivery = AuditDelivery(manager)
+                sample_trends = SampleTrendRegistry(path)
             except BaseException:
+                if sample_trends is not None:
+                    sample_trends.close()
                 if tasks is not None:
                     tasks.close()
                 manager.close()
                 raise
             context = SimpleNamespace(sqlite_manager=manager,
                 management=SQLiteManagement(manager), tasks=tasks, audit_delivery=delivery,
-                in_flight=1 if _acquire else 0)
+                sample_trends=sample_trends, in_flight=1 if _acquire else 0)
             self.contexts[path] = context
         if evicted is not None:
             try:
@@ -268,7 +279,5 @@ class WorkspaceCatalog:
     def close(self):
         with self.lock:
             for context in self.contexts.values():
-                context.tasks.close()
-                context.audit_delivery.close()
-                context.sqlite_manager.close()
+                self._close_context(context)
             self.contexts.clear()

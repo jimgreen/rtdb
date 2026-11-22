@@ -144,6 +144,9 @@ function applyTheme(theme, persist = true) {
   chartStaticKey = null;
   legendSignature = null;
   if (typeof drawChart === "function" && el("tab-chart")) requestAnimationFrame(drawChart);
+  if (window.rtdbSampleTrends && typeof window.rtdbSampleTrends.redraw === "function") {
+    requestAnimationFrame(() => window.rtdbSampleTrends.redraw());
+  }
 }
 try {
   applyTheme(localStorage.getItem(themeStorageKey) || "minimalist-light", false);
@@ -1161,6 +1164,16 @@ function renderGridCellValue(record, column, cell) {
       : pending
         ? `${shown.invalid ? `${shown.invalidDetail} · ` : ""}已修改${shown.formatted ? `（原值: ${shown.rawText}）` : ""}，保存前仅保留在当前页面`
         : displayTip;
+  const samplePoint = (!record.draftId && state.table && record.ref?.key)
+    ? window.rtdbSampleTrends?.isSamplePoint(state.table, record.ref.key, column.eng_name)
+    : null;
+  cell.classList.toggle("cell-sample-point", Boolean(samplePoint));
+  if (samplePoint) {
+    cell.style.setProperty("--sample-point-color", samplePoint.color);
+    cell.title = `${cell.title} · 采样点（${samplePoint.axis === "right" ? "右轴" : "左轴"}）`;
+  } else {
+    cell.style.removeProperty("--sample-point-color");
+  }
 }
 function syncGridCell(record, field) {
   const cell = gridCells.get(record)?.get(field);
@@ -1271,6 +1284,7 @@ function tab(name) {
     renderSchema(state.definition);
   }
   if (name === "data") requestAnimationFrame(drawChart);
+  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setActive(name === "sample-trends");
 }
 function bottomTab(name) {
   document.querySelectorAll("[data-bottom-tab]").forEach((button) => {
@@ -1319,6 +1333,7 @@ async function refreshTables() {
   state.tables = state.database ? (await request("tables")).tables : [];
   state.checkedTables = new Set([...state.checkedTables].filter((name) => state.tables.some((item) => item.name === name)));
   renderTables();
+  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setContext(workspacePath, state.database);
 }
 function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
@@ -1511,6 +1526,7 @@ async function refresh() {
     const firstSelectable = state.tables.find((item) => !item.orphan && item.selectable !== false);
     if (firstSelectable) await selectTable(firstSelectable.name); else resetSelection();
   }
+  if (window.rtdbSampleTrends) window.rtdbSampleTrends.refresh();
 }
 function resetSelection() {
   resetEditHistory();
@@ -1806,7 +1822,9 @@ function openRowContextMenu(event, record, index) {
     selectGridCells(index, Number(cell.dataset.cellColumn), index, Number(cell.dataset.cellColumn));
   } else if (!cell && record && !state.selected.size && !state.selectedColumns.size && !state.selectedCells.size) selectGridRow(index, {});
   const selection = chartSelection();
-  const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, trigger: event.target.closest("[tabindex]") || el("data-grid") };
+  const sampleField = cell?.dataset?.cellField || null;
+  const sampleColumn = sampleField ? state.resultColumns.find((c) => c.eng_name === sampleField) : null;
+  const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, sampleField, sampleColumn, trigger: event.target.closest("[tabindex]") || el("data-grid") };
   const hasTable = Boolean(state.table), hasQuery = Boolean(state.lastQuery);
   const pending = hasPendingData();
   const setDisabled = (actionName, disabled) => { const btn = menu.querySelector(`[data-action="${actionName}"]`); if (btn) btn.disabled = disabled; };
@@ -1832,6 +1850,23 @@ function openRowContextMenu(event, record, index) {
   for (const actionName of ["chart-left", "chart-right"]) {
     const button = menu.querySelector(`[data-action="${actionName}"]`); button.disabled = !canPlot;
     button.title = canPlot ? `${selection.indexes.length} 行 × ${selection.columnCount} 列，${selection.mode === "rows" ? "按行绘制，KEY 为曲线名" : "按列绘制，列名为曲线名"}` : "选区中没有可绘制的数值";
+  }
+  const stApi = window.rtdbSampleTrends;
+  const canSampleCell = Boolean(
+    stApi && state.database && state.table && record && !record.draftId && record.ref?.key?.length
+    && sampleColumn && stApi.isSampleableType(sampleColumn.data_type)
+  );
+  const existingSample = canSampleCell ? stApi.isSamplePoint(state.table, record.ref.key, sampleColumn.eng_name) : null;
+  setDisabled("sample-add-left", !canSampleCell);
+  setDisabled("sample-add-right", !canSampleCell);
+  setDisabled("sample-locate", !existingSample);
+  setDisabled("sample-switch-axis", !existingSample);
+  setDisabled("sample-remove", !existingSample);
+  const switchBtn = menu.querySelector('[data-action="sample-switch-axis"]');
+  if (switchBtn && existingSample) {
+    switchBtn.textContent = existingSample.axis === "right" ? "切换采样纵轴（→ 左轴）" : "切换采样纵轴（→ 右轴）";
+  } else if (switchBtn) {
+    switchBtn.textContent = "切换采样纵轴";
   }
   syncContextSubmenuGroups(menu);
   menu.hidden = false;
@@ -1913,6 +1948,41 @@ function handleRowContextAction(actionName) {
   else if (actionName === "delete-selected") run(() => deleteSelectedRows(record, index));
   else if (actionName === "clear-table") run(clearTable);
   else if (actionName === "chart-left" || actionName === "chart-right") run(() => addSelectionCurves(context.selection, actionName === "chart-left" ? "left" : "right"));
+  else if (actionName === "sample-add-left" || actionName === "sample-add-right") run(async () => {
+    const { sampleColumn } = context;
+    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
+    const tableLabel = chineseName(state.definition?.head || { eng_name: state.table, chn_name: "" });
+    const colLabel = sampleColumn.chn_name || sampleColumn.eng_name;
+    const axis = actionName === "sample-add-right" ? "right" : "left";
+    const kind = window.rtdbSampleTrends.isBoolType(sampleColumn.data_type) ? "switch" : "analog";
+    await window.rtdbSampleTrends.addOrUpdateFromCell({
+      table: state.table,
+      key: record.ref.key,
+      field: sampleColumn.eng_name,
+      name: `${tableLabel} #${record.ref.key.join(",")} · ${colLabel}`,
+      kind,
+      axis
+    });
+    renderGrid();
+  });
+  else if (actionName === "sample-locate") {
+    const { sampleColumn } = context;
+    if (state.table && record?.ref?.key && sampleColumn && window.rtdbSampleTrends) {
+      window.rtdbSampleTrends.focusPoint(state.table, record.ref.key, sampleColumn.eng_name);
+    }
+  }
+  else if (actionName === "sample-switch-axis") run(async () => {
+    const { sampleColumn } = context;
+    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
+    await window.rtdbSampleTrends.toggleAxisForCell(state.table, record.ref.key, sampleColumn.eng_name);
+    renderGrid();
+  });
+  else if (actionName === "sample-remove") run(async () => {
+    const { sampleColumn } = context;
+    if (!state.table || !record?.ref?.key || !sampleColumn || !window.rtdbSampleTrends) return;
+    await window.rtdbSampleTrends.removeFromCell(state.table, record.ref.key, sampleColumn.eng_name);
+    renderGrid();
+  });
 }
 function cellSelectionKey(index, field) { return `${index}\u0000${field}`; }
 function splitCellSelectionKey(key) { const separator = key.indexOf("\u0000"); return { index: Number(key.slice(0, separator)), field: key.slice(separator + 1) }; }
@@ -5216,6 +5286,23 @@ const chartObserver = new ResizeObserver(() => {
 chartObserver.observe(el("chart-area"));
 virtualGrid.init();
 schemaTools.init();
+if (window.rtdbSampleTrends) {
+  window.rtdbSampleTrends.init({
+    getDatabase: () => state.database,
+    getWorkspace: () => workspacePath,
+    getTables: () => state.tables.filter((item) => !item.orphan && item.selectable !== false),
+    getCurrentTable: () => state.table,
+    confirmAction,
+    notice,
+    switchToSampleTab: () => tab("sample-trends"),
+    onSeriesChange: () => {
+      if (state.table && state.records.length) renderGrid();
+    },
+    fetchTableSchema: (tableName) => request(`tables/${encodeURIComponent(tableName)}/schema`),
+    fetchTableRows: (tableName, limit = 200) => request(`tables/${encodeURIComponent(tableName)}/rows?limit=${limit}&offset=0`)
+  });
+  window.addEventListener("rtdb:langchange", () => window.rtdbSampleTrends.redraw());
+}
 run(async () => {
   let info;
   try {
