@@ -1303,6 +1303,7 @@ function tab(name) {
   }
   if (name === "data") requestAnimationFrame(drawChart);
   if (window.rtdbSampleTrends) window.rtdbSampleTrends.setListVisible(name === "sample-trends");
+  updateAutoRefreshStatus();
 }
 function bottomTab(name) {
   document.querySelectorAll("[data-bottom-tab]").forEach((button) => {
@@ -1388,9 +1389,21 @@ function updateRecordsToolbar() {
   if (el("btn-export-data")) el("btn-export-data").disabled = !hasTable || !state.lastQuery || (format === "csv" && !state.fields.size);
   if (el("btn-delete-rows")) el("btn-delete-rows").disabled = !hasTable || !state.editable || readOnly || !rowIndexes.length;
 }
+function currentAutoRefreshSeconds() {
+  const select = el("auto-refresh");
+  if (!select) return 0;
+  if (select.value === "custom") {
+    const raw = Number(el("auto-refresh-custom")?.value);
+    if (!Number.isFinite(raw) || raw < 1) return 0;
+    return Math.min(3600, Math.round(raw));
+  }
+  const sec = Number(select.value || 0);
+  return Number.isFinite(sec) && sec > 0 ? sec : 0;
+}
 function autoRefreshPauseReason() {
-  const seconds = Number(el("auto-refresh")?.value || 0);
+  const seconds = currentAutoRefreshSeconds();
   if (!seconds) return "";
+  if (el("tab-data") && !el("tab-data").classList.contains("active")) return "当前不在结果展示页";
   if (state.busy) return "操作执行中";
   if (document.hidden) return "页面处于后台";
   if (document.querySelector("dialog[open]")) return "弹窗打开中";
@@ -5342,14 +5355,47 @@ el("cleanup-logs").onclick = () => run(async () => {
   renderLogDates(); await loadAuditLogs();
   notice(`日志清理完成：删除 ${result.deleted_files?.length || 0} 个文件、${result.deleted_records || 0} 条记录`);
 });
-el("auto-refresh").onchange = () => {
-  clearInterval(state.timer); const seconds = Number(el("auto-refresh").value);
+function applyAutoRefreshSchedule() {
+  clearInterval(state.timer);
+  state.timer = null;
+  const select = el("auto-refresh");
+  const customWrap = el("auto-refresh-custom-wrap");
+  const customInput = el("auto-refresh-custom");
+  const isCustom = select?.value === "custom";
+  if (customWrap) customWrap.hidden = !isCustom;
+  if (isCustom && customInput) {
+    let val = Math.round(Number(customInput.value));
+    if (!Number.isFinite(val) || val < 1) val = 1;
+    else if (val > 3600) val = 3600;
+    customInput.value = String(val);
+  }
+  const seconds = currentAutoRefreshSeconds();
   updateAutoRefreshStatus();
-  if (seconds) state.timer = setInterval(() => {
-    updateAutoRefreshStatus();
-    if (!autoRefreshPauseReason()) run(() => queryRows({ silent: true }));
-  }, seconds * 1000);
+  if (seconds) {
+    state.timer = setInterval(() => {
+      updateAutoRefreshStatus();
+      if (!autoRefreshPauseReason()) run(() => queryRows({ silent: true }));
+    }, seconds * 1000);
+  }
+}
+el("auto-refresh").onchange = () => {
+  const isCustom = el("auto-refresh").value === "custom";
+  applyAutoRefreshSchedule();
+  if (isCustom) {
+    const input = el("auto-refresh-custom");
+    if (input) { input.focus(); input.select(); }
+  }
 };
+if (el("auto-refresh-custom")) {
+  el("auto-refresh-custom").onchange = applyAutoRefreshSchedule;
+  el("auto-refresh-custom").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyAutoRefreshSchedule();
+      event.target.blur();
+    }
+  });
+}
 document.addEventListener("visibilitychange", updateAutoRefreshStatus);
 document.addEventListener("keydown", (event) => { if (event.key === "F5") { event.preventDefault(); if (!document.querySelector("dialog[open]")) run(refresh); } });
 window.addEventListener("beforeunload", (event) => { void localDrafts.flush(true);if (state.schemaDirty || hasPendingData()) { event.preventDefault(); event.returnValue = ""; } });

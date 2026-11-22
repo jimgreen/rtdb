@@ -983,6 +983,29 @@ summary { cursor: pointer; font-weight: 600; }
 .query-controls { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 520px; height: 100%; min-height: 44px; padding: 6px 10px; }
 .query-controls > * { flex-shrink: 0; }
 .query-controls label { flex-direction: row; align-items: center; white-space: nowrap; gap: 5px; font-size: 12px; }
+.query-auto-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.query-auto-refresh select {
+  min-width: 74px;
+}
+.auto-refresh-custom-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+#auto-refresh-custom {
+  width: 56px;
+  min-height: 28px;
+  padding: 2px 6px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .query-controls .sql-input { display: flex; flex: 1; min-width: 210px; align-items: center; gap: 6px; }
 .sql-combobox { position: relative; display: flex; flex: 1; min-width: 0; }
 #sql-editor {

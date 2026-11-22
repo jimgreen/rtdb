@@ -200,6 +200,7 @@ window.rtdbSampleTrends = (function () {
     samples: [],        // [{ time_ms, samples: { [key]: { v, q, ok, f } } }]
     pointCounts: {},    // { [key]: 已留存点数 }
     seriesMap: new Map(), // key -> series item
+    lastNotifiedSeriesSig: "",
     focusedKey: null,
     error: "",
     pollTimer: null,
@@ -297,11 +298,18 @@ window.rtdbSampleTrends = (function () {
     state.error = "";
   }
 
-  function notifyHostSeriesChanged() {
-    if (state.host && typeof state.host.onSeriesChange === "function") {
-      state.host.onSeriesChange(state.settings.series || []);
-    }
+  function notifyHostSeriesChanged(force = false) {
+    const series = state.settings.series || [];
+    const sig = JSON.stringify([
+      state.database,
+      series.map((s) => [s.key, s.color, s.axis, s.visible !== false])
+    ]);
     updateTabBadge();
+    if (!force && sig === state.lastNotifiedSeriesSig) return;
+    state.lastNotifiedSeriesSig = sig;
+    if (state.host && typeof state.host.onSeriesChange === "function") {
+      state.host.onSeriesChange(series);
+    }
   }
 
   function updateTabBadge() {
@@ -450,7 +458,7 @@ window.rtdbSampleTrends = (function () {
     const fromEl = el("st-range-from");
     const untilEl = el("st-range-until");
 
-    if (modeEl) modeEl.value = view.range_mode || "rolling";
+    if (modeEl && document.activeElement !== modeEl) modeEl.value = view.range_mode || "rolling";
     if (winEl) {
       const mins = String(view.window_minutes || 15);
       if (![...winEl.options].some((o) => o.value === mins)) {
@@ -459,13 +467,260 @@ window.rtdbSampleTrends = (function () {
         opt.textContent = `${mins} min`;
         winEl.appendChild(opt);
       }
-      winEl.value = mins;
+      if (document.activeElement !== winEl) winEl.value = mins;
       winEl.closest("label").hidden = view.range_mode === "fixed";
     }
-    if (stepEl) stepEl.value = String(view.step_seconds || 0);
+    if (stepEl && document.activeElement !== stepEl) stepEl.value = String(view.step_seconds || 0);
     if (fromWrap) fromWrap.hidden = view.range_mode !== "fixed";
     if (fromEl && document.activeElement !== fromEl) fromEl.value = view.from || "";
     if (untilEl && document.activeElement !== untilEl) untilEl.value = view.until || "";
+  }
+
+  function syncSelectOptions(selectEl, values, formatter, currentVal) {
+    const sorted = values.includes(currentVal) ? values : [...values, currentVal].sort((a, b) => a - b);
+    const sig = sorted.join(",");
+    if (selectEl.dataset.optionsSig !== sig) {
+      selectEl.textContent = "";
+      for (const v of sorted) {
+        const opt = document.createElement("option");
+        opt.value = String(v);
+        opt.textContent = formatter(v);
+        selectEl.appendChild(opt);
+      }
+      selectEl.dataset.optionsSig = sig;
+    }
+    if (document.activeElement !== selectEl && selectEl.value !== String(currentVal)) {
+      selectEl.value = String(currentVal);
+    }
+  }
+
+  function createPointRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.seriesKey = item.key;
+
+    // 1. 颜色标识 + 名称
+    const tdName = document.createElement("td");
+    tdName.className = "st-col-name";
+    const dot = document.createElement("span");
+    dot.className = "st-color-dot";
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "st-name-text";
+    tdName.append(dot, nameSpan);
+    row.appendChild(tdName);
+
+    // 2. 表名 · 字段
+    const tdTarget = document.createElement("td");
+    tdTarget.className = "st-mono st-col-target";
+    row.appendChild(tdTarget);
+
+    // 3. 主键值
+    const tdKey = document.createElement("td");
+    tdKey.className = "st-mono st-col-key";
+    row.appendChild(tdKey);
+
+    // 4. 类型（数值 / 布尔）
+    const tdKind = document.createElement("td");
+    const pill = document.createElement("span");
+    pill.className = "st-kind-pill";
+    tdKind.appendChild(pill);
+    row.appendChild(tdKind);
+
+    // 5. 独立采样周期（秒）
+    const tdInterval = document.createElement("td");
+    const intervalSel = document.createElement("select");
+    intervalSel.className = "st-inline-select st-sel-interval";
+    intervalSel.addEventListener("change", () => {
+      const next = clone(state.settings);
+      const target = next.series.find((s) => s.key === item.key);
+      if (target) target.interval_seconds = Math.max(1, Number(intervalSel.value) || DEFAULT_INTERVAL_SECONDS);
+      void saveSettings(next, { silent: true });
+    });
+    tdInterval.appendChild(intervalSel);
+    row.appendChild(tdInterval);
+
+    // 6. 独立后台留存（点数）
+    const tdRet = document.createElement("td");
+    const retWrap = document.createElement("span");
+    retWrap.className = "st-ret-cell";
+    const retSel = document.createElement("select");
+    retSel.className = "st-inline-select st-sel-retention";
+    retSel.addEventListener("change", () => {
+      const next = clone(state.settings);
+      const target = next.series.find((s) => s.key === item.key);
+      if (target) target.retention_points = Math.max(10, Number(retSel.value) || DEFAULT_RETENTION_POINTS);
+      void saveSettings(next, { silent: true });
+    });
+    const storedSpan = document.createElement("span");
+    storedSpan.className = "st-ret-stored";
+    retWrap.append(retSel, storedSpan);
+    tdRet.appendChild(retWrap);
+    row.appendChild(tdRet);
+
+    // 7. 最近采样值 & 时间
+    const tdVal = document.createElement("td");
+    tdVal.className = "st-num st-col-val";
+    row.appendChild(tdVal);
+
+    const tdTime = document.createElement("td");
+    tdTime.className = "st-num muted st-col-time";
+    row.appendChild(tdTime);
+
+    // 8. 曲线板显示状态（隐藏 / 左轴显示 / 右轴显示）与操作
+    const tdAct = document.createElement("td");
+    tdAct.className = "st-col-actions";
+    const displaySelect = document.createElement("select");
+    displaySelect.className = "st-inline-axis st-sel-display";
+    for (const val of ["hidden", "left", "right"]) {
+      const opt = document.createElement("option");
+      opt.value = val;
+      displaySelect.appendChild(opt);
+    }
+    displaySelect.addEventListener("change", () => {
+      const next = clone(state.settings);
+      const target = next.series.find((s) => s.key === item.key);
+      if (target) applyDisplayState(target, displaySelect.value);
+      void saveSettings(next, { silent: true });
+    });
+
+    const btnFocus = document.createElement("button");
+    btnFocus.type = "button";
+    btnFocus.className = "secondary small st-btn-locate";
+    btnFocus.addEventListener("click", () => {
+      const current = state.seriesMap.get(item.key);
+      state.focusedKey = item.key;
+      if (current && current.visible === false) {
+        const next = clone(state.settings);
+        const target = next.series.find((s) => s.key === item.key);
+        if (target) applyDisplayState(target, target.axis === "right" ? "right" : "left");
+        void saveSettings(next, { silent: true });
+      }
+      if (state.host?.openSampleChart) state.host.openSampleChart();
+      renderPointList();
+      requestAnimationFrame(drawChart);
+    });
+
+    const btnRemove = document.createElement("button");
+    btnRemove.type = "button";
+    btnRemove.className = "danger-outline small st-btn-remove";
+    btnRemove.addEventListener("click", () => void confirmAndRemoveSeries(item.key));
+
+    tdAct.append(displaySelect, btnFocus, btnRemove);
+    row.appendChild(tdAct);
+    return row;
+  }
+
+  function patchPointRow(row, item) {
+    const reading = latestReadingFor(item.key);
+    row.classList.toggle("is-focused", state.focusedKey === item.key);
+
+    const dot = row.querySelector(".st-color-dot");
+    if (dot && dot.style.background !== item.color) dot.style.background = item.color;
+
+    const nameText = item.unit ? `${item.name} (${item.unit})` : item.name;
+    const nameSpan = row.querySelector(".st-name-text");
+    if (nameSpan && nameSpan.textContent !== nameText) {
+      nameSpan.textContent = nameText;
+      nameSpan.title = item.name;
+    }
+
+    const targetText = `${item.point.table}.${item.point.field}`;
+    const tdTarget = row.querySelector(".st-col-target");
+    if (tdTarget && tdTarget.textContent !== targetText) tdTarget.textContent = targetText;
+
+    const keyText = item.point.key.join(", ");
+    const tdKey = row.querySelector(".st-col-key");
+    if (tdKey && tdKey.textContent !== keyText) tdKey.textContent = keyText;
+
+    const pill = row.querySelector(".st-kind-pill");
+    if (pill) {
+      const kindClass = `st-kind-pill is-${item.kind}`;
+      if (pill.className !== kindClass) pill.className = kindClass;
+      const kindLabel = item.kind === "switch"
+        ? tr("st.kindSwitch", null, "布尔")
+        : tr("st.kindAnalog", null, "数值");
+      if (pill.textContent !== kindLabel) pill.textContent = kindLabel;
+    }
+
+    const intervalSel = row.querySelector(".st-sel-interval");
+    if (intervalSel) {
+      intervalSel.ariaLabel = tr("st.colInterval", null, "采样周期(秒)");
+      const curInterval = Math.max(1, Number(item.interval_seconds) || DEFAULT_INTERVAL_SECONDS);
+      syncSelectOptions(intervalSel, INTERVAL_PRESETS, (sec) => `${sec}s`, curInterval);
+    }
+
+    const retSel = row.querySelector(".st-sel-retention");
+    const curRet = Math.max(10, Number(item.retention_points) || DEFAULT_RETENTION_POINTS);
+    if (retSel) {
+      retSel.ariaLabel = tr("st.colRetentionPts", null, "后台留存(点数)");
+      syncSelectOptions(retSel, RETENTION_POINT_PRESETS, (pts) => String(pts), curRet);
+    }
+
+    const storedSpan = row.querySelector(".st-ret-stored");
+    if (storedSpan) {
+      const storedCount = Number(state.pointCounts?.[item.key] || 0);
+      const storedText = `(${storedCount})`;
+      if (storedSpan.textContent !== storedText) {
+        storedSpan.textContent = storedText;
+        storedSpan.title = `${storedCount} / ${curRet}`;
+      }
+    }
+
+    const tdVal = row.querySelector(".st-col-val");
+    if (tdVal) {
+      let valText = "—";
+      let valMuted = false;
+      let valWarn = false;
+      if (!reading) {
+        valMuted = true;
+      } else if (!reading.ok) {
+        valText = reading.f
+          ? tr("st.invalidVal", null, "无效")
+          : tr("st.missingVal", null, "缺失");
+        valWarn = true;
+      } else {
+        valText = item.unit
+          ? `${formatNumber(reading.v, item.kind)} ${item.unit}`
+          : formatNumber(reading.v, item.kind);
+      }
+      if (tdVal.textContent !== valText) tdVal.textContent = valText;
+      tdVal.classList.toggle("muted", valMuted);
+      tdVal.classList.toggle("st-val-warn", valWarn);
+    }
+
+    const tdTime = row.querySelector(".st-col-time");
+    if (tdTime) {
+      const timeText = reading ? formatTimeShort(reading.time_ms, false) : "—";
+      if (tdTime.textContent !== timeText) {
+        tdTime.textContent = timeText;
+        tdTime.title = reading ? formatFullTime(reading.time_ms) : "";
+      }
+    }
+
+    const displaySelect = row.querySelector(".st-sel-display");
+    if (displaySelect) {
+      displaySelect.ariaLabel = tr("st.colDisplay", null, "曲线板显示");
+      const labels = {
+        hidden: tr("st.stateHidden", null, "隐藏"),
+        left: tr("st.stateLeft", null, "左轴显示"),
+        right: tr("st.stateRight", null, "右轴显示")
+      };
+      for (const opt of displaySelect.options) {
+        const txt = labels[opt.value];
+        if (txt && opt.textContent !== txt) opt.textContent = txt;
+      }
+      const mode = getDisplayState(item);
+      if (document.activeElement !== displaySelect && displaySelect.value !== mode) {
+        displaySelect.value = mode;
+      }
+    }
+
+    const btnFocus = row.querySelector(".st-btn-locate");
+    const locateLabel = tr("st.btnLocate", null, "定位");
+    if (btnFocus && btnFocus.textContent !== locateLabel) btnFocus.textContent = locateLabel;
+
+    const btnRemove = row.querySelector(".st-btn-remove");
+    const removeLabel = tr("st.btnRemove", null, "移除");
+    if (btnRemove && btnRemove.textContent !== removeLabel) btnRemove.textContent = removeLabel;
   }
 
   function renderPointList() {
@@ -476,198 +731,59 @@ window.rtdbSampleTrends = (function () {
     renderToolbarDisabled();
     if (!tbody) return;
 
-    tbody.textContent = "";
-    if (!state.database) {
+    if (!state.database || !series.length) {
+      const msg = !state.database
+        ? tr("st.noDatabase", null, "请先选择数据库")
+        : tr("st.emptyList", null, "尚未定义采样点：点击上方“＋ 添加采样点”，或在“结果展示”表格中右键数值/布尔单元格设为采样点。");
+      const existingEmpty = tbody.querySelector("tr.st-empty-row td");
+      if (existingEmpty && tbody.children.length === 1) {
+        if (existingEmpty.textContent !== msg) existingEmpty.textContent = msg;
+        return;
+      }
+      tbody.textContent = "";
       const trEl = document.createElement("tr");
+      trEl.className = "st-empty-row";
       const td = document.createElement("td");
       td.colSpan = 9;
       td.className = "st-list-empty";
-      td.textContent = tr("st.noDatabase", null, "请先选择数据库");
+      td.textContent = msg;
       trEl.appendChild(td);
       tbody.appendChild(trEl);
       return;
     }
 
-    if (!series.length) {
-      const trEl = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 9;
-      td.className = "st-list-empty";
-      td.textContent = tr("st.emptyList", null, "尚未定义采样点：点击上方“＋ 添加采样点”，或在“结果展示”表格中右键数值/布尔单元格设为采样点。");
-      trEl.appendChild(td);
-      tbody.appendChild(trEl);
-      return;
+    // 清除可能存在的空状态行
+    const emptyRow = tbody.querySelector("tr.st-empty-row");
+    if (emptyRow) emptyRow.remove();
+
+    // 复用已有行 DOM，按 key 精确增删与原地更新，绝不销毁正在操作的下拉框
+    const existingRows = new Map();
+    for (const trEl of [...tbody.children]) {
+      if (trEl.dataset.seriesKey) existingRows.set(trEl.dataset.seriesKey, trEl);
+      else trEl.remove();
     }
 
-    const frag = document.createDocumentFragment();
-    for (const item of series) {
-      const reading = latestReadingFor(item.key);
-      const row = document.createElement("tr");
-      row.dataset.seriesKey = item.key;
-      if (state.focusedKey === item.key) row.classList.add("is-focused");
-
-      // 1. 颜色标识 + 名称
-      const tdName = document.createElement("td");
-      tdName.className = "st-col-name";
-      const dot = document.createElement("span");
-      dot.className = "st-color-dot";
-      dot.style.background = item.color;
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = item.unit ? `${item.name} (${item.unit})` : item.name;
-      nameSpan.title = item.name;
-      tdName.append(dot, nameSpan);
-      row.appendChild(tdName);
-
-      // 2. 表名 · 字段
-      const tdTarget = document.createElement("td");
-      tdTarget.className = "st-mono";
-      tdTarget.textContent = `${item.point.table}.${item.point.field}`;
-      row.appendChild(tdTarget);
-
-      // 3. 主键值
-      const tdKey = document.createElement("td");
-      tdKey.className = "st-mono";
-      tdKey.textContent = item.point.key.join(", ");
-      row.appendChild(tdKey);
-
-      // 4. 类型（数值 / 布尔）
-      const tdKind = document.createElement("td");
-      const pill = document.createElement("span");
-      pill.className = `st-kind-pill is-${item.kind}`;
-      pill.textContent = item.kind === "switch"
-        ? tr("st.kindSwitch", null, "布尔")
-        : tr("st.kindAnalog", null, "数值");
-      tdKind.appendChild(pill);
-      row.appendChild(tdKind);
-
-      // 5. 独立采样周期（秒）
-      const tdInterval = document.createElement("td");
-      const intervalSel = document.createElement("select");
-      intervalSel.className = "st-inline-select";
-      intervalSel.ariaLabel = tr("st.colInterval", null, "采样周期(秒)");
-      const curInterval = Math.max(1, Number(item.interval_seconds) || DEFAULT_INTERVAL_SECONDS);
-      const intervalChoices = INTERVAL_PRESETS.includes(curInterval)
-        ? INTERVAL_PRESETS
-        : [...INTERVAL_PRESETS, curInterval].sort((a, b) => a - b);
-      for (const sec of intervalChoices) {
-        const opt = document.createElement("option");
-        opt.value = String(sec);
-        opt.textContent = `${sec}s`;
-        intervalSel.appendChild(opt);
+    const activeKeys = new Set(series.map((s) => s.key));
+    for (const [key, trEl] of existingRows) {
+      if (!activeKeys.has(key)) {
+        trEl.remove();
+        existingRows.delete(key);
       }
-      intervalSel.value = String(curInterval);
-      intervalSel.addEventListener("change", () => {
-        const next = clone(state.settings);
-        const target = next.series.find((s) => s.key === item.key);
-        if (target) target.interval_seconds = Math.max(1, Number(intervalSel.value) || DEFAULT_INTERVAL_SECONDS);
-        void saveSettings(next, { silent: true });
-      });
-      tdInterval.appendChild(intervalSel);
-      row.appendChild(tdInterval);
-
-      // 6. 独立后台留存（点数）
-      const tdRet = document.createElement("td");
-      const retWrap = document.createElement("span");
-      retWrap.className = "st-ret-cell";
-      const retSel = document.createElement("select");
-      retSel.className = "st-inline-select";
-      retSel.ariaLabel = tr("st.colRetentionPts", null, "后台留存(点数)");
-      const curRet = Math.max(10, Number(item.retention_points) || DEFAULT_RETENTION_POINTS);
-      const retChoices = RETENTION_POINT_PRESETS.includes(curRet)
-        ? RETENTION_POINT_PRESETS
-        : [...RETENTION_POINT_PRESETS, curRet].sort((a, b) => a - b);
-      for (const pts of retChoices) {
-        const opt = document.createElement("option");
-        opt.value = String(pts);
-        opt.textContent = String(pts);
-        retSel.appendChild(opt);
-      }
-      retSel.value = String(curRet);
-      retSel.addEventListener("change", () => {
-        const next = clone(state.settings);
-        const target = next.series.find((s) => s.key === item.key);
-        if (target) target.retention_points = Math.max(10, Number(retSel.value) || DEFAULT_RETENTION_POINTS);
-        void saveSettings(next, { silent: true });
-      });
-      const storedCount = Number(state.pointCounts?.[item.key] || 0);
-      const storedSpan = document.createElement("span");
-      storedSpan.className = "st-ret-stored";
-      storedSpan.textContent = `(${storedCount})`;
-      storedSpan.title = `${storedCount} / ${curRet}`;
-      retWrap.append(retSel, storedSpan);
-      tdRet.appendChild(retWrap);
-      row.appendChild(tdRet);
-
-      // 7. 最近采样值 & 时间
-      const tdVal = document.createElement("td");
-      tdVal.className = "st-num";
-      if (!reading) {
-        tdVal.textContent = "—";
-        tdVal.classList.add("muted");
-      } else if (!reading.ok) {
-        tdVal.textContent = reading.f
-          ? tr("st.invalidVal", null, "无效")
-          : tr("st.missingVal", null, "缺失");
-        tdVal.classList.add("st-val-warn");
-      } else {
-        tdVal.textContent = item.unit
-          ? `${formatNumber(reading.v, item.kind)} ${item.unit}`
-          : formatNumber(reading.v, item.kind);
-      }
-      row.appendChild(tdVal);
-
-      const tdTime = document.createElement("td");
-      tdTime.className = "st-num muted";
-      tdTime.textContent = reading ? formatTimeShort(reading.time_ms, false) : "—";
-      if (reading) tdTime.title = formatFullTime(reading.time_ms);
-      row.appendChild(tdTime);
-
-      // 8. 曲线板显示状态（隐藏 / 左轴显示 / 右轴显示）与操作
-      const tdAct = document.createElement("td");
-      tdAct.className = "st-col-actions";
-      const displaySelect = document.createElement("select");
-      displaySelect.className = "st-inline-axis";
-      displaySelect.ariaLabel = tr("st.colDisplay", null, "曲线板显示");
-      displaySelect.innerHTML =
-        `<option value="hidden">${tr("st.stateHidden", null, "隐藏")}</option>` +
-        `<option value="left">${tr("st.stateLeft", null, "左轴显示")}</option>` +
-        `<option value="right">${tr("st.stateRight", null, "右轴显示")}</option>`;
-      displaySelect.value = getDisplayState(item);
-      displaySelect.addEventListener("change", () => {
-        const next = clone(state.settings);
-        const target = next.series.find((s) => s.key === item.key);
-        if (target) applyDisplayState(target, displaySelect.value);
-        void saveSettings(next, { silent: true });
-      });
-
-      const btnFocus = document.createElement("button");
-      btnFocus.type = "button";
-      btnFocus.className = "secondary small";
-      btnFocus.textContent = tr("st.btnLocate", null, "定位");
-      btnFocus.addEventListener("click", () => {
-        state.focusedKey = item.key;
-        if (item.visible === false) {
-          const next = clone(state.settings);
-          const target = next.series.find((s) => s.key === item.key);
-          if (target) applyDisplayState(target, target.axis === "right" ? "right" : "left");
-          void saveSettings(next, { silent: true });
-        }
-        if (state.host?.openSampleChart) state.host.openSampleChart();
-        renderPointList();
-        requestAnimationFrame(drawChart);
-      });
-
-      const btnRemove = document.createElement("button");
-      btnRemove.type = "button";
-      btnRemove.className = "danger-outline small";
-      btnRemove.textContent = tr("st.btnRemove", null, "移除");
-      btnRemove.addEventListener("click", () => void confirmAndRemoveSeries(item.key));
-
-      tdAct.append(displaySelect, btnFocus, btnRemove);
-      row.appendChild(tdAct);
-      frag.appendChild(row);
     }
-    tbody.appendChild(frag);
+
+    for (let i = 0; i < series.length; i += 1) {
+      const item = series[i];
+      let row = existingRows.get(item.key);
+      if (!row) {
+        row = createPointRow(item);
+        existingRows.set(item.key, row);
+      }
+      patchPointRow(row, item);
+      const currentAtIndex = tbody.children[i];
+      if (currentAtIndex !== row) {
+        tbody.insertBefore(row, currentAtIndex || null);
+      }
+    }
   }
 
   function renderStatus() {
@@ -2093,6 +2209,7 @@ window.rtdbSampleTrends = (function () {
       state.revision = null;
       state.samples = [];
       state.pointCounts = {};
+      state.lastNotifiedSeriesSig = "";
       state.lastSampleMs = 0;
       state.focusedKey = null;
       state.error = "";
