@@ -200,6 +200,7 @@ window.rtdbSampleTrends = (function () {
     samples: [],        // [{ time_ms, samples: { [key]: { v, q, ok, f } } }]
     pointCounts: {},    // { [key]: 已留存点数 }
     seriesMap: new Map(), // key -> series item
+    chartMuted: new Set(), // 曲线板内点击标题临时隐藏的曲线 key 集合
     lastNotifiedSeriesSig: "",
     focusedKey: null,
     error: "",
@@ -579,6 +580,7 @@ window.rtdbSampleTrends = (function () {
       const next = clone(state.settings);
       const target = next.series.find((s) => s.key === item.key);
       if (target) applyDisplayState(target, displaySelect.value);
+      if (displaySelect.value !== "hidden") state.chartMuted.delete(item.key);
       void saveSettings(next, { silent: true });
     });
 
@@ -588,6 +590,7 @@ window.rtdbSampleTrends = (function () {
     btnFocus.addEventListener("click", () => {
       const current = state.seriesMap.get(item.key);
       state.focusedKey = item.key;
+      state.chartMuted.delete(item.key);
       if (current && current.visible === false) {
         const next = clone(state.settings);
         const target = next.series.find((s) => s.key === item.key);
@@ -902,7 +905,12 @@ window.rtdbSampleTrends = (function () {
     if (!canvas || !wrap) return;
 
     const allSeries = state.settings.series || [];
-    const visibleSeries = allSeries.filter((s) => s.visible !== false);
+    const boardSeries = allSeries.filter((s) => s.visible !== false);
+    // 清理已移出曲线板的 muted key
+    for (const k of [...state.chartMuted]) {
+      if (!boardSeries.some((s) => s.key === k)) state.chartMuted.delete(k);
+    }
+    const visibleSeries = boardSeries.filter((s) => !state.chartMuted.has(s.key));
     state.legendHits = [];
 
     if (!allSeries.length) {
@@ -911,7 +919,7 @@ window.rtdbSampleTrends = (function () {
         emptyEl.hidden = false;
       }
       hideTooltip();
-    } else if (!visibleSeries.length) {
+    } else if (!boardSeries.length) {
       if (emptyEl) {
         emptyEl.textContent = tr("st.chartNoneVisible", null, "当前暂无显示的采样曲线，请在表格右键或“采样点定义”中选择“左轴显示”或“右轴显示”。");
         emptyEl.hidden = false;
@@ -937,48 +945,60 @@ window.rtdbSampleTrends = (function () {
     ctx.fillStyle = tokens.bg;
     ctx.fillRect(0, 0, width, height);
 
-    if (!allSeries.length || !visibleSeries.length) return;
+    if (!allSeries.length || !boardSeries.length) return;
 
-    // 1. 绘制顶部流式图例条（仅展示已加入曲线板的左轴/右轴曲线）
+    // 1. 绘制顶部流式曲线标题（点击即时切换显示/隐藏，颜色与文字同步反馈）
     const legendTop = 8;
     let legendX = 12;
     let legendY = legendTop;
-    const legendRowH = 20;
+    const legendRowH = 22;
     const maxLegendY = legendTop + legendRowH; // 最多 2 行，超出折叠为 +N
     ctx.font = `12px ${tokens.fontSans}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     let hiddenOverflow = 0;
+    const hiddenTag = tr("st.legendHiddenTag", null, "已隐藏");
 
-    for (let i = 0; i < visibleSeries.length; i += 1) {
-      const s = visibleSeries[i];
+    for (let i = 0; i < boardSeries.length; i += 1) {
+      const s = boardSeries[i];
+      const muted = state.chartMuted.has(s.key);
       const axisTag = s.axis === "right" ? tr("chart.axisRightShort", null, "右") : tr("chart.axisLeftShort", null, "左");
-      const label = `[${axisTag}] ${s.name}`;
-      const textW = Math.min(180, ctx.measureText(label).width);
+      const label = muted ? `[${axisTag}] ${s.name}（${hiddenTag}）` : `[${axisTag}] ${s.name}`;
+      const textW = Math.min(220, ctx.measureText(label).width);
       const pillW = 24 + textW + 10;
       if (legendX + pillW > width - 48) {
         if (legendY + legendRowH <= maxLegendY) {
           legendY += legendRowH + 4;
           legendX = 12;
         } else {
-          hiddenOverflow = visibleSeries.length - i;
+          hiddenOverflow = boardSeries.length - i;
           break;
         }
       }
-      const isFocused = state.focusedKey === s.key;
+      const isFocused = !muted && state.focusedKey === s.key;
 
       ctx.save();
-      ctx.fillStyle = isFocused ? `${s.color}24` : (tokens.dark ? "rgba(255,255,255,0.05)" : "rgba(15,23,42,0.04)");
-      ctx.strokeStyle = isFocused ? s.color : tokens.border;
-      ctx.lineWidth = isFocused ? 1.5 : 1;
+      if (muted) {
+        ctx.fillStyle = tokens.dark ? "rgba(148,163,184,0.06)" : "rgba(15,23,42,0.03)";
+        ctx.strokeStyle = tokens.muted;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+      } else {
+        ctx.fillStyle = isFocused ? `${s.color}26` : `${s.color}12`;
+        ctx.strokeStyle = isFocused ? s.color : `${s.color}66`;
+        ctx.lineWidth = isFocused ? 1.5 : 1;
+      }
       roundRect(ctx, legendX, legendY, pillW, legendRowH, 5);
       ctx.fill();
       ctx.stroke();
+      ctx.setLineDash([]);
 
-      // 图标：开关量画阶跃线，模拟量画直线+圆点
-      ctx.strokeStyle = s.color;
-      ctx.fillStyle = s.color;
-      ctx.lineWidth = 2;
+      // 图标：显示态用曲线专属色，隐藏态灰化虚线
+      const iconColor = muted ? tokens.muted : s.color;
+      ctx.strokeStyle = iconColor;
+      ctx.fillStyle = iconColor;
+      ctx.lineWidth = muted ? 1.5 : 2;
+      if (muted) ctx.setLineDash([2, 2]);
       const cy = legendY + legendRowH / 2;
       ctx.beginPath();
       if (s.kind === "switch") {
@@ -991,15 +1011,30 @@ window.rtdbSampleTrends = (function () {
         ctx.moveTo(legendX + 6, cy);
         ctx.lineTo(legendX + 18, cy);
         ctx.stroke();
+        ctx.setLineDash([]);
         ctx.beginPath();
         ctx.arc(legendX + 12, cy, 2.6, 0, Math.PI * 2);
-        ctx.fill();
+        if (muted) ctx.stroke();
+        else ctx.fill();
       }
+      ctx.setLineDash([]);
 
-      ctx.fillStyle = tokens.text;
+      const shownText = truncateText(ctx, label, textW);
+      ctx.fillStyle = muted ? tokens.muted : tokens.text;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(truncateText(ctx, label, textW), legendX + 23, cy + 0.5);
+      ctx.fillText(shownText, legendX + 23, cy + 0.5);
+
+      // 隐藏态在文字上绘制细删除线，强化视觉对比
+      if (muted) {
+        const measuredW = Math.min(textW, ctx.measureText(shownText).width);
+        ctx.strokeStyle = tokens.muted;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(legendX + 23, Math.round(cy) + 0.5);
+        ctx.lineTo(legendX + 23 + measuredW, Math.round(cy) + 0.5);
+        ctx.stroke();
+      }
       ctx.restore();
 
       state.legendHits.push({ key: s.key, x: legendX, y: legendY, w: pillW, h: legendRowH });
@@ -1020,6 +1055,15 @@ window.rtdbSampleTrends = (function () {
       ctx.textBaseline = "middle";
       ctx.fillText(moreText, mx + 7, legendY + legendRowH / 2 + 0.5);
       state.legendHits.push({ key: null, overflow: true, x: mx, y: legendY, w: moreW, h: legendRowH });
+    }
+
+    if (!visibleSeries.length) {
+      if (emptyEl) {
+        emptyEl.textContent = tr("st.chartAllMuted", null, "全部曲线已隐藏，点击顶部曲线标题恢复显示。");
+        emptyEl.hidden = false;
+      }
+      hideTooltip();
+      return;
     }
 
     const leftSeries = visibleSeries.filter((s) => s.axis !== "right");
@@ -1488,6 +1532,7 @@ window.rtdbSampleTrends = (function () {
     for (const item of next.series) {
       if (!targetKeys.has(item.key)) continue;
       applyDisplayState(item, mode);
+      if (mode !== "hidden") state.chartMuted.delete(item.key);
       changed += 1;
     }
     if (!changed) return;
@@ -1867,7 +1912,8 @@ window.rtdbSampleTrends = (function () {
           : tr("st.cmToRight", null, "切换至右轴");
       }
       if (btnVis) {
-        btnVis.textContent = item.visible === false
+        const isMuted = state.chartMuted.has(item.key);
+        btnVis.textContent = isMuted
           ? tr("st.cmShow", null, "显示此曲线")
           : tr("st.cmHide", null, "隐藏此曲线");
       }
@@ -2100,8 +2146,8 @@ window.rtdbSampleTrends = (function () {
           openSeriesDialog();
           return;
         }
-        state.focusedKey = state.focusedKey === hit.key ? null : hit.key;
-        renderPointList();
+        if (state.chartMuted.has(hit.key)) state.chartMuted.delete(hit.key);
+        else state.chartMuted.add(hit.key);
         drawChart();
       });
       canvas.addEventListener("wheel", (event) => {
@@ -2130,12 +2176,9 @@ window.rtdbSampleTrends = (function () {
           void saveSettings(next, { silent: true });
         }
       } else if (action === "toggle-visible" && hitKey) {
-        const next = clone(state.settings);
-        const item = next.series.find((s) => s.key === hitKey);
-        if (item) {
-          item.visible = item.visible === false;
-          void saveSettings(next, { silent: true });
-        }
+        if (state.chartMuted.has(hitKey)) state.chartMuted.delete(hitKey);
+        else state.chartMuted.add(hitKey);
+        drawChart();
       } else if (action === "remove-series" && hitKey) {
         void confirmAndRemoveSeries(hitKey);
       } else if (action === "axes-settings") {
@@ -2209,6 +2252,7 @@ window.rtdbSampleTrends = (function () {
       state.revision = null;
       state.samples = [];
       state.pointCounts = {};
+      state.chartMuted.clear();
       state.lastNotifiedSeriesSig = "";
       state.lastSampleMs = 0;
       state.focusedKey = null;

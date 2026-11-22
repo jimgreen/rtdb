@@ -1260,7 +1260,7 @@ function inlineCellInput(record, column, index, cell, initialText = null) {
     scheduleChartDraw();
   };
   input.oninput = change; input.onchange = change;
-  input.onblur = () => { rememberEdit(history); renderGridCellValue(record, column, cell); };
+  input.onblur = () => { rememberEdit(history); renderGridCellValue(record, column, cell); updateAutoRefreshStatus(); };
   input.onkeydown = (event) => {
     if (event.isComposing || !["Enter", "Escape", "Tab"].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
@@ -1278,6 +1278,7 @@ function inlineCellInput(record, column, index, cell, initialText = null) {
   if (placeholder) placeholder.classList.add("cell-editor-placeholder");
   cell.replaceChildren(...(placeholder ? [placeholder, input] : [input])); cell.classList.toggle("cell-modified", Boolean(pending));
   cell.title = pending ? "已修改，保存前仅保留在当前页面" : raw || "NULL";
+  updateAutoRefreshStatus();
   input.focus({ preventScroll: true });
   if (!useSelect) {
     if (initialText !== null) {
@@ -1410,7 +1411,7 @@ function autoRefreshPauseReason() {
   if (state.contextRecord) return "右键菜单打开中";
   if (state.schemaDirty) return "表结构有未保存修改";
   if (hasPendingData()) return "存在未保存的单元格或新行";
-  if (state.selected.size || state.selectedColumns.size || state.selectedCells.size) return "当前存在选区（Esc 取消）";
+  if (el("data-grid")?.querySelector(".cell-editor")) return "单元格编辑中";
   return "";
 }
 function updateAutoRefreshStatus() {
@@ -1846,6 +1847,7 @@ function closeRowContextMenu(restoreFocus = false) {
   const menu = el("row-context-menu"), trigger = state.contextRecord?.trigger;
   closeContextSubmenus(menu);
   menu.hidden = true; state.contextRecord = null;
+  updateAutoRefreshStatus();
   if (restoreFocus) (trigger?.isConnected ? trigger : el("data-grid")).focus({ preventScroll: true });
 }
 function openRowContextMenu(event, record, index) {
@@ -1860,6 +1862,7 @@ function openRowContextMenu(event, record, index) {
   const sampleField = cell?.dataset?.cellField || null;
   const sampleColumn = sampleField ? state.resultColumns.find((c) => c.eng_name === sampleField) : null;
   const menu = el("row-context-menu"); state.contextRecord = { record, index, selection, sampleField, sampleColumn, trigger: event.target.closest("[tabindex]") || el("data-grid") };
+  updateAutoRefreshStatus();
   const hasTable = Boolean(state.table), hasQuery = Boolean(state.lastQuery);
   const pending = hasPendingData();
   const setDisabled = (actionName, disabled) => { const btn = menu.querySelector(`[data-action="${actionName}"]`); if (btn) btn.disabled = disabled; };
