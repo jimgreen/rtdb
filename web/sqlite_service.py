@@ -1165,7 +1165,7 @@ class SQLiteManager:
                 'head': {'eng_name': name, 'chn_name': label.strip()},
                 'columns': [
                     {'eng_name': 'id', 'chn_name': '编号', 'data_type': 'int', 'primary_key': True,
-                     'disp_type': '数字', 'disp_menu': ''},
+                     'disp_type': '整数', 'disp_menu': ''},
                     {'eng_name': 'name', 'chn_name': '名称', 'data_type': 'str', 'primary_key': False,
                      'disp_type': '文本', 'disp_menu': ''},
                 ],

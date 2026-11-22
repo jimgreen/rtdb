@@ -1958,9 +1958,27 @@ function schemaFormValue(withMeta = false) {
     }) };
 }
 function schemaChanged() { state.schemaDirty = true; localDrafts.schedule(); updateAutoRefreshStatus(); }
+const schemaDisplayTypes = ["文本", "整数", "浮点数", "布尔", "下拉框"];
 function schemaDefaultDisplayType(kind) {
   const type = String(kind || "str").toLowerCase();
-  return integerTypes.has(type) ? "整数" : floatTypes.has(type) ? "浮点数" : "文本";
+  if (integerTypes.has(type) || ["uchar", "short", "uint", "ulong", "datetime"].includes(type)) return "整数";
+  if (floatTypes.has(type)) return "浮点数";
+  if (boolTypes.has(type)) return "布尔";
+  return "文本";
+}
+function normalizeSchemaDisplayType(raw, dataType, dispMenu = "") {
+  const fallback = schemaDefaultDisplayType(dataType);
+  const text = String(raw ?? "").trim();
+  if (!text) return String(dispMenu || "").trim() ? "下拉框" : fallback;
+  if (schemaDisplayTypes.includes(text)) return text;
+  const lower = text.toLowerCase();
+  if (text === "数字") return fallback !== "文本" ? fallback : "整数";
+  if (["int", "integer", "long", "short", "uchar", "uint", "ulong", "datetime", "keyid"].includes(lower)) return "整数";
+  if (["float", "double", "real", "number", "decimal"].includes(lower)) return "浮点数";
+  if (["bool", "boolean"].includes(lower)) return "布尔";
+  if (["str", "string", "text", "char", "varchar", "binary", "blob", "json", "list", "dict", "object", "array"].includes(lower)) return "文本";
+  if (["select", "combobox", "combo", "menu", "enum", "dropdown"].includes(lower)) return "下拉框";
+  return text;
 }
 function isReadOnlyDatabase() {
   return state.databases.some((item) => item.filename === state.database && item.read_only);
@@ -1997,10 +2015,21 @@ function updateSchemaLocks() {
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
+      const cell = input.closest("td");
       const directEdit = input.tagName === "SELECT" || ["checkbox", "radio"].includes(input.type);
       const locked = isLockedNativeField(row, input.dataset.property);
-      input.disabled = readOnly || locked || (!directEdit && !editing);
-      input.title = readOnly || locked ? "保留原表定义" : directEdit ? "单击修改" : editing ? "编辑中" : "双击单元格进入编辑";
+      const isLocked = readOnly || locked;
+      input.disabled = isLocked || (!directEdit && !editing);
+      const tip = readOnly
+        ? "当前数据库只读，不可修改"
+        : locked
+          ? "原生 SQLite 已有字段由原表定义，不可修改（新添加字段可选择）"
+          : directEdit ? "单击修改" : editing ? "编辑中" : "双击单元格进入编辑";
+      input.title = tip;
+      if (cell) {
+        cell.classList.toggle("schema-locked", isLocked);
+        cell.title = tip;
+      }
     }
     row.classList.toggle("schema-editing", editing);
   }
@@ -2023,8 +2052,7 @@ function renderSchema(definition) {
       }
     });
     let previousKind = column.data_type;
-    const defaultDisplay = schemaDefaultDisplayType(previousKind);
-    const displayType = !column.disp_type || (column.disp_type === "数字" && defaultDisplay !== "文本") ? defaultDisplay : column.disp_type;
+    const displayType = normalizeSchemaDisplayType(column.disp_type, previousKind, column.disp_menu);
     const originalName = column.__original_name || (state.table && state.definition?.columns.some((item) => item.eng_name === column.eng_name) ? column.eng_name : "");
     if (originalName) row.dataset.originalName = originalName;
     let defaultCell = null;
@@ -2096,7 +2124,7 @@ function renderSchema(definition) {
           : ["int", "float", "str", "bool", "json", "list", "dict", "datetime"];
         for (const kind of new Set([...types, column.data_type])) input.append(new Option(kind, kind));
       }
-      if (property === "disp_type") for (const kind of new Set(["文本", "整数", "浮点数", "下拉框", displayType])) input.append(new Option(kind, kind));
+      if (property === "disp_type") for (const kind of new Set([...schemaDisplayTypes, displayType])) input.append(new Option(kind, kind));
       if (property === "primary_key") { input.type = "checkbox"; input.checked = column[property]; }
       else input.value = property === "chn_name" ? chineseName(column) : property === "disp_type" ? displayType : column[property] ?? "";
       input.dataset.originalValue = input.type === "checkbox" ? String(input.checked) : input.value;
@@ -2113,6 +2141,17 @@ function renderSchema(definition) {
           renderDefaultControl(prevDefault, false);
           updateSchemaLocks();
         } else if (property === "disp_menu") {
+          const displayInput = row.querySelector('[data-property="disp_type"]');
+          const hasMenu = Boolean(String(input.value || "").trim());
+          if (displayInput) {
+            if (hasMenu && displayInput.value === schemaDefaultDisplayType(previousKind)) {
+              displayInput.value = "下拉框";
+              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+            } else if (!hasMenu && displayInput.value === "下拉框") {
+              displayInput.value = schemaDefaultDisplayType(previousKind);
+              displayInput.closest("td").classList.toggle("schema-modified", displayInput.value !== displayInput.dataset.originalValue);
+            }
+          }
           const prevDefault = defaultCell?.querySelector('[data-property="default_value"]')?.value ?? "";
           renderDefaultControl(prevDefault, false);
           updateSchemaLocks();

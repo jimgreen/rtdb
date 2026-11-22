@@ -94,7 +94,7 @@ class DefinitionImporter:
             descriptions = module['descriptions']
             definition['columns'].append(dict(eng_name=field,
                 chn_name=(descriptions[index] if index < len(descriptions) else '') or field,
-                data_type=kind, primary_key=field in primary, disp_type='数字' if kind in ('int', 'float') else '文本', disp_menu=''))
+                data_type=kind, primary_key=field in primary, disp_type={'int': '整数', 'float': '浮点数', 'bool': '布尔'}.get(kind, '文本'), disp_menu=''))
         return definition, rows
 
     @staticmethod
@@ -143,7 +143,7 @@ class DefinitionImporter:
             column = dict(current[field])
             column['data_type'] = kind
             column['primary_key'] = primary
-            column['disp_type'] = '数字' if kind in _INT | _FLOAT else column.get('disp_type') or '文本'
+            column['disp_type'] = ('整数' if kind in _INT else '浮点数' if kind in _FLOAT else '布尔' if kind in _BOOL else column.get('disp_type') or '文本')
             columns.append(column)
         if not any(column['primary_key'] for column in columns):
             raise SchemaError(f'{table_name}：至少选择一个 KEY 字段')

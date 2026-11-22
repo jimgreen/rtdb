@@ -931,6 +931,13 @@ td.cell-modified::before { content: ""; position: absolute; left: 0; top: 0; bot
 #schema-fields td > input[type=checkbox]:checked::after { content: ""; width: 4px; height: 8px; border: solid #FFFFFF; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
 #schema-fields td > input[type=checkbox]:focus { outline: none; }
 #schema-fields td > input:disabled, #schema-fields td > select:disabled { color: var(--text-primary); -webkit-text-fill-color: var(--text-primary); opacity: 1; cursor: inherit; }
+/* 原生表已有字段或只读库的锁定单元格：隐藏不可点击下拉箭头，呈现明确只读态 */
+#schema-fields td.schema-locked { background: var(--bg-subtle); cursor: not-allowed; user-select: none; }
+#schema-fields td.schema-locked:hover { background: var(--bg-subtle); }
+#schema-fields td.schema-locked > input:disabled,
+#schema-fields td.schema-locked > select:disabled { color: var(--text-muted); -webkit-text-fill-color: var(--text-muted); opacity: 0.88; }
+#schema-fields td.schema-locked > select { appearance: none; -webkit-appearance: none; background-image: none; }
+#schema-fields td.schema-locked > input[type=checkbox] { opacity: 0.5; }
 
 .editor {
   width: 100%;
