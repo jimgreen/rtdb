@@ -1615,7 +1615,7 @@ function paintGridSelection() {
   });
   const model = boxModel || gridSelectionModel();
   const count = state.selectedCells.size || (model ? model.rows.length * model.columns.length : 0);
-  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "方向键移动 · F2/双击编辑 · Ctrl+S 保存";
+  el("selection-summary").textContent = count ? `已选 ${count.toLocaleString()} 个单元格` : "";
   updateRecordsToolbar();
   updateAutoRefreshStatus();
 }
@@ -1984,7 +1984,9 @@ function openRow(mode, record = null) {
   if (mode === "batch" && !rows.length) throw new Error("请先选择已保存的记录");
   state.dialog = { mode, table: state.table, records: structuredClone(rows), definition: structuredClone(state.definition) };
   el("row-dialog-title").textContent = ({ add: "新增记录", edit: "编辑记录", copy: "复制记录", batch: "批量修改" })[mode];
-  el("row-hint").textContent = mode === "batch" ? `修改 ${rows.length} 条选中记录，选择要统一更新的字段。` : mode === "copy" ? "请设置新的主键，原记录保持不变。" : "字段按定义类型校验；主键不可为空。";
+  const rowHint = el("row-hint");
+  rowHint.textContent = mode === "batch" ? `已选 ${rows.length} 条记录` : "";
+  rowHint.hidden = !rowHint.textContent;
   el("row-error").textContent = "";
   const values = mode === "batch" ? {} : record ? structuredClone(record.row) : Object.fromEntries(state.definition.columns.map((column) => [column.eng_name, fieldDefault(column)]));
   el("row-editor").value = JSON.stringify(values, null, 2);
@@ -2176,14 +2178,8 @@ function updateSchemaLocks() {
     deleteSchemaButton.title = "";
   }
   const hint = el("schema-hint");
-  if (readOnly) hint.textContent = "当前数据库只读。";
-  else if (isNativeDatabase() && state.table) {
-    hint.textContent = "表名、字段名、类型、主键、默认值和显示属性均可修改；下拉框和主键单击修改，文本双击编辑。";
-  } else if (state.table) {
-    hint.textContent = "下拉框和主键单击修改，文本字段双击编辑；默认值仅用于新记录。";
-  } else {
-    hint.textContent = "下拉框和主键单击修改，文本字段双击后编辑；默认值留空不设置，空字符串填 \"\"。";
-  }
+  hint.textContent = readOnly ? "当前数据库只读" : "";
+  hint.hidden = !hint.textContent;
   for (const row of el("schema-fields").querySelectorAll("tbody tr")) {
     const editing = row.dataset.editing === "true";
     for (const input of row.querySelectorAll("[data-property]")) {
@@ -3016,7 +3012,9 @@ function openChartSettings(kind, axis = "left") {
   el("chart-settings-title").textContent = axisMode ? `${axis === "x" ? "横轴" : axis === "left" ? "左轴" : "右轴"}设置` : kind === "title" ? "标题设置" : "曲线设置";
   el("chart-axis-settings").hidden = !axisMode; el("chart-series-settings").hidden = kind !== "series"; el("chart-title-settings").hidden = kind !== "title";
   if (axisMode) {
-    el("chart-axis-settings-hint").textContent = axis === "x" ? "设置横轴标题和标签显示间隔。" : "留空表示自动计算范围；填写最小值和最大值可限制坐标轴范围。";
+    const axisHint = el("chart-axis-settings-hint");
+    axisHint.textContent = "";
+    axisHint.hidden = true;
     el("chart-axis-title").value = axisSettings.title || "";
     el("chart-axis-min").value = axis === "x" ? "" : axisSettings.min ?? "";
     el("chart-axis-max").value = axis === "x" ? "" : axisSettings.max ?? "";
