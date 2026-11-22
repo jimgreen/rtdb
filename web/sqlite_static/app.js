@@ -27,19 +27,42 @@ const integerTypes = new Set(["int", "integer", "long"]);
 const floatTypes = new Set(["float", "double", "number", "decimal"]);
 const boolTypes = new Set(["bool", "boolean"]);
 const objectTypes = new Set(["list", "array", "dict", "object", "json"]);
+const i18n = window.rtdbI18n || { t: (k) => k, getLang: () => "zh-CN", setLang: () => {}, onChange: () => {}, translateText: (s) => s };
+const t = (key, params) => i18n.t(key, params);
 const themeStorageKey = "rtdb.ui.theme";
-const uiThemeAliases = { light: "minimalist-light", dark: "precision-dark" };
-const uiThemes = new Set(["minimalist-light", "precision-dark", "bento-grid", "glassmorphism", "editorial", "neo-brutalism", "sci-fi"]);
-const darkThemes = new Set(["precision-dark", "glassmorphism", "sci-fi"]);
+const uiThemeAliases = {
+  light: "minimalist-light",
+  dark: "precision-dark",
+  "sci-fi": "sci-fi-cyan",
+  "neo-brutalism": "minimalist-light"
+};
+const uiThemes = new Set([
+  "minimalist-light",
+  "precision-dark",
+  "bento-grid",
+  "glassmorphism",
+  "editorial",
+  "sci-fi-cyan",
+  "sci-fi-purple",
+  "sci-fi-matrix"
+]);
+const darkThemes = new Set([
+  "precision-dark",
+  "glassmorphism",
+  "sci-fi-cyan",
+  "sci-fi-purple",
+  "sci-fi-matrix"
+]);
 // 各视觉风格专属色盲友好 6 色工程序列
 const chartPalettes = {
   "minimalist-light": ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
   "precision-dark": ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"],
-  "bento-grid": ["#0066FF", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#64748B"],
+  "bento-grid": ["#0071E3", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#6E6E73"],
   "glassmorphism": ["#60A5FA", "#FBBF24", "#34D399", "#F472B6", "#A78BFA", "#94A3B8"],
-  "editorial": ["#B91C1C", "#1D4ED8", "#0F766E", "#A16207", "#6D28D9", "#52525B"],
-  "neo-brutalism": ["#1D4ED8", "#EA580C", "#059669", "#DC2626", "#7C3AED", "#09090B"],
-  "sci-fi": ["#00E5FF", "#00F5A0", "#FFB020", "#FF3B5C", "#A855F7", "#8EA4C8"]
+  "editorial": ["#9F1239", "#1D4ED8", "#0F766E", "#A16207", "#6D28D9", "#52525B"],
+  "sci-fi-cyan": ["#00E5FF", "#00E6A8", "#FFB020", "#FF4D6D", "#A855F7", "#7DA2C4"],
+  "sci-fi-purple": ["#C084FC", "#2DD4BF", "#FBBF24", "#FB7185", "#60A5FA", "#A695C9"],
+  "sci-fi-matrix": ["#00E676", "#38BDF8", "#FBBF24", "#FF5C77", "#A78BFA", "#7EB396"]
 };
 function normalizeTheme(value) {
   const mapped = uiThemeAliases[value] || value;
@@ -50,12 +73,28 @@ function isDarkTheme() { return darkThemes.has(currentTheme()); }
 function currentChartPalette() { return chartPalettes[currentTheme()] || chartPalettes["minimalist-light"]; }
 function chartThemeTokens() {
   const theme = currentTheme();
-  if (theme === "sci-fi") {
+  if (theme === "sci-fi-cyan") {
     return {
-      canvasBg: "#0A1024", gridLine: "rgba(0, 229, 255, 0.14)", axisLine: "rgba(0, 229, 255, 0.34)",
-      axisText: "#8EA4C8", titleColor: "#E6F1FF", cursorLine: "#00E5FF",
-      tooltipBg: "rgba(5, 8, 20, 0.94)", tooltipBorder: "rgba(0, 229, 255, 0.42)",
-      tooltipTitle: "#00E5FF", tooltipLabel: "#8EA4C8", tooltipValue: "#E6F1FF"
+      canvasBg: "#081121", gridLine: "rgba(0, 229, 255, 0.14)", axisLine: "rgba(0, 229, 255, 0.34)",
+      axisText: "#7DA2C4", titleColor: "#E6F7FF", cursorLine: "#00E5FF",
+      tooltipBg: "rgba(4, 8, 18, 0.94)", tooltipBorder: "rgba(0, 229, 255, 0.42)",
+      tooltipTitle: "#00E5FF", tooltipLabel: "#7DA2C4", tooltipValue: "#E6F7FF"
+    };
+  }
+  if (theme === "sci-fi-purple") {
+    return {
+      canvasBg: "#120C24", gridLine: "rgba(192, 132, 252, 0.16)", axisLine: "rgba(192, 132, 252, 0.36)",
+      axisText: "#A695C9", titleColor: "#F3EEFF", cursorLine: "#C084FC",
+      tooltipBg: "rgba(9, 6, 20, 0.95)", tooltipBorder: "rgba(192, 132, 252, 0.44)",
+      tooltipTitle: "#C084FC", tooltipLabel: "#A695C9", tooltipValue: "#F3EEFF"
+    };
+  }
+  if (theme === "sci-fi-matrix") {
+    return {
+      canvasBg: "#081810", gridLine: "rgba(0, 230, 118, 0.14)", axisLine: "rgba(0, 230, 118, 0.34)",
+      axisText: "#7EB396", titleColor: "#E2FBE9", cursorLine: "#00E676",
+      tooltipBg: "rgba(4, 13, 8, 0.94)", tooltipBorder: "rgba(0, 230, 118, 0.42)",
+      tooltipTitle: "#00E676", tooltipLabel: "#7EB396", tooltipValue: "#E2FBE9"
     };
   }
   if (theme === "glassmorphism") {
@@ -76,18 +115,10 @@ function chartThemeTokens() {
   }
   if (theme === "editorial") {
     return {
-      canvasBg: "#FAF9F6", gridLine: "#E6E4DD", axisLine: "#CFCBC0",
-      axisText: "#52525B", titleColor: "#141414", cursorLine: "#B91C1C",
-      tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#CFCBC0",
-      tooltipTitle: "#141414", tooltipLabel: "#52525B", tooltipValue: "#141414"
-    };
-  }
-  if (theme === "neo-brutalism") {
-    return {
-      canvasBg: "#FFFFFF", gridLine: "#E4E4E7", axisLine: "#09090B",
-      axisText: "#27272A", titleColor: "#09090B", cursorLine: "#09090B",
-      tooltipBg: "#FFFDF5", tooltipBorder: "#09090B",
-      tooltipTitle: "#09090B", tooltipLabel: "#27272A", tooltipValue: "#09090B"
+      canvasBg: "#FAF9F6", gridLine: "#E4E4E7", axisLine: "#C9C7BE",
+      axisText: "#52525B", titleColor: "#18181B", cursorLine: "#9F1239",
+      tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#C9C7BE",
+      tooltipTitle: "#18181B", tooltipLabel: "#52525B", tooltipValue: "#18181B"
     };
   }
   return {
@@ -2732,13 +2763,16 @@ function drawChart() {
   const canvas = el("chart"), context = canvas.getContext("2d"), model = buildChartModel();
   for (const control of [el("chart-mode").closest("label"), el("chart-x").closest("label"), el("chart-fields")]) control.hidden = state.chartPinned;
   el("follow-chart-selection").hidden = el("chart-series-summary").hidden = !state.chartPinned;
-  el("chart-series-summary").textContent = `已添加 ${model.series.length} 条曲线${model.ordinal ? " · 横轴：点序号（游标显示各点标签）" : ""} · 右键选区继续添加`;
+  el("chart-series-summary").textContent = t("chart.seriesSummary", {
+    count: model.series.length,
+    ordinal: model.ordinal ? t("chart.ordinalHint") : ""
+  });
   el("chart-series-summary").title = el("chart-series-summary").textContent;
   renderChartLegend(model);
   const visibleSeries = model.series.filter((series) => !state.chartHidden.has(series.key));
   const values = visibleSeries.flatMap((series) => series.points.map((point) => point.value)).filter(Number.isFinite);
   const available = visibleSeries.length && model.labels.length && values.length;
-  el("chart-empty").textContent = model.series.length && !visibleSeries.length ? "全部曲线已隐藏，点击右上角图例恢复显示。" : "右键表格数值选区，选择“左轴曲线”或“右轴曲线”。";
+  el("chart-empty").textContent = model.series.length && !visibleSeries.length ? t("chart.allHidden") : t("chart.empty");
   el("chart-empty").hidden = Boolean(available); canvas.hidden = !available;
   if (!available) { state.chartFrame = null; state.chartHits = []; return; }
   // Keep the chosen font size and a usable plot when a large title needs more height.
@@ -2764,7 +2798,7 @@ function drawChart() {
   state.chartFrame = { model: { ...model, series: visibleSeries }, labels: model.labels, left, right, top, bottom, plotWidth, plotHeight, width, height, ranges, xAt: pointX, yAt: pointY };
   // 静态底图层（坐标轴、虚线水平网格、折线、数据点、标题）离屏缓存，游标移动时直接贴图零重绘。
   const staticKey = JSON.stringify([
-    themeName, pixelWidth, pixelHeight, ratio, state.chartTitle, state.chartTitleSettings, state.chartAxisSettings,
+    themeName, i18n.getLang(), pixelWidth, pixelHeight, ratio, state.chartTitle, state.chartTitleSettings, state.chartAxisSettings,
     ranges, model.labels,
     visibleSeries.map((series) => [series.key, series.axis, series.style, series.points.map((point) => point.value)])
   ]);
@@ -2801,8 +2835,10 @@ function drawChart() {
     offscreen.textAlign = "center"; if (state.chartAxisSettings.x.title) offscreen.fillText(state.chartAxisSettings.x.title, left + plotWidth / 2, height - bottom + 40);
     drawChartTitle(offscreen, width, height);
     offscreen.fillStyle = theme.axisText;
-    offscreen.textAlign = "left"; offscreen.fillText(state.chartAxisSettings.left.title || "左轴", 8, top - 12);
-    offscreen.textAlign = "right"; offscreen.fillText(state.chartAxisSettings.right.title || "右轴", width - 8, top - 12);
+    const leftAxisLabel = (!state.chartAxisSettings.left.title || state.chartAxisSettings.left.title === "左轴") ? t("chart.leftAxis") : state.chartAxisSettings.left.title;
+    const rightAxisLabel = (!state.chartAxisSettings.right.title || state.chartAxisSettings.right.title === "右轴") ? t("chart.rightAxis") : state.chartAxisSettings.right.title;
+    offscreen.textAlign = "left"; offscreen.fillText(leftAxisLabel, 8, top - 12);
+    offscreen.textAlign = "right"; offscreen.fillText(rightAxisLabel, width - 8, top - 12);
     chartStaticHits = [];
     visibleSeries.forEach((series, seriesIndex) => {
       const style = series.style || chartStyle(series.key, seriesIndex);
@@ -3218,7 +3254,13 @@ setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", default
 syncLayoutToggleButtons();
 if (el("toggle-sidebar")) el("toggle-sidebar").onclick = () => { sidebarLayout.toggle(); syncLayoutToggleButtons(); };
 if (el("toggle-bottom")) el("toggle-bottom").onclick = () => { chartLayout.toggle(); syncLayoutToggleButtons(); requestAnimationFrame(drawChart); };
+if (el("lang-select")) el("lang-select").onchange = () => i18n.setLang(el("lang-select").value);
 if (el("theme-select")) el("theme-select").onchange = () => applyTheme(el("theme-select").value);
+i18n.onChange(() => {
+  chartStaticKey = null;
+  legendSignature = null;
+  if (typeof drawChart === "function" && el("tab-chart")) requestAnimationFrame(drawChart);
+});
 
 document.querySelectorAll("[data-tab]").forEach((button) => { button.onclick = () => tab(button.dataset.tab); });
 const bottomTabs = [...document.querySelectorAll("[data-bottom-tab]")];

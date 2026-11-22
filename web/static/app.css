@@ -1,16 +1,18 @@
-/* RTDB 轻量管理台 · 多视觉风格预设体系（7 套官方 Design Tokens） */
+/* RTDB 轻量管理台 · 多视觉风格预设体系（8 套官方 Design Tokens + 多语言防溢出） */
 :root,
 html[data-theme="minimalist-light"] {
   color-scheme: light;
-  --font-sans: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter", "Segoe UI", "Roboto", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Arial", system-ui, -apple-system, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono: "JetBrains Mono", "Fira Code", "Consolas", ui-monospace, monospace;
-  --bg-canvas: #F4F6F8;
+  --bg-canvas: #F8FAFC;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F8FAFC;
-  --bg-hover: #F1F5F9;
+  --bg-subtle: #F1F5F9;
+  --bg-hover: #EFF6FF;
   --bg-active: #EFF6FF;
   --bg-option: #FFFFFF;
+  --table-stripe: #F8FAFC;
+  --table-hover: #EFF6FF;
   --text-primary: #0F172A;
   --text-secondary: #475569;
   --text-muted: #64748B;
@@ -26,12 +28,12 @@ html[data-theme="minimalist-light"] {
   --danger-hover: #B91C1C;
   --danger-bg: rgba(220, 38, 38, 0.08);
   --danger-border: rgba(220, 38, 38, 0.28);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
   --shadow-lg: 0 20px 56px rgba(15, 23, 42, 0.18);
   --backdrop: rgba(15, 23, 42, 0.42);
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 12px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
   --transition: 160ms cubic-bezier(0.2, 0, 0, 1);
 
   font-family: var(--font-sans);
@@ -47,28 +49,33 @@ html[data-theme="dark"] {
   color-scheme: dark;
   --bg-canvas: #0B0F19;
   --bg-surface: #111827;
-  --bg-subtle: #161E2E;
+  --bg-subtle: #1E293B;
   --bg-hover: #1E293B;
   --bg-active: rgba(56, 189, 248, 0.14);
   --bg-option: #111827;
+  --table-stripe: #162032;
+  --table-hover: #1E293B;
   --text-primary: #F8FAFC;
   --text-secondary: #CBD5E1;
   --text-muted: #94A3B8;
-  --border: rgba(255, 255, 255, 0.09);
+  --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.18);
   --accent: #38BDF8;
   --accent-btn: #2563EB;
   --accent-btn-text: #FFFFFF;
-  --accent-hover: #3B82F6;
+  --accent-hover: #0EA5E9;
   --accent-ring: rgba(56, 189, 248, 0.32);
   --success: #34D399;
   --danger: #FB7185;
   --danger-hover: #F43F5E;
-  --danger-bg: rgba(251, 113, 133, 0.14);
+  --danger-bg: rgba(251, 113, 133, 0.15);
   --danger-border: rgba(251, 113, 133, 0.34);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.65);
   --backdrop: rgba(2, 6, 23, 0.68);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
 }
 
 /* 3. 便当盒网格（Bento Grid） */
@@ -76,31 +83,33 @@ html[data-theme="bento-grid"] {
   color-scheme: light;
   --bg-canvas: #F5F5F7;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #FAFAFC;
+  --bg-subtle: #EBEBF0;
   --bg-hover: #F0F2F5;
-  --bg-active: rgba(0, 102, 255, 0.10);
+  --bg-active: rgba(0, 113, 227, 0.10);
   --bg-option: #FFFFFF;
+  --table-stripe: #F9F9FB;
+  --table-hover: rgba(0, 113, 227, 0.06);
   --text-primary: #1D1D1F;
-  --text-secondary: #424245;
-  --text-muted: #86868B;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.15);
-  --accent: #0066FF;
-  --accent-btn: #0066FF;
+  --text-secondary: #48484A;
+  --text-muted: #6E6E73;
+  --border: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --accent: #0071E3;
+  --accent-btn: #0071E3;
   --accent-btn-text: #FFFFFF;
-  --accent-hover: #0052CC;
-  --accent-ring: rgba(0, 102, 255, 0.26);
+  --accent-hover: #0077ED;
+  --accent-ring: rgba(0, 113, 227, 0.26);
   --success: #16A34A;
   --danger: #DC2626;
   --danger-hover: #B91C1C;
   --danger-bg: rgba(220, 38, 38, 0.08);
   --danger-border: rgba(220, 38, 38, 0.25);
-  --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.14);
   --backdrop: rgba(29, 29, 31, 0.40);
   --radius-sm: 10px;
-  --radius-md: 16px;
-  --radius-lg: 20px;
+  --radius-md: 20px;
+  --radius-lg: 22px;
 }
 
 /* 4. 毛玻璃拟态（Glassmorphism） */
@@ -108,30 +117,32 @@ html[data-theme="glassmorphism"] {
   color-scheme: dark;
   --bg-canvas: #0F172A;
   --bg-surface: rgba(255, 255, 255, 0.07);
-  --bg-subtle: rgba(255, 255, 255, 0.05);
-  --bg-hover: rgba(255, 255, 255, 0.12);
+  --bg-subtle: rgba(255, 255, 255, 0.12);
+  --bg-hover: rgba(255, 255, 255, 0.14);
   --bg-active: rgba(96, 165, 250, 0.22);
   --bg-option: #0F172A;
+  --table-stripe: rgba(255, 255, 255, 0.04);
+  --table-hover: rgba(96, 165, 250, 0.14);
   --text-primary: #F8FAFC;
-  --text-secondary: #E2E8F0;
+  --text-secondary: #CBD5E1;
   --text-muted: #94A3B8;
   --border: rgba(255, 255, 255, 0.14);
   --border-strong: rgba(255, 255, 255, 0.24);
   --accent: #60A5FA;
   --accent-btn: #3B82F6;
   --accent-btn-text: #FFFFFF;
-  --accent-hover: #2563EB;
+  --accent-hover: #3B82F6;
   --accent-ring: rgba(96, 165, 250, 0.36);
   --success: #34D399;
   --danger: #FB7185;
   --danger-hover: #F43F5E;
   --danger-bg: rgba(251, 113, 133, 0.16);
   --danger-border: rgba(251, 113, 133, 0.36);
-  --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 8px 32px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.62);
   --backdrop: rgba(2, 6, 23, 0.68);
-  --radius-sm: 8px;
-  --radius-md: 14px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
   --radius-lg: 18px;
 }
 
@@ -141,92 +152,133 @@ html[data-theme="editorial"] {
   --font-heading: "Georgia", "Noto Serif SC", "Songti SC", "SimSun", serif;
   --bg-canvas: #FAF9F6;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F4F2EC;
-  --bg-hover: #EFECE3;
-  --bg-active: rgba(185, 28, 28, 0.08);
+  --bg-subtle: #F4F3EE;
+  --bg-hover: #EFECE5;
+  --bg-active: rgba(159, 18, 57, 0.08);
   --bg-option: #FFFFFF;
-  --text-primary: #141414;
-  --text-secondary: #3F3F46;
-  --text-muted: #52525B;
-  --border: #E6E4DD;
-  --border-strong: #CFCBC0;
-  --accent: #B91C1C;
-  --accent-btn: #B91C1C;
+  --table-stripe: #FAF9F6;
+  --table-hover: #F4F3EE;
+  --text-primary: #18181B;
+  --text-secondary: #52525B;
+  --text-muted: #62626A;
+  --border: #E4E4E7;
+  --border-strong: #C9C7BE;
+  --accent: #9F1239;
+  --accent-btn: #9F1239;
   --accent-btn-text: #FFFFFF;
-  --accent-hover: #991B1B;
-  --accent-ring: rgba(185, 28, 28, 0.22);
+  --accent-hover: #881337;
+  --accent-ring: rgba(159, 18, 57, 0.22);
   --success: #15803D;
   --danger: #B91C1C;
   --danger-hover: #991B1B;
   --danger-bg: rgba(185, 28, 28, 0.08);
   --danger-border: rgba(185, 28, 28, 0.28);
   --shadow-sm: none;
-  --shadow-lg: 0 18px 48px rgba(20, 20, 20, 0.14);
-  --backdrop: rgba(20, 20, 20, 0.45);
-  --radius-sm: 3px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
+  --shadow-lg: 0 18px 48px rgba(24, 24, 27, 0.14);
+  --backdrop: rgba(24, 24, 27, 0.45);
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 4px;
 }
 
-/* 6. 新粗野主义（Neo-Brutalism） */
-html[data-theme="neo-brutalism"] {
-  color-scheme: light;
-  --bg-canvas: #FFFDF5;
-  --bg-surface: #FFFFFF;
-  --bg-subtle: #FEF9E7;
-  --bg-hover: #FEF08A;
-  --bg-active: #FACC15;
-  --bg-option: #FFFFFF;
-  --text-primary: #09090B;
-  --text-secondary: #18181B;
-  --text-muted: #3F3F46;
-  --border: #09090B;
-  --border-strong: #09090B;
-  --accent: #09090B;
-  --accent-btn: #FACC15;
-  --accent-btn-text: #09090B;
-  --accent-hover: #EAB308;
-  --accent-ring: rgba(9, 9, 11, 0.30);
-  --success: #059669;
-  --danger: #DC2626;
-  --danger-hover: #B91C1C;
-  --danger-bg: #FEE2E2;
-  --danger-border: #09090B;
-  --shadow-sm: 4px 4px 0 #09090B;
-  --shadow-lg: 6px 6px 0 #09090B;
-  --backdrop: rgba(9, 9, 11, 0.56);
-  --radius-sm: 4px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
-}
-
-/* 7. 科幻风（Sci-Fi / HUD） */
+/* 6. 科幻 · 电光青（Sci-Fi Cyan，兼容旧别名 sci-fi） */
+html[data-theme="sci-fi-cyan"],
 html[data-theme="sci-fi"] {
   color-scheme: dark;
-  --bg-canvas: #050814;
-  --bg-surface: #0A1024;
-  --bg-subtle: #0F1730;
-  --bg-hover: #142245;
-  --bg-active: rgba(0, 229, 255, 0.16);
-  --bg-option: #0A1024;
-  --text-primary: #E6F1FF;
-  --text-secondary: #B8CEEA;
-  --text-muted: #8EA4C8;
+  --bg-canvas: #040812;
+  --bg-surface: #081121;
+  --bg-subtle: #0D1B33;
+  --bg-hover: #102444;
+  --bg-active: rgba(0, 229, 255, 0.15);
+  --bg-option: #081121;
+  --table-stripe: #0A162B;
+  --table-hover: #102444;
+  --text-primary: #E6F7FF;
+  --text-secondary: #A6C8E4;
+  --text-muted: #7DA2C4;
   --border: rgba(0, 229, 255, 0.22);
-  --border-strong: rgba(0, 229, 255, 0.42);
+  --border-strong: rgba(0, 229, 255, 0.40);
   --accent: #00E5FF;
-  --accent-btn: #00E5FF;
+  --accent-btn: #00B8D9;
   --accent-btn-text: #04101E;
-  --accent-hover: #33EEFF;
-  --accent-ring: rgba(0, 229, 255, 0.38);
-  --success: #00F5A0;
-  --danger: #FF3B5C;
+  --accent-hover: #38F2FF;
+  --accent-ring: rgba(0, 229, 255, 0.36);
+  --success: #00E6A8;
+  --danger: #FF4D6D;
   --danger-hover: #E11D48;
-  --danger-bg: rgba(255, 59, 92, 0.16);
-  --danger-border: rgba(255, 59, 92, 0.40);
-  --shadow-sm: 0 0 0 1px rgba(0, 229, 255, 0.10), 0 6px 20px rgba(0, 8, 24, 0.55);
+  --danger-bg: rgba(255, 77, 109, 0.16);
+  --danger-border: rgba(255, 77, 109, 0.40);
+  --shadow-sm: 0 0 0 1px rgba(0, 229, 255, 0.08), 0 8px 24px rgba(0, 8, 24, 0.55);
   --shadow-lg: 0 0 0 1px rgba(0, 229, 255, 0.20), 0 24px 64px rgba(0, 4, 14, 0.78);
   --backdrop: rgba(2, 6, 16, 0.74);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* 7. 科幻 · 赛博紫（Sci-Fi Purple） */
+html[data-theme="sci-fi-purple"] {
+  color-scheme: dark;
+  --bg-canvas: #090614;
+  --bg-surface: #120C24;
+  --bg-subtle: #1C1336;
+  --bg-hover: #231845;
+  --bg-active: rgba(192, 132, 252, 0.16);
+  --bg-option: #120C24;
+  --table-stripe: #160F2B;
+  --table-hover: #231845;
+  --text-primary: #F3EEFF;
+  --text-secondary: #C4B5E3;
+  --text-muted: #A695C9;
+  --border: rgba(192, 132, 252, 0.24);
+  --border-strong: rgba(192, 132, 252, 0.42);
+  --accent: #C084FC;
+  --accent-btn: #A855F7;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #D8B4FE;
+  --accent-ring: rgba(192, 132, 252, 0.38);
+  --success: #2DD4BF;
+  --danger: #FB7185;
+  --danger-hover: #F43F5E;
+  --danger-bg: rgba(251, 113, 133, 0.16);
+  --danger-border: rgba(251, 113, 133, 0.40);
+  --shadow-sm: 0 0 0 1px rgba(192, 132, 252, 0.09), 0 8px 24px rgba(9, 4, 24, 0.58);
+  --shadow-lg: 0 0 0 1px rgba(192, 132, 252, 0.22), 0 24px 64px rgba(6, 2, 16, 0.80);
+  --backdrop: rgba(6, 3, 16, 0.74);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* 8. 科幻 · 矩阵绿（Sci-Fi Matrix） */
+html[data-theme="sci-fi-matrix"] {
+  color-scheme: dark;
+  --bg-canvas: #040D08;
+  --bg-surface: #081810;
+  --bg-subtle: #0F261A;
+  --bg-hover: #133322;
+  --bg-active: rgba(0, 230, 118, 0.15);
+  --bg-option: #081810;
+  --table-stripe: #0B1F15;
+  --table-hover: #133322;
+  --text-primary: #E2FBE9;
+  --text-secondary: #A4D4B7;
+  --text-muted: #7EB396;
+  --border: rgba(0, 230, 118, 0.22);
+  --border-strong: rgba(0, 230, 118, 0.40);
+  --accent: #00E676;
+  --accent-btn: #00C853;
+  --accent-btn-text: #04120A;
+  --accent-hover: #33F094;
+  --accent-ring: rgba(0, 230, 118, 0.36);
+  --success: #00E676;
+  --danger: #FF5C77;
+  --danger-hover: #E11D48;
+  --danger-bg: rgba(255, 92, 119, 0.16);
+  --danger-border: rgba(255, 92, 119, 0.40);
+  --shadow-sm: 0 0 0 1px rgba(0, 230, 118, 0.08), 0 8px 24px rgba(2, 14, 8, 0.56);
+  --shadow-lg: 0 0 0 1px rgba(0, 230, 118, 0.20), 0 24px 64px rgba(1, 10, 5, 0.78);
+  --backdrop: rgba(2, 10, 5, 0.74);
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
@@ -255,16 +307,21 @@ button, input, select, textarea { font: inherit; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 16px;
   padding: 12px 24px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
-.brand { display: flex; align-items: center; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 1; }
+.brand > div { min-width: 0; }
 .brand-mark {
   width: 34px;
   height: 34px;
+  flex: 0 0 34px;
   border-radius: 8px;
   background: var(--accent-btn);
   color: var(--accent-btn-text);
@@ -273,11 +330,14 @@ button, input, select, textarea { font: inherit; }
   box-shadow: var(--shadow-sm);
 }
 .brand-mark svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; }
-.topbar h1 { margin: 2px 0 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; font-family: var(--font-heading); }
-.eyebrow { margin: 0; color: var(--text-muted); letter-spacing: .08em; font-size: 10px; font-weight: 600; }
-.header-actions, .actions { display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; }
-.theme-label { display: inline-flex; flex-direction: row; align-items: center; flex-wrap: nowrap; gap: 6px; color: var(--text-secondary); white-space: nowrap; }
-#theme-select { height: 32px; padding: 0 8px; font-size: 13px; }
+.topbar h1 { margin: 2px 0 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; font-family: var(--font-heading); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eyebrow { margin: 0; color: var(--text-muted); letter-spacing: .08em; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.header-actions { display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; flex-shrink: 0; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.lang-label, .theme-label { display: inline-flex; flex-direction: row; align-items: center; flex-wrap: nowrap; gap: 5px; color: var(--text-secondary); white-space: nowrap; }
+#lang-select, #theme-select { height: 32px; padding: 0 8px; font-size: 13px; }
+#lang-select { min-width: 82px; }
+#theme-select { min-width: 112px; max-width: 180px; }
 .topbar-icon-btn { width: 32px; height: 32px; padding: 0; }
 
 .layout {
@@ -296,7 +356,7 @@ button, input, select, textarea { font: inherit; }
   padding: 20px;
   box-shadow: var(--shadow-sm);
 }
-.panel-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 h2 { margin: 0; font-size: 16px; font-weight: 600; font-family: var(--font-heading); }
 
 button {
@@ -336,15 +396,19 @@ button.icon:hover:not(:disabled) { background: var(--bg-hover); color: var(--tex
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
   background: transparent;
   color: var(--text-primary);
   border: 1px solid transparent;
   padding: 8px 10px;
 }
+.table-item > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-item:hover:not(:disabled) { background: var(--bg-hover); }
 .table-item.active { background: var(--bg-active); color: var(--accent); border-color: transparent; box-shadow: inset 3px 0 var(--accent); font-weight: 600; }
 .table-item small {
+  flex: 0 0 auto;
   color: var(--text-muted);
   font-weight: 500;
   font-size: 11px;
@@ -404,7 +468,8 @@ input[type=checkbox] { accent-color: var(--accent-btn); cursor: pointer; }
 table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--border); padding: 9px 12px; text-align: left; white-space: nowrap; }
 th { background: var(--bg-subtle); color: var(--text-secondary); font-weight: 600; font-size: 12px; position: sticky; top: 0; }
-tbody tr:hover { background: var(--bg-hover); }
+tbody tr:nth-child(even) { background: var(--table-stripe); }
+tbody tr:hover { background: var(--table-hover); }
 td.value { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 th.is-numeric, td.is-numeric { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .cell-null { color: var(--text-muted); font-style: italic; opacity: 0.72; font-size: 12px; }
@@ -433,14 +498,16 @@ dialog::backdrop { background: var(--backdrop); }
   .toolbar input, .toolbar select { width: 100%; }
 }
 
-/* 多视觉风格专属增强层 */
+/* =====================================================================
+ * 多视觉风格专属增强层（严格限定在对应 data-theme 下）
+ * ===================================================================== */
 html[data-theme="bento-grid"] button:not(.table-item):not(.icon):not(.ghost):not(.topbar-icon-btn) {
   border-radius: 9999px;
   padding-left: 14px;
   padding-right: 14px;
 }
 html[data-theme="glassmorphism"] body {
-  background: radial-gradient(circle at 12% 18%, #1E293B 0%, #0F172A 56%, #090D16 100%);
+  background: radial-gradient(circle at 15% 20%, #1E293B 0%, #0F172A 60%, #090D16 100%);
 }
 html[data-theme="glassmorphism"] .topbar,
 html[data-theme="glassmorphism"] .panel,
@@ -457,30 +524,39 @@ html[data-theme="editorial"] .panel,
 html[data-theme="editorial"] .topbar {
   box-shadow: none;
 }
-html[data-theme="neo-brutalism"] .topbar,
-html[data-theme="neo-brutalism"] .panel,
-html[data-theme="neo-brutalism"] dialog,
-html[data-theme="neo-brutalism"] .notice,
-html[data-theme="neo-brutalism"] button:not(.table-item):not(.icon):not(.ghost),
-html[data-theme="neo-brutalism"] input:not([type=checkbox]),
-html[data-theme="neo-brutalism"] select,
-html[data-theme="neo-brutalism"] textarea {
-  border: 2px solid #09090B;
-}
-html[data-theme="neo-brutalism"] button:not(.table-item):not(.icon):not(.ghost):not(:disabled) {
-  box-shadow: 2px 2px 0 #09090B;
-}
-html[data-theme="neo-brutalism"] button:not(.table-item):not(.icon):not(.ghost):active:not(:disabled) {
-  transform: translate(2px, 2px);
-  box-shadow: 0 0 0 #09090B;
-}
+
+/* 科幻三子风格专属全息微栅格底纹与克制辉光 */
+html[data-theme="sci-fi-cyan"] body,
 html[data-theme="sci-fi"] body {
-  background-color: #050814;
+  background-color: #040812;
   background-image:
-    linear-gradient(rgba(0, 229, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 229, 255, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
   background-size: 28px 28px;
 }
+html[data-theme="sci-fi-cyan"] .brand-mark,
 html[data-theme="sci-fi"] .brand-mark {
   box-shadow: 0 0 14px rgba(0, 229, 255, 0.35);
+}
+
+html[data-theme="sci-fi-purple"] body {
+  background-color: #090614;
+  background-image:
+    linear-gradient(rgba(192, 132, 252, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(192, 132, 252, 0.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+html[data-theme="sci-fi-purple"] .brand-mark {
+  box-shadow: 0 0 14px rgba(192, 132, 252, 0.36);
+}
+
+html[data-theme="sci-fi-matrix"] body {
+  background-color: #040D08;
+  background-image:
+    linear-gradient(rgba(0, 230, 118, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 230, 118, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+html[data-theme="sci-fi-matrix"] .brand-mark {
+  box-shadow: 0 0 14px rgba(0, 230, 118, 0.34);
 }
