@@ -2,21 +2,23 @@ const state = { table: null, tables: [], rows: [], columns: [], selectSeq: 0, qu
 const $ = (id) => document.getElementById(id);
 const numericKinds = new Set(["int", "integer", "long", "float", "double", "number", "decimal"]);
 const themeKey = "rtdb.ui.theme";
+const uiThemeAliases = { light: "minimalist-light", dark: "precision-dark" };
+const uiThemes = new Set(["minimalist-light", "precision-dark", "bento-grid", "glassmorphism", "editorial", "neo-brutalism", "sci-fi"]);
 let noticeTimer = null;
 
-/** 切换并记忆深/浅主题 */
-function applyTheme(mode, persist = true) {
-  const dark = mode === "dark";
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-  const btn = $("toggle-theme");
-  if (btn) {
-    btn.querySelector(".theme-icon-moon")?.toggleAttribute("hidden", dark);
-    btn.querySelector(".theme-icon-sun")?.toggleAttribute("hidden", !dark);
-    btn.title = dark ? "切换为浅色模式" : "切换为深色控制室模式";
-  }
-  if (persist) { try { localStorage.setItem(themeKey, dark ? "dark" : "light"); } catch { /* 忽略存储异常 */ } }
+/** 切换并记忆多视觉风格（兼容历史 light/dark 存储值） */
+function normalizeTheme(value) {
+  const mapped = uiThemeAliases[value] || value;
+  return uiThemes.has(mapped) ? mapped : "minimalist-light";
 }
-try { applyTheme(localStorage.getItem(themeKey) || "light", false); } catch { applyTheme("light", false); }
+function applyTheme(mode, persist = true) {
+  const theme = normalizeTheme(mode);
+  document.documentElement.dataset.theme = theme;
+  const select = $("theme-select");
+  if (select && select.value !== theme) select.value = theme;
+  if (persist) { try { localStorage.setItem(themeKey, theme); } catch { /* 忽略存储异常 */ } }
+}
+try { applyTheme(localStorage.getItem(themeKey) || "minimalist-light", false); } catch { applyTheme("minimalist-light", false); }
 
 function notice(message, error = false) {
   clearTimeout(noticeTimer);
@@ -184,7 +186,7 @@ function openRowDialog(index = null) {
 }
 function editRow(index) { openRowDialog(index); }
 
-$("toggle-theme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+if ($("theme-select")) $("theme-select").onchange = () => applyTheme($("theme-select").value);
 $("order-field").onchange = () => { updateOrderByHidden(); queryRows().catch((error) => notice(error.message, true)); };
 $("order-dir").onchange = () => { updateOrderByHidden(); queryRows().catch((error) => notice(error.message, true)); };
 $("where").onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); queryRows().catch((error) => notice(error.message, true)); } };

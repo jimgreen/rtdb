@@ -28,20 +28,66 @@ const floatTypes = new Set(["float", "double", "number", "decimal"]);
 const boolTypes = new Set(["bool", "boolean"]);
 const objectTypes = new Set(["list", "array", "dict", "object", "json"]);
 const themeStorageKey = "rtdb.ui.theme";
-// 色盲友好 6 色工程序列（浅色：科研日间；深色：控制室暗底降纯度提明度）
+const uiThemeAliases = { light: "minimalist-light", dark: "precision-dark" };
+const uiThemes = new Set(["minimalist-light", "precision-dark", "bento-grid", "glassmorphism", "editorial", "neo-brutalism", "sci-fi"]);
+const darkThemes = new Set(["precision-dark", "glassmorphism", "sci-fi"]);
+// 各视觉风格专属色盲友好 6 色工程序列
 const chartPalettes = {
-  light: ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
-  dark: ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"]
+  "minimalist-light": ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
+  "precision-dark": ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"],
+  "bento-grid": ["#0066FF", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#64748B"],
+  "glassmorphism": ["#60A5FA", "#FBBF24", "#34D399", "#F472B6", "#A78BFA", "#94A3B8"],
+  "editorial": ["#B91C1C", "#1D4ED8", "#0F766E", "#A16207", "#6D28D9", "#52525B"],
+  "neo-brutalism": ["#1D4ED8", "#EA580C", "#059669", "#DC2626", "#7C3AED", "#09090B"],
+  "sci-fi": ["#00E5FF", "#00F5A0", "#FFB020", "#FF3B5C", "#A855F7", "#8EA4C8"]
 };
-function isDarkTheme() { return document.documentElement.dataset.theme === "dark"; }
-function currentChartPalette() { return isDarkTheme() ? chartPalettes.dark : chartPalettes.light; }
+function normalizeTheme(value) {
+  const mapped = uiThemeAliases[value] || value;
+  return uiThemes.has(mapped) ? mapped : "minimalist-light";
+}
+function currentTheme() { return normalizeTheme(document.documentElement.dataset.theme); }
+function isDarkTheme() { return darkThemes.has(currentTheme()); }
+function currentChartPalette() { return chartPalettes[currentTheme()] || chartPalettes["minimalist-light"]; }
 function chartThemeTokens() {
-  if (isDarkTheme()) {
+  const theme = currentTheme();
+  if (theme === "sci-fi") {
+    return {
+      canvasBg: "#0A1024", gridLine: "rgba(0, 229, 255, 0.14)", axisLine: "rgba(0, 229, 255, 0.34)",
+      axisText: "#8EA4C8", titleColor: "#E6F1FF", cursorLine: "#00E5FF",
+      tooltipBg: "rgba(5, 8, 20, 0.94)", tooltipBorder: "rgba(0, 229, 255, 0.42)",
+      tooltipTitle: "#00E5FF", tooltipLabel: "#8EA4C8", tooltipValue: "#E6F1FF"
+    };
+  }
+  if (theme === "glassmorphism") {
+    return {
+      canvasBg: "#0F172A", gridLine: "rgba(255, 255, 255, 0.10)", axisLine: "rgba(255, 255, 255, 0.24)",
+      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#60A5FA",
+      tooltipBg: "rgba(15, 23, 42, 0.95)", tooltipBorder: "rgba(96, 165, 250, 0.38)",
+      tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+    };
+  }
+  if (theme === "precision-dark") {
     return {
       canvasBg: "#111827", gridLine: "rgba(255, 255, 255, 0.08)", axisLine: "rgba(255, 255, 255, 0.20)",
       axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#94A3B8",
       tooltipBg: "rgba(15, 23, 42, 0.94)", tooltipBorder: "rgba(148, 163, 184, 0.32)",
       tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+    };
+  }
+  if (theme === "editorial") {
+    return {
+      canvasBg: "#FAF9F6", gridLine: "#E6E4DD", axisLine: "#CFCBC0",
+      axisText: "#52525B", titleColor: "#141414", cursorLine: "#B91C1C",
+      tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#CFCBC0",
+      tooltipTitle: "#141414", tooltipLabel: "#52525B", tooltipValue: "#141414"
+    };
+  }
+  if (theme === "neo-brutalism") {
+    return {
+      canvasBg: "#FFFFFF", gridLine: "#E4E4E7", axisLine: "#09090B",
+      axisText: "#27272A", titleColor: "#09090B", cursorLine: "#09090B",
+      tooltipBg: "#FFFDF5", tooltipBorder: "#09090B",
+      tooltipTitle: "#09090B", tooltipLabel: "#27272A", tooltipValue: "#09090B"
     };
   }
   return {
@@ -52,26 +98,18 @@ function chartThemeTokens() {
   };
 }
 function applyTheme(theme, persist = true) {
-  const mode = theme === "dark" ? "dark" : "light";
+  const mode = normalizeTheme(theme);
   document.documentElement.dataset.theme = mode;
-  const toggle = el("toggle-theme");
-  if (toggle) {
-    const dark = mode === "dark";
-    toggle.querySelector(".theme-icon-moon")?.toggleAttribute("hidden", dark);
-    toggle.querySelector(".theme-icon-sun")?.toggleAttribute("hidden", !dark);
-    toggle.title = dark ? "切换为浅色模式" : "切换为深色控制室模式";
-    toggle.setAttribute("aria-pressed", String(dark));
-  }
+  const select = el("theme-select");
+  if (select && select.value !== mode) select.value = mode;
   if (persist) { try { localStorage.setItem(themeStorageKey, mode); } catch { /* 主题持久化失败不影响使用 */ } }
   chartStaticKey = null;
   legendSignature = null;
   if (typeof drawChart === "function" && el("tab-chart")) requestAnimationFrame(drawChart);
 }
 try {
-  const savedTheme = localStorage.getItem(themeStorageKey);
-  if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme, false);
-  else applyTheme("light", false);
-} catch { applyTheme("light", false); }
+  applyTheme(localStorage.getItem(themeStorageKey) || "minimalist-light", false);
+} catch { applyTheme("minimalist-light", false); }
 const chartSettingsStorageKey = "rtdb.chart.settings";
 const chartTitleDefaults = { color: "#0F172A", fontSize: 13, fontFamily: "Segoe UI", fontStyle: "bold", position: "top-center", gap: 6 };
 const chartTitleFonts = ["Segoe UI", "Microsoft YaHei", "SimSun", "SimHei", "Arial"];
@@ -2710,7 +2748,7 @@ function drawChart() {
   const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-  const theme = chartThemeTokens(), dark = isDarkTheme();
+  const theme = chartThemeTokens(), themeName = currentTheme();
   const axisFont = '11px "JetBrains Mono", "Consolas", "Microsoft YaHei", monospace';
   const uiFont = '11px "Inter", "PingFang SC", "Microsoft YaHei", sans-serif';
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -2726,7 +2764,7 @@ function drawChart() {
   state.chartFrame = { model: { ...model, series: visibleSeries }, labels: model.labels, left, right, top, bottom, plotWidth, plotHeight, width, height, ranges, xAt: pointX, yAt: pointY };
   // 静态底图层（坐标轴、虚线水平网格、折线、数据点、标题）离屏缓存，游标移动时直接贴图零重绘。
   const staticKey = JSON.stringify([
-    dark, pixelWidth, pixelHeight, ratio, state.chartTitle, state.chartTitleSettings, state.chartAxisSettings,
+    themeName, pixelWidth, pixelHeight, ratio, state.chartTitle, state.chartTitleSettings, state.chartAxisSettings,
     ranges, model.labels,
     visibleSeries.map((series) => [series.key, series.axis, series.style, series.points.map((point) => point.value)])
   ]);
@@ -3180,7 +3218,7 @@ setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", default
 syncLayoutToggleButtons();
 if (el("toggle-sidebar")) el("toggle-sidebar").onclick = () => { sidebarLayout.toggle(); syncLayoutToggleButtons(); };
 if (el("toggle-bottom")) el("toggle-bottom").onclick = () => { chartLayout.toggle(); syncLayoutToggleButtons(); requestAnimationFrame(drawChart); };
-if (el("toggle-theme")) el("toggle-theme").onclick = () => applyTheme(isDarkTheme() ? "light" : "dark");
+if (el("theme-select")) el("theme-select").onchange = () => applyTheme(el("theme-select").value);
 
 document.querySelectorAll("[data-tab]").forEach((button) => { button.onclick = () => tab(button.dataset.tab); });
 const bottomTabs = [...document.querySelectorAll("[data-bottom-tab]")];
@@ -3438,7 +3476,6 @@ async function openDatabaseFileDialog(fileTab = "server") {
 el("app-title").ondblclick = () => run(openDatabaseFileDialog);
 el("open-database-files").onclick = () => run(openDatabaseFileDialog);
 bindWorkspacePicker();
-el("open-database-files").textContent = "选择 / 新建数据库";
 el("database-select").onchange = () => {
   const filename = el("database-select").value; el("database-select").value = state.database || "";
   if (state.busy) return;
