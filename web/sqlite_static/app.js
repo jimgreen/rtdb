@@ -1389,28 +1389,26 @@ function renderTables() {
 async function refreshTables() {
   state.databases = (await request("databases")).databases;
   if (state.database && !state.databases.some((item) => item.filename === state.database)) { state.database = null; resetSelection(); }
-  el("database-select").replaceChildren(new Option("选择数据库…", ""));
-  for (const item of state.databases) {
-    const option = new Option(`${item.label} · ${item.filename}${item.error ? "（异常）" : item.read_only ? "（只读）" : ""}`, item.filename);
-    el("database-select").append(option);
-  }
-  el("database-select").value = state.database || "";
   el("query").disabled = !state.database;
   updateSchemaLocks();
   state.tables = state.database ? (await request("tables")).tables : [];
   state.checkedTables = new Set([...state.checkedTables].filter((name) => state.tables.some((item) => item.name === name)));
+  renderCurrentDatabaseFile();
   renderTables();
   if (window.rtdbSampleTrends) window.rtdbSampleTrends.setContext(workspacePath, state.database);
 }
 function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
+  if (!target) return;
   const item = state.tables.find((entry) => entry.name === state.table);
   const filename = state.database || (state.table ? item?.database_file || `${state.table}.sqlite3` : "");
+  const relDir = String(workspacePath || "").replace(/^[\\/]+|[\\/]+$/g, "").replace(/\\/g, "/");
+  const displayPath = filename ? (relDir ? `${relDir}/${filename}` : filename) : "";
   const directory = state.dataDir === "." ? "" : state.dataDir.replace(/[\\/]+$/, "");
   const separator = state.dataDir.includes("\\") ? "\\" : "/";
-  target.textContent = filename || "未选择数据库";
+  target.textContent = displayPath || "未选择数据库";
   target.title = filename ? `当前数据库：${directory ? directory + separator : ""}${filename}` : "请先选择或新建数据库";
-  target.setAttribute("aria-label", filename ? `当前数据库文件：${filename}` : "未选择数据库");
+  target.setAttribute("aria-label", displayPath ? `当前数据库文件：${displayPath}` : "未选择数据库");
 }
 function updateRecordsToolbar() {
   const title = el("records-table-title"), meta = el("records-table-meta");
@@ -5495,14 +5493,6 @@ async function openDatabaseFileDialog(fileTab = "server") {
 el("app-title").ondblclick = () => run(openDatabaseFileDialog);
 el("open-database-files").onclick = () => run(openDatabaseFileDialog);
 bindWorkspacePicker();
-el("database-select").onchange = () => {
-  const filename = el("database-select").value; el("database-select").value = state.database || "";
-  if (state.busy) return;
-  run(async () => {
-    if (!await discardSchema() || !await discardCellEdits()) return;
-    await activateDatabase(filename);
-  });
-};
 document.querySelectorAll("[data-database-file-tab]").forEach((button) => {
   button.onclick = () => run(async () => {
     const fileTab = button.dataset.databaseFileTab;

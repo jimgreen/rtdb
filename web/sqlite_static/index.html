@@ -29,7 +29,7 @@
   <main class="layout">
     <aside id="table-sidebar" class="sidebar">
       <div class="sidebar-toolbar">
-        <div class="sidebar-toolbar-row"><select id="database-select" aria-label="当前数据库"><option value="">选择数据库…</option></select><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
+        <div class="sidebar-toolbar-row"><span id="table-count" class="muted"></span><button id="new-table" class="small" disabled>＋ 新建表</button></div>
         <div class="sidebar-toolbar-row"><input id="table-filter" type="search" placeholder="搜索表名 (Ctrl+K)" aria-label="搜索表名" title="支持英文或中文表名，Ctrl+K 快速聚焦"><div class="filter-options"><label title="精确匹配表名"><input id="exact-match" type="checkbox" aria-label="精确匹配"><span class="filter-caption-full">精确匹配</span><span class="filter-caption-short">精确</span></label><label title="仅显示有记录的表"><input id="nonempty" type="checkbox" aria-label="仅非空表"><span class="filter-caption-full">仅非空表</span><span class="filter-caption-short" data-i18n="sidebar.nonemptyShort">非空</span></label></div></div>
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，方向键切表，右键打开菜单"><p class="empty">正在加载…</p></div>
