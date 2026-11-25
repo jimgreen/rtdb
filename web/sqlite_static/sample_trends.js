@@ -207,6 +207,8 @@ window.rtdbSampleTrends = (function () {
     pollTimer: null,
     wheelTimer: null,
     hover: null,        // { x, y, timeMs, canvasX }
+    brush: null,        // { startX, curX } 框选放大区间
+    plotBox: null,      // { padLeft, padTop, plotW, plotH, startMs, endMs }
     legendHits: [],     // [{ key, x, y, w, h, overflow }]
     contextSeriesKey: null,
     addDialog: {
@@ -440,10 +442,17 @@ window.rtdbSampleTrends = (function () {
   }
 
   function renderToolbarDisabled() {
+    const hasDb = Boolean(state.database);
+    const hasSeries = (state.settings.series || []).length > 0;
+    const busy = !hasDb || state.saving;
     const addBtn = el("st-add-btn");
-    if (addBtn) {
-      addBtn.disabled = !state.database || state.saving || (state.settings.series || []).length >= MAX_POINTS;
+    if (addBtn) addBtn.disabled = busy || (state.settings.series || []).length >= MAX_POINTS;
+    for (const id of ["st-batch-left", "st-batch-hide", "st-export-plan", "st-clear-all"]) {
+      const btn = el(id);
+      if (btn) btn.disabled = busy || !hasSeries;
     }
+    const impBtn = el("st-import-plan");
+    if (impBtn) impBtn.disabled = busy;
   }
 
   function syncPolicyControls() {
@@ -1077,6 +1086,7 @@ window.rtdbSampleTrends = (function () {
     const plotH = Math.max(40, height - padTop - padBottom);
 
     const { startMs, endMs } = computeTimeBounds();
+    state.plotBox = { padLeft, padTop, plotW, plotH, startMs, endMs };
     const slots = alignedSamples(startMs, endMs);
     if (emptyEl) emptyEl.hidden = true;
 
@@ -1254,6 +1264,25 @@ window.rtdbSampleTrends = (function () {
       ctx.shadowBlur = 0;
     }
 
+    // 3.5 绘制拖拽框选缩放遮罩
+    if (state.brush && Math.abs(state.brush.curX - state.brush.startX) >= 4) {
+      const bx1 = Math.max(padLeft, Math.min(padLeft + plotW, Math.min(state.brush.startX, state.brush.curX)));
+      const bx2 = Math.max(padLeft, Math.min(padLeft + plotW, Math.max(state.brush.startX, state.brush.curX)));
+      ctx.save();
+      ctx.fillStyle = tokens.dark ? "rgba(56, 189, 248, 0.18)" : "rgba(37, 99, 235, 0.14)";
+      ctx.strokeStyle = tokens.accent;
+      ctx.lineWidth = 1;
+      ctx.fillRect(bx1, padTop, bx2 - bx1, plotH);
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(Math.round(bx1) + 0.5, padTop);
+      ctx.lineTo(Math.round(bx1) + 0.5, padTop + plotH);
+      ctx.moveTo(Math.round(bx2) + 0.5, padTop);
+      ctx.lineTo(Math.round(bx2) + 0.5, padTop + plotH);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // 4. 悬停十字准星与各曲线独立最近样本高亮（兼容不同采样周期同屏悬停）
     let tooltipLines = null;
     if (state.hover && state.hover.x >= padLeft && state.hover.x <= padLeft + plotW
@@ -1401,6 +1430,105 @@ window.rtdbSampleTrends = (function () {
     next.view.axes.right.auto = true;
     state.focusedKey = null;
     void saveSettings(next, { silent: true });
+  }
+
+  function exportPng() {
+    const canvas = el("st-canvas");
+    if (!canvas || !canvas.width || !canvas.height) {
+      if (state.host?.notice) state.host.notice(tr("st.noDataExport", null, "暂无采样点可导出"), true);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = canvas.toDataURL("image/png");
+    const dbStem = (state.database || "rtdb").replace(/\.[^.]+$/, "");
+    a.download = `${dbStem}_sample_trends_${Date.now()}.png`;
+    a.click();
+  }
+
+  function exportPlanJson() {
+    const series = state.settings.series || [];
+    if (!series.length) {
+      if (state.host?.notice) state.host.notice(tr("st.noDataExport", null, "暂无采样点可导出"), true);
+      return;
+    }
+    const payload = {
+      version: 1,
+      database: state.database || "",
+      exported_at: new Date().toISOString(),
+      series: clone(series),
+      view: clone(state.settings.view || defaultSettings().view)
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const dbStem = (state.database || "rtdb").replace(/\.[^.]+$/, "");
+    a.download = `${dbStem}_sample_plan.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function importPlanFile(file) {
+    if (!file) return;
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error(tr("st.importPlanInvalid", null, "方案文件不是有效的 JSON"));
+    }
+    const incoming = Array.isArray(parsed) ? parsed : parsed?.series;
+    if (!Array.isArray(incoming) || !incoming.length) {
+      throw new Error(tr("st.importPlanEmpty", null, "方案文件中未包含有效的采样点列表"));
+    }
+    if (incoming.length > MAX_POINTS) {
+      throw new Error(tr("st.limitReached", { max: MAX_POINTS }, `最多支持定义 ${MAX_POINTS} 个采样点`));
+    }
+    const title = tr("st.importPlanTitle", null, "导入采样点方案");
+    const msg = tr(
+      "st.importPlanConfirm",
+      { count: incoming.length },
+      `确定用该方案（共 ${incoming.length} 个采样点）覆盖当前数据库的采样点定义？`
+    );
+    const ok = state.host?.confirmAction ? await state.host.confirmAction(title, msg) : window.confirm(msg);
+    if (!ok) return;
+    await ensureSynced();
+    const next = clone(state.settings);
+    next.series = incoming;
+    if (parsed?.view && typeof parsed.view === "object") next.view = parsed.view;
+    state.chartMuted.clear();
+    await saveSettings(next);
+  }
+
+  async function clearAllPoints() {
+    const count = (state.settings.series || []).length;
+    if (!count) return;
+    const title = tr("st.clearAllTitle", null, "清空全部采样点");
+    const msg = tr(
+      "st.clearAllConfirm",
+      { count },
+      `确定清空当前数据库的全部 ${count} 个采样点？后台将停止采集并清除这些点的历史缓存。`
+    );
+    const ok = state.host?.confirmAction ? await state.host.confirmAction(title, msg) : window.confirm(msg);
+    if (!ok) return;
+    const next = clone(state.settings);
+    next.series = [];
+    state.focusedKey = null;
+    state.chartMuted.clear();
+    await saveSettings(next);
+  }
+
+  function toggleFullscreen(forceOff = false) {
+    const root = document.documentElement;
+    const next = forceOff ? false : !root.classList.contains("bottom-fullscreen");
+    root.classList.toggle("bottom-fullscreen", next);
+    const btn = el("st-toggle-fullscreen");
+    if (btn) {
+      btn.textContent = next
+        ? tr("st.btnExitFullscreen", null, "还原")
+        : tr("st.btnFullscreen", null, "全屏");
+    }
+    requestAnimationFrame(drawChart);
   }
 
   function exportCsv() {
@@ -2049,7 +2177,31 @@ window.rtdbSampleTrends = (function () {
     el("st-zoom-reset")?.addEventListener("click", resetView);
     el("st-axes-btn")?.addEventListener("click", openAxesDialog);
     el("st-series-btn")?.addEventListener("click", openSeriesDialog);
+    el("st-export-png")?.addEventListener("click", exportPng);
     el("st-export-csv")?.addEventListener("click", exportCsv);
+    el("st-toggle-fullscreen")?.addEventListener("click", () => toggleFullscreen());
+
+    el("st-batch-left")?.addEventListener("click", () => {
+      const keys = (state.settings.series || []).map((s) => s.key);
+      if (keys.length) void setDisplayStateForKeys(keys, "left");
+    });
+    el("st-batch-hide")?.addEventListener("click", () => {
+      const keys = (state.settings.series || []).map((s) => s.key);
+      if (keys.length) void setDisplayStateForKeys(keys, "hidden");
+    });
+    el("st-export-plan")?.addEventListener("click", exportPlanJson);
+    el("st-import-plan")?.addEventListener("click", () => el("st-import-plan-file")?.click());
+    el("st-import-plan-file")?.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        await importPlanFile(file);
+      } catch (error) {
+        if (state.host?.notice) state.host.notice(error.message || String(error), true);
+      }
+    });
+    el("st-clear-all")?.addEventListener("click", () => void clearAllPoints());
 
     // 纵轴设置弹窗
     for (const side of ["left", "right"]) {
@@ -2123,23 +2275,68 @@ window.rtdbSampleTrends = (function () {
       }
     });
 
-    // Canvas 交互：悬停十字准星、点击图例、滚轮缩放、右键菜单
+    // Canvas 交互：悬停十字准星、拖拽框选时间区间放大、点击图例显隐、滚轮缩放、右键菜单
     const canvas = el("st-canvas");
     if (canvas) {
+      let suppressClickOnce = false;
+      canvas.addEventListener("mousedown", (event) => {
+        if (event.button !== 0 || !state.plotBox) return;
+        const hit = hitTestLegend(canvas, event.clientX, event.clientY);
+        if (hit) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const b = state.plotBox;
+        if (x >= b.padLeft && x <= b.padLeft + b.plotW && y >= b.padTop && y <= b.padTop + b.plotH) {
+          state.brush = { startX: x, curX: x };
+        }
+      });
       canvas.addEventListener("mousemove", (event) => {
         const rect = canvas.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        if (state.brush) {
+          state.brush.curX = x;
+          state.hover = null;
+          drawChart();
+          return;
+        }
         const hit = hitTestLegend(canvas, event.clientX, event.clientY);
         canvas.style.cursor = hit ? "pointer" : "crosshair";
         state.hover = hit ? null : { x, y };
         drawChart();
       });
+      const finishBrush = () => {
+        const brush = state.brush;
+        const b = state.plotBox;
+        state.brush = null;
+        if (!brush || !b) return;
+        const delta = Math.abs(brush.curX - brush.startX);
+        if (delta >= 12 && b.plotW > 0) {
+          suppressClickOnce = true;
+          const x1 = Math.max(b.padLeft, Math.min(b.padLeft + b.plotW, Math.min(brush.startX, brush.curX)));
+          const x2 = Math.max(b.padLeft, Math.min(b.padLeft + b.plotW, Math.max(brush.startX, brush.curX)));
+          const fromMs = Math.round(b.startMs + ((x1 - b.padLeft) / b.plotW) * (b.endMs - b.startMs));
+          const untilMs = Math.round(b.startMs + ((x2 - b.padLeft) / b.plotW) * (b.endMs - b.startMs));
+          if (untilMs - fromMs >= 1000) {
+            const next = clone(state.settings);
+            next.view.range_mode = "fixed";
+            next.view.from = formatDateTimeInput(fromMs);
+            next.view.until = formatDateTimeInput(untilMs);
+            void saveSettings(next, { silent: true });
+            return;
+          }
+        }
+        drawChart();
+      };
+      canvas.addEventListener("mouseup", finishBrush);
       canvas.addEventListener("mouseleave", () => {
+        if (state.brush) finishBrush();
         state.hover = null;
         drawChart();
       });
       canvas.addEventListener("click", (event) => {
+        if (suppressClickOnce) { suppressClickOnce = false; return; }
         const hit = hitTestLegend(canvas, event.clientX, event.clientY);
         if (!hit) return;
         if (hit.overflow) {
@@ -2191,6 +2388,8 @@ window.rtdbSampleTrends = (function () {
         zoomWindow(2.0);
       } else if (action === "zoom-reset") {
         resetView();
+      } else if (action === "export-png") {
+        exportPng();
       } else if (action === "export-csv") {
         exportCsv();
       }
@@ -2200,7 +2399,12 @@ window.rtdbSampleTrends = (function () {
       if (!e.target.closest("#st-chart-context-menu")) closeChartMenu();
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeChartMenu();
+      if (e.key === "Escape") {
+        closeChartMenu();
+        if (document.documentElement.classList.contains("bottom-fullscreen")) {
+          toggleFullscreen(true);
+        }
+      }
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopPolling();

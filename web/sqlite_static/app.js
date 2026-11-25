@@ -351,7 +351,48 @@ function renderLogs() {
       const msg = node("span", details.join(" · "), "log-msg");
       const dur = node("span", record.duration_ms != null ? `${Number(record.duration_ms).toFixed(1)} ms` : "", "log-dur");
       line.title = formatAuditLog(record);
+      line.tabIndex = 0;
+      line.setAttribute("aria-expanded", "false");
       line.append(timeEl, pill, cat, msg, dur);
+      const toggleDetail = () => {
+        const nextEl = line.nextElementSibling;
+        if (nextEl && nextEl.classList.contains("log-detail-card")) {
+          nextEl.remove();
+          line.classList.remove("is-expanded");
+          line.setAttribute("aria-expanded", "false");
+          return;
+        }
+        const card = node("div", null, "log-detail-card");
+        const meta = node("div", null, "log-detail-meta");
+        const metaParts = [
+          record.timestamp ? new Date(record.timestamp).toLocaleString() : "—",
+          record.method && record.path ? `${record.method} ${record.path}` : "",
+          record.http_status != null ? `HTTP ${record.http_status}` : "",
+          record.table ? `${record.table}` : "",
+          record.duration_ms != null ? `${Number(record.duration_ms).toFixed(2)} ms` : ""
+        ].filter(Boolean);
+        const copyBtn = action(t("logs.copyDetail"), () => {
+          void navigator.clipboard?.writeText(JSON.stringify(record, null, 2))
+            .then(() => notice(t("logs.copied")))
+            .catch(() => notice("复制失败", true));
+        }, "secondary small");
+        meta.append(node("span", metaParts.join(" · "), "muted"), copyBtn);
+        const pre = node("pre", JSON.stringify({
+          operation: record.operation,
+          status: record.status,
+          category: record.category,
+          ...(record.result ? { result: record.result } : {}),
+          ...(record.error ? { error: record.error } : {})
+        }, null, 2));
+        card.append(meta, pre);
+        line.after(card);
+        line.classList.add("is-expanded");
+        line.setAttribute("aria-expanded", "true");
+      };
+      line.onclick = toggleDetail;
+      line.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleDetail(); }
+      };
       target.append(line);
     }
     return;
@@ -383,6 +424,7 @@ async function loadAuditLogs() {
   for (const [key, value] of Object.entries({ date: query.date, keyword: query.keyword, category: query.category, status: query.status })) {
     if (value) params.set(key, value);
   }
+  if (el("log-current-table")?.checked && state.table) params.set("table", state.table);
   const payload = await request(`logs?${params}`);
   if (sequence !== state.auditLoadSequence) return;
   state.auditRecords = Array.isArray(payload.logs) ? payload.logs : [];
@@ -1291,7 +1333,7 @@ function inlineCellInput(record, column, index, cell, initialText = null) {
 async function discardSchema() {
   if(!state.schemaDirty)return true;
   if(!await confirmAction("离开结构编辑", "表结构有未保存的修改，确认放弃这些修改？"))return false;
-  clearTimeout(localDrafts.timer);await localDrafts.dropKey(localDrafts.key('schema'));state.schemaDirty=false;return true;
+  clearTimeout(localDrafts.timer);await localDrafts.dropKey(localDrafts.key('schema'));state.schemaDirty=false;syncSchemaDirtyDot();return true;
 }
 function tab(name) {
   closeSqlHistory();
@@ -1304,6 +1346,7 @@ function tab(name) {
   }
   if (name === "data") requestAnimationFrame(drawChart);
   if (window.rtdbSampleTrends) window.rtdbSampleTrends.setListVisible(name === "sample-trends");
+  if (window.rtdbOpsCenter) window.rtdbOpsCenter.setActive(name === "ops");
   updateAutoRefreshStatus();
 }
 function bottomTab(name) {
@@ -1414,7 +1457,12 @@ function autoRefreshPauseReason() {
   if (el("data-grid")?.querySelector(".cell-editor")) return "单元格编辑中";
   return "";
 }
+function syncSchemaDirtyDot() {
+  const dot = el("schema-dirty-dot");
+  if (dot) dot.hidden = !state.schemaDirty;
+}
 function updateAutoRefreshStatus() {
+  syncSchemaDirtyDot();
   const badge = el("auto-refresh-status"); if (!badge) return;
   const reason = autoRefreshPauseReason();
   badge.hidden = !reason;
@@ -1532,7 +1580,9 @@ async function selectTable(name, { forceSchema = false } = {}) {
   const result = (!forceSchema && item?.definition && item?.schema_version && item.row_count != null)
     ? { definition: item.definition, version: item.schema_version, row_count: item.row_count }
     : await request(tablePath("schema", name));
-  state.table = name; state.definition = result.definition; state.version = result.version; state.tableTotal = result.row_count; state.schemaDirty = false;
+  state.table = name; state.definition = result.definition; state.version = result.version; state.tableTotal = result.row_count; state.schemaDirty = false; syncSchemaDirtyDot();
+  if (el("field-filter")) el("field-filter").value = "";
+  if (el("log-current-table")?.checked && el("tab-logs")?.classList.contains("active")) { resetLogPage(); void run(loadAuditLogs); }
   renderCurrentDatabaseFile();
   loadSqlHistory();
   state.offset = 0; state.fields = new Set(state.definition.columns.map((column) => column.eng_name));
@@ -1541,6 +1591,8 @@ async function selectTable(name, { forceSchema = false } = {}) {
   el("data-grid").scrollTop = 0; el("data-grid").scrollLeft = 0;
   clearAddedChartSeries(); state.chartQueryKey = null;
   el("sql-editor").value = defaultSql();
+  sqlDrawer.syncFromEditor();
+  sqlDrawer.renderFavorites();
   el("current-table").textContent = `${chineseName(state.definition.head)} / ${name}`;
   el("table-meta").textContent = `${state.definition.columns.length} 个字段 · 主键 ${state.definition.columns.filter((column) => column.primary_key).map((column) => column.eng_name).join(" + ")}`;
   configureQuickFilter();
@@ -1563,6 +1615,7 @@ async function refresh() {
     if (firstSelectable) await selectTable(firstSelectable.name); else resetSelection();
   }
   if (window.rtdbSampleTrends) window.rtdbSampleTrends.refresh();
+  if (window.rtdbOpsCenter) window.rtdbOpsCenter.refresh();
 }
 function resetSelection() {
   resetEditHistory();
@@ -1574,6 +1627,8 @@ function resetSelection() {
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear(); state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
   state.fields.clear(); state.schemaDirty = false; state.offset = 0;
   state.resultColumns = []; state.editable = false; state.lastQuery = null; state.pendingEdits.clear(); updateEditActions(); el("sql-editor").value = "";
+  sqlDrawer.syncFromEditor();
+  sqlDrawer.renderFavorites();
   clearAddedChartSeries(); state.chartQueryKey = null;
   el("current-table").textContent = "请选择或新建一张表"; el("table-meta").textContent = "—";
   el("schema-fields").replaceChildren(); el("schema-name").value = ""; el("schema-label").value = "";
@@ -1581,7 +1636,8 @@ function resetSelection() {
   renderGrid(); renderFields(); configureChart(); renderTables(); updateRecordsToolbar();
 }
 function insertTextAtSqlCursor(snippet) {
-  const input = el("sql-editor");
+  const multiline = sqlDrawer.isOpen() ? el("sql-multiline") : null;
+  const input = multiline || el("sql-editor");
   if (!input) return;
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? input.value.length;
@@ -1592,27 +1648,75 @@ function insertTextAtSqlCursor(snippet) {
   const nextPos = start + inserted.length;
   input.focus({ preventScroll: true });
   input.setSelectionRange(nextPos, nextPos);
+  if (multiline) sqlDrawer.syncToEditor();
+}
+function scrollToGridColumn(engName) {
+  if (!engName || !state.resultColumns.some((c) => c.eng_name === engName)) return;
+  if (!state.fields.has(engName)) {
+    state.fields.add(engName);
+    renderGrid();
+    updateFieldCount();
+  }
+  if (!el("tab-data")?.classList.contains("active")) tab("data");
+  const gridWrap = el("data-grid");
+  if (!gridWrap) return;
+  const cols = visibleGridColumns();
+  const colIdx = cols.findIndex((c) => c.eng_name === engName);
+  if (colIdx < 0) return;
+  const flashHeader = () => {
+    const header = gridWrap.querySelector(`thead th[data-grid-column="${CSS.escape(engName)}"]`);
+    if (!header) return;
+    header.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    header.classList.remove("col-locate-flash");
+    void header.offsetWidth;
+    header.classList.add("col-locate-flash");
+    setTimeout(() => header.classList.remove("col-locate-flash"), 1400);
+  };
+  if (typeof virtualGrid !== "undefined" && virtualGrid.active) {
+    const keysCount = cols.filter((c) => c.primary_key).length;
+    if (colIdx >= keysCount) {
+      const targetLeft = Math.max(0, (colIdx - keysCount) * virtualGrid.columnWidth - Math.floor(gridWrap.clientWidth * 0.25));
+      gridWrap.scrollLeft = targetLeft;
+      renderGrid(true);
+    }
+    requestAnimationFrame(flashHeader);
+  } else {
+    flashHeader();
+  }
 }
 function renderFields() {
   keepKeyFieldsVisible();
   const target = el("field-list"); target.replaceChildren();
-  for (const column of state.resultColumns) {
-    const label = node("label", null, "field-item"); const checkbox = node("input"); checkbox.type = "checkbox";
+  const keyword = (el("field-filter")?.value || "").trim().toLowerCase();
+  const matched = keyword
+    ? state.resultColumns.filter((column) =>
+        column.eng_name.toLowerCase().includes(keyword) ||
+        chineseName(column).toLowerCase().includes(keyword))
+    : state.resultColumns;
+  if (!matched.length && state.resultColumns.length) {
+    target.append(node("p", t("sidebar.noMatchingFields"), "muted"));
+  }
+  for (const column of matched) {
+    const item = node("div", null, "field-item"); const checkbox = node("input"); checkbox.type = "checkbox";
     checkbox.checked = state.fields.has(column.eng_name); checkbox.setAttribute("aria-label", `显示 ${column.eng_name}`);
     checkbox.disabled = Boolean(column.primary_key);
-    label.title = column.primary_key
-      ? "KEY 主键列：始终显示并冻结在左侧；双击插入字段名到 SQL"
-      : `${column.eng_name}（${column.data_type || "str"}）；双击插入到 SQL`;
+    item.title = column.primary_key
+      ? "KEY 主键列：单击定位列，双击插入字段名到 SQL"
+      : `${column.eng_name}（${column.data_type || "str"}）；单击定位列，双击插入到 SQL`;
     checkbox.onchange = () => { if (checkbox.checked) state.fields.add(column.eng_name); else state.fields.delete(column.eng_name); renderGrid(); updateFieldCount(); };
-    label.ondblclick = (event) => {
+    item.onclick = (event) => {
+      if (event.target === checkbox) return;
+      scrollToGridColumn(column.eng_name);
+    };
+    item.ondblclick = (event) => {
       if (event.target === checkbox) return;
       event.preventDefault();
       insertTextAtSqlCursor(quoteSqlIdent(column.eng_name));
     };
     const type = node("small", displayColumnType(column), "field-type");
     type.title = `数据类型：${column.data_type || "str"}`;
-    label.append(checkbox, node("span", chineseName(column)), node("small", column.eng_name, "field-name-eng"), type, node("b", column.primary_key ? "PK" : "", "key-tag"));
-    target.append(label);
+    item.append(checkbox, node("span", chineseName(column), "field-name-chn"), node("small", column.eng_name, "field-name-eng"), type, node("b", column.primary_key ? "PK" : "", "key-tag"));
+    target.append(item);
   }
   updateFieldCount();
 }
@@ -1961,10 +2065,26 @@ async function deleteRecords(records, title) {
     catch (error) { notice(`${message}；刷新失败：${error.message}`, true); log(`刷新 ${state.table} 失败：${error.message}`, true); }
   }
 }
+function transferFileToInput(file, targetInput) {
+  if (!file || !targetInput || typeof DataTransfer === "undefined") return false;
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    targetInput.files = dt.files;
+    targetInput.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  } catch {
+    return false;
+  }
+}
 function openImportDialog() {
-  requireTable();
+  if (!state.database) throw new Error("请先选择或新建数据库");
   if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再导入数据");
-  el("import-error").textContent = ""; el("import-dialog").showModal();
+  el("import-error").textContent = "";
+  const hint = el("import-route-hint");
+  if (hint) { hint.textContent = ""; hint.hidden = true; }
+  if (el("import-standard-opts")) el("import-standard-opts").hidden = !state.table;
+  el("import-dialog").showModal();
 }
 async function exportQuery(format) {
   requireTable();
@@ -4094,8 +4214,157 @@ function singleLineSql(sql) {
   }
   return result;
 }
+const SQL_FAVORITES_STORAGE_KEY = "rtdb.sql.favorites.v1";
+const sqlDrawer = {
+  isOpen() {
+    const drawer = el("sql-drawer");
+    return Boolean(drawer && !drawer.hidden);
+  },
+  scopeKey() {
+    return `${state.historyScope || "default"}::${state.database || "__default__"}`;
+  },
+  loadAll() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SQL_FAVORITES_STORAGE_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch { return {}; }
+  },
+  saveAll(map) {
+    try { localStorage.setItem(SQL_FAVORITES_STORAGE_KEY, JSON.stringify(map)); } catch { /* 忽略本地存储异常 */ }
+  },
+  listFavorites() {
+    const items = this.loadAll()[this.scopeKey()];
+    return Array.isArray(items) ? items : [];
+  },
+  renderFavorites(selectedId = "") {
+    const select = el("sql-favorites-select");
+    const delBtn = el("sql-fav-del");
+    if (!select) return;
+    const prev = selectedId || select.value;
+    const items = this.listFavorites();
+    select.replaceChildren(new Option(t("sql.favoritesPlaceholder") || "常用 SQL 收藏…", ""));
+    for (const item of items) {
+      const label = item.label || String(item.sql || "").replace(/\s+/g, " ").slice(0, 48);
+      const opt = new Option(item.table ? `[${item.table}] ${label}` : label, item.id);
+      opt.title = item.sql;
+      select.append(opt);
+    }
+    if (prev && items.some((i) => i.id === prev)) select.value = prev;
+    if (delBtn) delBtn.disabled = !select.value;
+  },
+  syncFromEditor() {
+    const area = el("sql-multiline");
+    if (area) area.value = el("sql-editor")?.value || "";
+  },
+  syncToEditor() {
+    const area = el("sql-multiline");
+    const input = el("sql-editor");
+    if (!area || !input) return;
+    try {
+      input.value = singleLineSql(area.value).trim();
+    } catch {
+      input.value = area.value.replace(/[\r\n]+/g, " ").trim();
+    }
+  },
+  toggle(forceOpen) {
+    const drawer = el("sql-drawer");
+    const panel = el("query-panel");
+    const btn = el("sql-drawer-toggle");
+    if (!drawer || !panel) return;
+    const next = typeof forceOpen === "boolean" ? forceOpen : drawer.hidden;
+    drawer.hidden = !next;
+    panel.classList.toggle("is-multiline", next);
+    if (btn) btn.setAttribute("aria-expanded", String(next));
+    if (next) {
+      this.syncFromEditor();
+      this.renderFavorites();
+      el("sql-multiline")?.focus({ preventScroll: true });
+    } else {
+      this.syncToEditor();
+    }
+  },
+  saveCurrent() {
+    if (this.isOpen()) this.syncToEditor();
+    const raw = (this.isOpen() ? el("sql-multiline")?.value : el("sql-editor")?.value) || "";
+    const normalized = raw.trim();
+    if (!normalized) throw new Error("请输入 SQL");
+    const all = this.loadAll();
+    const key = this.scopeKey();
+    const list = Array.isArray(all[key]) ? all[key] : [];
+    const compact = normalized.replace(/\s+/g, " ");
+    const existing = list.find((item) => String(item.sql || "").replace(/\s+/g, " ") === compact);
+    if (existing) {
+      this.renderFavorites(existing.id);
+      notice(t("sql.favExists") || "该 SQL 已在收藏列表中");
+      return;
+    }
+    const id = `fav_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    list.unshift({ id, sql: normalized, table: state.table || "", label: compact.slice(0, 48) });
+    all[key] = list.slice(0, 50);
+    this.saveAll(all);
+    this.renderFavorites(id);
+    notice(t("sql.favSaved") || "已收藏至本库常用 SQL");
+  },
+  async deleteSelected() {
+    const select = el("sql-favorites-select");
+    const id = select?.value;
+    if (!id) return;
+    const list = this.listFavorites();
+    const target = list.find((item) => item.id === id);
+    if (!target) return;
+    const ok = await confirmAction(
+      t("sql.favDelTitle") || "删除常用 SQL",
+      `${t("sql.favDelConfirm") || "确认删除当前选中的 SQL 收藏吗？"}\n\n${target.sql}`
+    );
+    if (!ok) return;
+    const all = this.loadAll();
+    all[this.scopeKey()] = list.filter((item) => item.id !== id);
+    this.saveAll(all);
+    this.renderFavorites("");
+    notice(t("sql.favDeleted") || "已删除常用 SQL 收藏");
+  },
+  init() {
+    el("sql-drawer-toggle")?.addEventListener("click", () => this.toggle());
+    el("sql-multiline")?.addEventListener("input", () => this.syncToEditor());
+    el("sql-multiline")?.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        this.syncToEditor();
+        void run(executeSql);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        this.toggle(false);
+        el("sql-editor")?.focus({ preventScroll: true });
+      }
+    });
+    el("sql-favorites-select")?.addEventListener("change", () => {
+      const select = el("sql-favorites-select");
+      const id = select?.value || "";
+      if (el("sql-fav-del")) el("sql-fav-del").disabled = !id;
+      if (!id) return;
+      const item = this.listFavorites().find((entry) => entry.id === id);
+      if (!item) return;
+      if (el("sql-multiline")) el("sql-multiline").value = item.sql;
+      try { el("sql-editor").value = singleLineSql(item.sql).trim(); } catch { el("sql-editor").value = item.sql; }
+      el("sql-multiline")?.focus({ preventScroll: true });
+    });
+    el("sql-fav-save")?.addEventListener("click", () => run(() => this.saveCurrent()));
+    el("sql-fav-del")?.addEventListener("click", () => run(() => this.deleteSelected()));
+    el("sql-explain-btn")?.addEventListener("click", () => run(async () => {
+      if (this.isOpen()) this.syncToEditor();
+      await schemaTools.queryPlan();
+    }));
+    el("sql-multiline-run")?.addEventListener("click", () => {
+      this.syncToEditor();
+      void run(executeSql);
+    });
+    this.renderFavorites();
+  }
+};
 async function executeSql() {
   closeSqlHistory();
+  if (sqlDrawer.isOpen()) sqlDrawer.syncToEditor();
   requireTable(); if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再执行 SQL"); const sql = normalizeSqlText(el("sql-editor").value);
   if (!sql) throw new Error("请输入 SQL");
   el("sql-editor").value = sql;
@@ -4815,7 +5084,24 @@ async function applyDefinitionImport() {
   notice(message, !result.ok); log(message, !result.ok);
 }
 async function importFile() {
-  requireTable(); if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再导入数据"); const file = el("import-file").files[0]; if (!file) throw new Error("请选择文件");
+  const file = el("import-file").files[0]; if (!file) throw new Error("请选择文件");
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith(".dbdef") || lowerName.endsWith(".e")) {
+    el("import-dialog").close();
+    el("definition-error").textContent = "";
+    resetDefinitionPreview();
+    await efileImports.restore();
+    transferFileToInput(file, el("definition-file"));
+    el("definition-dialog").showModal();
+    return;
+  }
+  requireTable(); if (hasPendingData()) throw new Error("请先保存或撤销待新增记录和单元格修改，再导入数据");
+  if (lowerName.endsWith(".csv") && file.size > 2 * 1024 * 1024) {
+    el("import-dialog").close();
+    await csvImports.open();
+    transferFileToInput(file, el("csv-file"));
+    return;
+  }
   if (file.size > 16 * 1024 * 1024) throw new Error("页面导入文件上限为 16 MiB");
   const text = new TextDecoder(el("import-encoding").value, { fatal: true }).decode(await file.arrayBuffer());
   const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json", mode = el("import-mode").value;
@@ -5040,6 +5326,19 @@ el("table-filter").addEventListener("input", () => {
   clearTimeout(tableFilterTimer);
   tableFilterTimer = setTimeout(renderTables, 120);
 });
+if (el("field-filter")) {
+  el("field-filter").addEventListener("input", renderFields);
+  el("field-filter").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && el("field-filter").value) {
+      event.preventDefault();
+      el("field-filter").value = "";
+      renderFields();
+    }
+  });
+}
+if (el("log-current-table")) {
+  el("log-current-table").addEventListener("change", () => { resetLogPage(); run(loadAuditLogs); });
+}
 el("table-filter").addEventListener("keydown", (event) => {
   if (event.key === "Escape" && el("table-filter").value) {
     event.preventDefault();
@@ -5271,7 +5570,7 @@ el("delete-schema").onclick = () => run(async () => {
 el("sql-history-toggle").onpointerdown = (event) => event.preventDefault();
 el("sql-history-toggle").onclick = () => { if (!el("sql-history-list").hidden) closeSqlHistory(); else { el("sql-editor").focus(); openSqlHistory(); } };
 el("sql-editor").onblur = closeSqlHistory;
-el("sql-editor").oninput = () => { if (!el("sql-history-list").hidden && state.history.length) openSqlHistory(el("sql-editor").value); syncQuickFilterValueControl(); };
+el("sql-editor").oninput = () => { if (!el("sql-history-list").hidden && state.history.length) openSqlHistory(el("sql-editor").value); if (sqlDrawer.isOpen()) sqlDrawer.syncFromEditor(); syncQuickFilterValueControl(); };
 el("sql-editor").onpaste = (event) => {
   const pasted = event.clipboardData?.getData("text/plain"); if (!pasted || !/[\r\n]/.test(pasted)) return;
   event.preventDefault();
@@ -5300,8 +5599,41 @@ el("sql-editor").onkeydown = (event) => {
 document.addEventListener("pointerdown", (event) => { if (!event.target.closest(".sql-combobox, #sql-history-list")) closeSqlHistory(); });
 document.addEventListener("scroll", (event) => { if (event.target !== el("sql-history-list")) closeSqlHistory(); }, true);
 window.addEventListener("resize", closeSqlHistory);
-el("import-file").onchange = () => { const file = el("import-file").files[0]; el("import-preview").textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : "尚未选择文件"; };
+el("import-file").onchange = () => {
+  const file = el("import-file").files[0];
+  el("import-preview").textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : "尚未选择文件";
+  const hint = el("import-route-hint");
+  const opts = el("import-standard-opts");
+  const lower = file ? file.name.toLowerCase() : "";
+  const isDef = lower.endsWith(".dbdef") || lower.endsWith(".e");
+  const isBigCsv = lower.endsWith(".csv") && file && file.size > 2 * 1024 * 1024;
+  if (opts) opts.hidden = !state.table || isDef || isBigCsv;
+  if (hint) {
+    if (isDef) { hint.textContent = t("import.routeDef"); hint.hidden = false; }
+    else if (isBigCsv) { hint.textContent = t("import.routeCsvStream"); hint.hidden = false; }
+    else { hint.textContent = ""; hint.hidden = true; }
+  }
+};
 el("run-import").onclick = () => run(importFile, "import-error");
+if (el("import-switch-csv")) {
+  el("import-switch-csv").onclick = () => run(async () => {
+    const file = el("import-file").files[0];
+    el("import-dialog").close();
+    await csvImports.open();
+    if (file && file.name.toLowerCase().endsWith(".csv")) transferFileToInput(file, el("csv-file"));
+  });
+}
+if (el("import-switch-def")) {
+  el("import-switch-def").onclick = () => run(async () => {
+    const file = el("import-file").files[0];
+    el("import-dialog").close();
+    el("definition-error").textContent = "";
+    resetDefinitionPreview();
+    await efileImports.restore();
+    if (file && /\.(dbdef|e)$/i.test(file.name)) transferFileToInput(file, el("definition-file"));
+    el("definition-dialog").showModal();
+  });
+}
 ["definition-file", "definition-encoding", "definition-mode", "definition-keys"].forEach((id) => el(id).addEventListener("input", () => { if (efileImports.selected()) efileImports.optionsChanged(id); else { resetDefinitionPreview(); efileImports.controls(); } }));
 el("preview-definition").onclick = () => run(previewDefinition, "definition-error");
 el("apply-definition").onclick = () => run(applyDefinitionImport, "definition-error");
@@ -5413,6 +5745,8 @@ const chartObserver = new ResizeObserver(() => {
 chartObserver.observe(el("chart-area"));
 virtualGrid.init();
 schemaTools.init();
+sqlDrawer.init();
+i18n.onChange(() => sqlDrawer.renderFavorites());
 if (window.rtdbSampleTrends) {
   window.rtdbSampleTrends.init({
     getDatabase: () => state.database,
@@ -5430,6 +5764,22 @@ if (window.rtdbSampleTrends) {
     fetchTableRows: (tableName, limit = 200) => request(`tables/${encodeURIComponent(tableName)}/rows?limit=${limit}&offset=0`)
   });
   i18n.onChange(() => window.rtdbSampleTrends.redraw());
+}
+if (window.rtdbOpsCenter) {
+  window.rtdbOpsCenter.init({
+    getDatabase: () => state.database,
+    request: (path, method, body) => request(path, method, body),
+    selectDatabase: (filename) => run(() => selectDatabaseFile(filename)),
+    openFiles: () => run(() => openDatabaseFileDialog("server")),
+    openSnapshots: () => run(() => databaseSnapshots.open()),
+    openStorage: () => run(() => storageMaintenance.open()),
+    openReceipts: () => run(() => receiptMaintenance.open()),
+    openTasks: () => run(() => backgroundTasks.history()),
+    openPerf: () => uiPerformance.show(),
+    exportPerf: () => uiPerformance.export(),
+    openRepair: (file) => openDatabaseRepair(file),
+    getPerfSamples: () => uiPerformance.samples || []
+  });
 }
 run(async () => {
   let info;

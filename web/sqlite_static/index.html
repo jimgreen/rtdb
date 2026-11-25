@@ -34,19 +34,20 @@
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，方向键切表，右键打开菜单"><p class="empty">正在加载…</p></div>
       <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="调整表列表高度"></div>
-      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div id="field-list" tabindex="0" aria-label="字段列表，右键打开菜单"><p class="muted">选择表后查看字段</p></div></details>
+      <details class="field-tree" open><summary>显示字段 <span id="field-count" class="muted"></span></summary><div class="field-filter-wrap"><input id="field-filter" type="search" placeholder="过滤字段，点击定位列…" aria-label="过滤显示字段" data-i18n-placeholder="sidebar.fieldFilter"></div><div id="field-list" tabindex="0" aria-label="字段列表，右键打开菜单"><p class="muted">选择表后查看字段</p></div></details>
     </aside>
     <div id="sidebar-splitter" class="splitter splitter-vertical" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="table-sidebar" aria-label="调整侧边栏宽度"></div>
     <section class="workspace">
       <div class="context-bar"><h2 id="current-table">请选择或新建一张表</h2><span id="table-meta" class="muted">—</span></div>
       <nav class="tabs" role="tablist" aria-label="管理功能">
         <button id="nav-data" class="tab active" role="tab" aria-selected="true" aria-controls="tab-data" data-tab="data">结果展示</button>
-        <button id="nav-schema" class="tab" role="tab" aria-selected="false" aria-controls="tab-schema" data-tab="schema">表结构</button>
+        <button id="nav-schema" class="tab" role="tab" aria-selected="false" aria-controls="tab-schema" data-tab="schema">表结构<span id="schema-dirty-dot" class="dirty-dot" hidden title="表结构有未保存修改"></span></button>
         <button id="nav-sample-trends" class="tab" role="tab" aria-selected="false" aria-controls="tab-sample-trends" data-tab="sample-trends"><span data-i18n="st.listTitle">采样点定义</span></button>
+        <button id="nav-ops" class="tab" role="tab" aria-selected="false" aria-controls="tab-ops" data-tab="ops"><span data-i18n="ops.tabTitle">运维诊断</span></button>
       </nav>
       <section id="tab-data" class="tab-panel data-tab active" role="tabpanel" aria-labelledby="nav-data">
         <div id="query-panel" class="panel query-panel"><div class="query-controls">
-          <div class="sql-input"><label for="sql-editor">SQL</label><div class="sql-combobox"><input id="sql-editor" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="sql-history-list" spellcheck="false" autocomplete="off" aria-label="SQL 语句" placeholder="输入 SQL（Enter 执行，↓ 选择历史）"><button id="sql-history-toggle" type="button" aria-label="展开 SQL 历史语句" title="历史 SQL" tabindex="-1">▾</button></div></div>
+          <div class="sql-input"><label for="sql-editor">SQL</label><div class="sql-combobox"><input id="sql-editor" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="sql-history-list" spellcheck="false" autocomplete="off" aria-label="SQL 语句" placeholder="输入 SQL（Enter 执行，↓ 选择历史）"><button id="sql-history-toggle" type="button" aria-label="展开 SQL 历史语句" title="历史 SQL" tabindex="-1">▾</button><button id="sql-drawer-toggle" type="button" class="sql-drawer-toggle" aria-expanded="false" aria-controls="sql-drawer" data-i18n="sql.multiline" data-i18n-title="sql.multilineTitle" title="多行 SQL / 收藏 / 执行计划">多行</button></div></div>
           <div id="quick-filter" class="quick-filter" aria-label="快捷条件筛选">
             <select id="filter-field" aria-label="筛选字段" title="选择字段"><option value="">快捷筛选…</option></select>
             <select id="filter-op" aria-label="筛选运算符" title="比较方式" hidden>
@@ -61,6 +62,20 @@
           <label class="check-label"><input id="chinese-columns" type="checkbox" checked>中文列名</label>
           <select id="value-display-mode" aria-label="数值显示模式" title="切换显示原值或显示值"><option value="display">显示值</option><option value="raw">原值</option></select>
           <span class="query-auto-refresh" title="自动刷新周期" data-i18n-title="topbar.autoRefresh"><select id="auto-refresh" aria-label="自动刷新状态" data-i18n-aria-label="topbar.autoRefresh"><option value="0" data-i18n="autoRefresh.off">不刷新</option><option value="1">1s</option><option value="5">5s</option><option value="10">10s</option><option value="30">30s</option><option value="60">60s</option><option value="custom" data-i18n="autoRefresh.custom">自定义…</option></select><span id="auto-refresh-custom-wrap" class="auto-refresh-custom-wrap" hidden><input id="auto-refresh-custom" type="number" min="1" max="3600" step="1" value="3" aria-label="自定义自动刷新周期（秒）"><span>s</span></span><span id="auto-refresh-status" class="auto-refresh-status" hidden></span></span></div>
+          <div id="sql-drawer" class="sql-drawer" hidden>
+            <div class="sql-drawer-bar">
+              <div class="sql-drawer-left">
+                <select id="sql-favorites-select" aria-label="常用 SQL 收藏"><option value="" data-i18n="sql.favoritesPlaceholder">常用 SQL 收藏…</option></select>
+                <button id="sql-fav-save" type="button" class="secondary small" data-i18n="sql.saveFav">收藏</button>
+                <button id="sql-fav-del" type="button" class="danger-outline small" data-i18n="sql.delFav" disabled>删除</button>
+              </div>
+              <div class="button-row">
+                <button id="sql-explain-btn" type="button" class="secondary small" data-i18n="sql.explain">执行计划</button>
+                <button id="sql-multiline-run" type="button" class="small" data-i18n="sql.runCtrlEnter">执行 (Ctrl+Enter)</button>
+              </div>
+            </div>
+            <textarea id="sql-multiline" rows="4" spellcheck="false" aria-label="多行 SQL 编辑器" data-i18n-placeholder="sql.multilinePlaceholder" placeholder="支持多行 SELECT / WITH 查询与条件换行（Ctrl+Enter 执行，Esc 收起）"></textarea>
+          </div>
         </div>
         <div id="query-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="query-panel" aria-label="调整查询区域高度"></div>
         <div id="records-panel" class="panel records-panel"><div class="panel-title records-header">
@@ -93,6 +108,14 @@
               <span id="st-point-count" class="st-count-pill">0 / 24</span>
               <button id="st-add-btn" type="button" class="small" data-i18n="st.btnAdd">＋ 添加采样点</button>
             </div>
+            <div class="st-toolbar-group">
+              <button id="st-batch-left" type="button" class="secondary small" data-i18n="st.btnAllLeft">全部左轴</button>
+              <button id="st-batch-hide" type="button" class="secondary small" data-i18n="st.btnAllHide">全部隐藏</button>
+              <button id="st-export-plan" type="button" class="secondary small" data-i18n="st.btnExportPlan">导出方案</button>
+              <button id="st-import-plan" type="button" class="secondary small" data-i18n="st.btnImportPlan">导入方案</button>
+              <input id="st-import-plan-file" type="file" accept=".json" hidden>
+              <button id="st-clear-all" type="button" class="danger-outline small" data-i18n="st.btnClearAll">清空全部</button>
+            </div>
           </div>
           <div class="grid-wrap st-list-grid">
             <table class="st-table">
@@ -114,6 +137,62 @@
           </div>
         </div>
       </section>
+      <section id="tab-ops" class="tab-panel ops-tab" role="tabpanel" aria-labelledby="nav-ops">
+        <div class="ops-summary-bar">
+          <div class="ops-metrics">
+            <span><b data-i18n="ops.metricCurrent">当前库</b><code id="ops-metric-current">—</code></span>
+            <span><b data-i18n="ops.metricDbs">库文件</b><code id="ops-metric-dbs">0</code></span>
+            <span><b data-i18n="ops.metricCleanable">可清理</b><code id="ops-metric-cleanable">0</code></span>
+            <span><b data-i18n="ops.metricTasks">活跃任务</b><code id="ops-metric-tasks">0 / 0</code></span>
+          </div>
+          <div class="button-row">
+            <button id="ops-open-files" type="button" class="secondary small" data-i18n="ops.btnFiles">库文件管理</button>
+            <button id="ops-open-snapshots" type="button" class="secondary small" data-i18n="ops.btnSnapshots">整库快照</button>
+            <button id="ops-open-storage" type="button" class="secondary small" data-i18n="ops.btnStorage">存储清理</button>
+            <button id="ops-open-receipts" type="button" class="secondary small" data-i18n="ops.btnReceipts">回执压缩</button>
+            <button id="ops-refresh" type="button" class="small" data-i18n="ops.btnRefresh">刷新</button>
+          </div>
+        </div>
+        <p id="ops-error" class="error-text" role="alert" hidden></p>
+        <div class="ops-grid">
+          <div class="panel ops-card">
+            <div class="ops-card-head"><strong data-i18n="ops.cardDbs">工作区数据库与健康状态</strong></div>
+            <div class="grid-wrap ops-table-wrap">
+              <table class="st-table">
+                <thead><tr><th data-i18n="ops.colFile">文件</th><th data-i18n="ops.colSize">大小</th><th data-i18n="ops.colTables">表数</th><th data-i18n="ops.colStatus">状态</th><th data-i18n="ops.colAction">操作</th></tr></thead>
+                <tbody id="ops-db-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel ops-card">
+            <div class="ops-card-head"><strong data-i18n="ops.cardStorage">存储占用与留存策略</strong></div>
+            <div class="grid-wrap ops-table-wrap">
+              <table class="st-table">
+                <thead><tr><th data-i18n="ops.colCat">类别</th><th data-i18n="ops.colCount">项数</th><th data-i18n="ops.colSize">占用</th><th data-i18n="ops.colPolicy">策略</th></tr></thead>
+                <tbody id="ops-storage-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel ops-card">
+            <div class="ops-card-head"><strong data-i18n="ops.cardTasks">后台任务队列</strong><button id="ops-open-tasks" type="button" class="secondary small" data-i18n="ops.btnDetail">详情</button></div>
+            <div class="grid-wrap ops-table-wrap">
+              <table class="st-table">
+                <thead><tr><th data-i18n="ops.colTask">任务</th><th data-i18n="ops.colScope">库 / 表</th><th data-i18n="ops.colStatus">状态</th><th data-i18n="ops.colTime">时间</th></tr></thead>
+                <tbody id="ops-tasks-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel ops-card">
+            <div class="ops-card-head"><strong data-i18n="ops.cardPerf">接口与渲染性能统计</strong><div class="button-row"><button id="ops-open-perf" type="button" class="secondary small" data-i18n="ops.btnFullPerf">完整报表</button><button id="ops-export-perf" type="button" class="secondary small" data-i18n="ops.btnExport">导出</button></div></div>
+            <div class="grid-wrap ops-table-wrap">
+              <table class="st-table">
+                <thead><tr><th data-i18n="ops.colTime">时间</th><th data-i18n="ops.colOp">操作</th><th data-i18n="ops.colReqMs">请求</th><th data-i18n="ops.colSrvMs">服务</th><th data-i18n="ops.colUiMs">界面</th></tr></thead>
+                <tbody id="ops-perf-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
       <div id="chart-splitter" class="splitter splitter-horizontal" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="bottom-panel" aria-label="调整底部区域高度"></div>
       <div id="bottom-panel" class="bottom-panel">
         <div class="bottom-bar">
@@ -129,7 +208,9 @@
             <button id="st-zoom-reset" type="button" class="secondary small" data-i18n="st.btnReset">重置</button>
             <button id="st-axes-btn" type="button" class="secondary small" data-i18n="st.btnAxes">纵轴</button>
             <button id="st-series-btn" type="button" class="secondary small" data-i18n="st.btnSeries">曲线</button>
+            <button id="st-export-png" type="button" class="secondary small" data-i18n="st.btnExportPng">导出 PNG</button>
             <button id="st-export-csv" type="button" class="secondary small" data-i18n="st.btnExportCsv">导出 CSV</button>
+            <button id="st-toggle-fullscreen" type="button" class="secondary small" data-i18n="st.btnFullscreen">全屏</button>
           </div>
           <div id="logs-actions" class="button-row" hidden><button id="refresh-logs" class="secondary small">刷新</button><button id="export-logs" class="secondary small">导出当前页</button></div>
         </div>
@@ -168,6 +249,7 @@
             <label>类别<select id="log-category" aria-label="日志类别"><option value="">全部类别</option><option value="structure">结构</option><option value="data">数据</option><option value="system">系统</option></select></label>
             <label>状态<select id="log-status" aria-label="日志状态"><option value="">全部状态</option><option value="success">成功</option><option value="failure">失败</option></select></label>
             <label>每页<select id="log-page-size" aria-label="日志每页数量"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option></select></label>
+            <label class="check-label"><input id="log-current-table" type="checkbox"><span data-i18n="logs.onlyCurrentTable">仅当前表</span></label>
             <button id="query-logs" class="secondary small" type="button">查询</button>
             <button id="task-history" class="secondary small" type="button">后台任务</button>
           </div>
@@ -184,7 +266,7 @@
 
   <dialog id="row-dialog"><form method="dialog"><div class="panel-title"><h2 id="row-dialog-title">新增记录</h2><button value="cancel" class="icon" aria-label="关闭记录编辑">×</button></div><p id="row-hint" class="muted" hidden></p><label class="check-label"><input id="json-mode" type="checkbox">JSON 编辑</label><div id="row-fields" class="row-fields"></div><div id="batch-fields-panel" class="batch-fields-panel" hidden><div class="batch-picker-row"><select id="batch-field-select" aria-label="选择待修改字段"><option value="">选择要修改的字段…</option></select><button id="batch-add-field" type="button" class="secondary small">添加字段</button></div><div id="batch-fields-list" class="batch-fields-list"></div></div><textarea id="row-editor" class="editor" spellcheck="false" aria-label="记录 JSON" hidden></textarea><p id="row-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="save-row" type="button">保存</button></div></form></dialog>
 
-  <dialog id="import-dialog"><form method="dialog"><div class="panel-title"><h2>导入记录</h2><button value="cancel" class="icon" aria-label="关闭导入">×</button></div><label>选择文件（JSON / CSV，≤16 MiB）<input id="import-file" type="file" accept=".json,.csv"></label><div class="schema-head"><label>文本编码<select id="import-encoding"><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label><label>导入方式<select id="import-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label></div><p id="import-preview" class="muted">尚未选择文件</p><p id="import-error" class="error-text" role="alert"></p><div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button id="run-import" type="button">导入</button></div></form></dialog>
+  <dialog id="import-dialog"><form method="dialog"><div class="panel-title"><h2 data-i18n="import.unifiedTitle">导入数据 / 定义</h2><button value="cancel" class="icon" aria-label="关闭导入">×</button></div><label><span data-i18n="import.unifiedFile">选择文件（JSON / CSV / dbdef / E，自动匹配导入通道）</span><input id="import-file" type="file" accept=".json,.csv,.dbdef,.e"></label><div id="import-standard-opts" class="schema-head"><label>文本编码<select id="import-encoding"><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label><label>导入方式<select id="import-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label></div><p id="import-route-hint" class="muted" hidden></p><p id="import-preview" class="muted">尚未选择文件</p><p id="import-error" class="error-text" role="alert"></p><div class="dialog-actions"><button id="import-switch-csv" type="button" class="secondary small" data-i18n="import.switchCsv">大文件 CSV 续传</button><button id="import-switch-def" type="button" class="secondary small" data-i18n="import.switchDef">dbdef / E 导入</button><button value="cancel" class="secondary">取消</button><button id="run-import" type="button">导入</button></div></form></dialog>
 
   <dialog id="save-warning-dialog" aria-labelledby="save-warning-title"><form method="dialog"><div class="panel-title"><h2 id="save-warning-title">保存前检查未通过</h2><button value="close" class="icon" aria-label="关闭检查提示">×</button></div><ul id="save-warning-list"></ul><div id="save-conflict-grid" class="grid-wrap"></div><div class="dialog-actions"><button id="apply-conflict-choices" type="button" hidden>应用选择，返回检查</button><button value="close" autofocus>返回修改</button></div></form></dialog>
 
@@ -543,6 +625,7 @@
     <button type="button" role="menuitem" data-st-action="zoom-in" data-i18n="st.btnZoomIn">放大</button>
     <button type="button" role="menuitem" data-st-action="zoom-out" data-i18n="st.btnZoomOut">缩小</button>
     <button type="button" role="menuitem" data-st-action="zoom-reset" data-i18n="st.btnReset">重置</button>
+    <button type="button" role="menuitem" data-st-action="export-png" data-i18n="st.btnExportPng">导出 PNG</button>
     <button type="button" role="menuitem" data-st-action="export-csv" data-i18n="st.btnExportCsv">导出 CSV</button>
   </div>
 
@@ -613,6 +696,7 @@
   <script src="/static/virtual_grid.js"></script>
   <script src="/static/schema_tools.js"></script>
   <script src="/static/sample_trends.js"></script>
+  <script src="/static/ops_center.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -2687,3 +2687,324 @@ html[data-theme="sci-fi-matrix"] .brand-mark {
     grid-template-columns: 22px 34px 1fr 1fr;
   }
 }
+
+/* ==========================================================================
+   阶段 1–5 交互升级：字段定位、未保存红点、结构化日志、全屏趋势、统一导入、运维诊断与多行 SQL
+   ========================================================================== */
+
+/* 侧栏显示字段过滤框与单击列定位闪烁 */
+.field-filter-wrap {
+  flex-shrink: 0;
+  padding: 0 0 6px;
+}
+#field-filter {
+  width: 100%;
+  height: 26px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+#field-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+@keyframes rtdbColLocateFlash {
+  0% { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
+}
+.col-locate-flash {
+  animation: rtdbColLocateFlash 1.2s ease-out;
+}
+
+/* 表结构未保存红点 */
+.dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  vertical-align: middle;
+  box-shadow: 0 0 0 2px var(--danger-bg);
+}
+
+/* 底部日志结构化详情展开卡片 */
+.log-line.is-structured {
+  cursor: pointer;
+}
+.log-line.is-structured:hover {
+  background: var(--bg-hover);
+}
+.log-line.is-expanded {
+  background: var(--bg-selected);
+}
+.log-detail-card {
+  margin: 2px 6px 6px 24px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+.log-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.log-detail-card pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 底部采样趋势全屏放大模式 */
+html.bottom-fullscreen .workspace > .tabs,
+html.bottom-fullscreen .workspace > .tab-panel,
+html.bottom-fullscreen #chart-splitter {
+  display: none !important;
+}
+html.bottom-fullscreen #bottom-panel {
+  flex: 1 1 0 !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+/* 统一导入弹窗智能分流提示 */
+.import-route-hint {
+  margin: 6px 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--accent-ring);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+/* 运维诊断主 Tab（高密度低留白 2×2 卡片网格） */
+.ops-tab.active {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+.ops-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.ops-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+}
+.ops-metrics > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ops-metrics b {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ops-metrics code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+.ops-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  overflow: hidden;
+}
+.ops-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 8px;
+  margin: 0;
+  overflow: hidden;
+}
+.ops-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 5px;
+  margin-bottom: 5px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+.ops-table-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.ops-table-wrap .st-table th,
+.ops-table-wrap .st-table td {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.ops-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+.ops-pill.is-ok {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+  color: var(--success);
+}
+.ops-pill.is-warn {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+.ops-pill.is-danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+@media (max-width: 980px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    overflow: auto;
+  }
+  .ops-card {
+    min-height: 180px;
+  }
+}
+
+/* 多行 SQL 抽屉编辑器与收藏栏 */
+.sql-drawer-toggle {
+  flex: 0 0 auto;
+  height: 100%;
+  padding: 0 7px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sql-drawer-toggle:hover,
+.sql-drawer-toggle[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.data-tab .query-panel.is-multiline {
+  flex: 0 0 auto;
+  max-height: 45vh;
+  overflow: visible;
+}
+.query-panel.is-multiline .query-controls {
+  height: auto;
+}
+.sql-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+.sql-drawer[hidden] {
+  display: none;
+}
+.sql-drawer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sql-drawer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+#sql-favorites-select {
+  min-width: 180px;
+  max-width: 380px;
+  flex: 1 1 200px;
+  height: 26px;
+  padding: 2px 6px;
+  font-size: 12px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+#sql-favorites-select option {
+  background: var(--bg-option);
+  color: var(--text-primary);
+}
+#sql-multiline {
+  width: 100%;
+  min-height: 76px;
+  max-height: 220px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  tab-size: 2;
+}
+#sql-multiline:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
