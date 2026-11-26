@@ -1397,18 +1397,171 @@ async function refreshTables() {
   renderTables();
   if (window.rtdbSampleTrends) window.rtdbSampleTrends.setContext(workspacePath, state.database);
 }
+const RECENT_DATABASES_STORAGE_KEY = "rtdb.recent.databases.v1";
+const dbQuickSwitcher = {
+  normalizeDir(dir) {
+    return String(dir || "").replace(/^[\\/]+|[\\/]+$/g, "").replace(/\\/g, "/");
+  },
+  formatPath(dir, filename) {
+    const clean = this.normalizeDir(dir);
+    return clean ? `${clean}/${filename}` : filename;
+  },
+  loadRecent() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(RECENT_DATABASES_STORAGE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.filter((i) => i && i.database) : [];
+    } catch { return []; }
+  },
+  record(dir, filename) {
+    if (!filename) return;
+    const norm = this.normalizeDir(dir);
+    const list = this.loadRecent().filter((i) => !(this.normalizeDir(i.workspace) === norm && i.database === filename));
+    list.unshift({ workspace: norm, database: filename, at: Date.now() });
+    try { localStorage.setItem(RECENT_DATABASES_STORAGE_KEY, JSON.stringify(list.slice(0, 8))); } catch { /* 忽略本地存储异常 */ }
+  },
+  isOpen() {
+    const menu = el("db-quick-menu");
+    return Boolean(menu && !menu.hidden);
+  },
+  close() {
+    const menu = el("db-quick-menu"), btn = el("current-database-file");
+    if (menu) menu.hidden = true;
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  },
+  render() {
+    const menu = el("db-quick-menu");
+    if (!menu) return;
+    menu.replaceChildren();
+    const curDir = this.normalizeDir(workspacePath);
+
+    // 1. 当前目录数据库
+    const curHead = node("div", t("dbQuick.currentDir") || "当前目录", "db-quick-section");
+    menu.append(curHead);
+    if (!state.databases.length) {
+      menu.append(node("div", t("dbQuick.empty") || "当前目录无数据库", "db-quick-empty"));
+    } else {
+      for (const item of state.databases) {
+        const isCur = item.filename === state.database;
+        const btn = node("button", null, `db-quick-item${isCur ? " is-active" : ""}`);
+        btn.type = "button";
+        btn.setAttribute("role", "menuitem");
+        const nameSpan = node("span", item.filename, "db-quick-name");
+        const meta = item.error ? "异常" : item.read_only ? "只读" : (item.label && item.label !== item.filename.replace(/\.sqlite3$/i, "") ? item.label : "");
+        btn.append(nameSpan);
+        if (meta) btn.append(node("span", meta, `db-quick-meta${item.error ? " is-danger" : ""}`));
+        btn.onclick = () => {
+          this.close();
+          if (isCur || state.busy) return;
+          run(async () => {
+            if (!await discardSchema() || !await discardCellEdits()) return;
+            await activateDatabase(item.filename);
+          });
+        };
+        menu.append(btn);
+      }
+    }
+
+    // 2. 跨目录最近打开
+    const recentOther = this.loadRecent().filter((item) => this.normalizeDir(item.workspace) !== curDir).slice(0, 5);
+    if (recentOther.length) {
+      menu.append(node("hr", null, "db-quick-sep"));
+      menu.append(node("div", t("dbQuick.recent") || "最近打开", "db-quick-section"));
+      for (const item of recentOther) {
+        const full = this.formatPath(item.workspace, item.database);
+        const btn = node("button", null, "db-quick-item");
+        btn.type = "button";
+        btn.setAttribute("role", "menuitem");
+        btn.title = full;
+        btn.append(node("span", full, "db-quick-name"));
+        btn.onclick = () => {
+          this.close();
+          if (state.busy) return;
+          run(async () => {
+            canSwitchWorkspace();
+            if (!await discardSchema() || !await discardCellEdits()) return;
+            navigateWorkspace(item.workspace, { database: item.database });
+          });
+        };
+        menu.append(btn);
+      }
+    }
+
+    // 3. 完整管理入口
+    menu.append(node("hr", null, "db-quick-sep"));
+    const manageBtn = node("button", t("dbQuick.manage") || "浏览目录 / 上传 / 新建…", "db-quick-item db-quick-manage");
+    manageBtn.type = "button";
+    manageBtn.setAttribute("role", "menuitem");
+    manageBtn.onclick = () => {
+      this.close();
+      void run(() => openDatabaseFileDialog("server"));
+    };
+    menu.append(manageBtn);
+  },
+  toggle() {
+    if (this.isOpen()) { this.close(); return; }
+    this.render();
+    const menu = el("db-quick-menu"), btn = el("current-database-file");
+    if (!menu || !btn) return;
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const rect = btn.getBoundingClientRect();
+    const width = Math.max(menu.offsetWidth || 280, Math.min(rect.width, 460));
+    menu.style.minWidth = `${Math.min(Math.max(rect.width, 260), 460)}px`;
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 120)}px`;
+  }
+};
+function toggleBottomFullscreen(forceOff = false) {
+  const root = document.documentElement;
+  const next = forceOff ? false : !root.classList.contains("bottom-fullscreen");
+  if (next && root.classList.contains("chart-collapsed")) chartLayout.expand();
+  root.classList.toggle("bottom-fullscreen", next);
+  const btn = el("bottom-toggle-fullscreen");
+  if (btn) {
+    btn.textContent = next ? (t("st.btnExitFullscreen") || "还原") : (t("st.btnFullscreen") || "全屏");
+    btn.setAttribute("aria-pressed", String(next));
+  }
+  requestAnimationFrame(() => {
+    drawChart();
+    if (window.rtdbSampleTrends) window.rtdbSampleTrends.redraw();
+  });
+}
+function showAllGridColumns() {
+  if (!state.resultColumns.length) return;
+  state.fields = new Set(state.resultColumns.map((column) => column.eng_name));
+  renderFields(); renderGrid();
+}
+function showOnlyNumericColumns() {
+  if (!state.resultColumns.length) return;
+  const numericSet = new Set(numericColumns().map((column) => column.eng_name));
+  const next = state.resultColumns
+    .filter((column) => column.primary_key || numericSet.has(column.eng_name))
+    .map((column) => column.eng_name);
+  state.fields = new Set(next.length ? next : state.resultColumns.map((column) => column.eng_name));
+  renderFields(); renderGrid();
+}
+function hideGridColumn(fieldName) {
+  if (!fieldName) return;
+  const column = state.resultColumns.find((c) => c.eng_name === fieldName);
+  if (!column || column.primary_key) return;
+  if (state.fields.size <= 1) return;
+  state.fields.delete(fieldName);
+  renderFields(); renderGrid();
+}
 function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
   if (!target) return;
+  const labelTarget = el("current-database-label") || target;
   const item = state.tables.find((entry) => entry.name === state.table);
   const filename = state.database || (state.table ? item?.database_file || `${state.table}.sqlite3` : "");
-  const relDir = String(workspacePath || "").replace(/^[\\/]+|[\\/]+$/g, "").replace(/\\/g, "/");
+  const relDir = dbQuickSwitcher.normalizeDir(workspacePath);
   const displayPath = filename ? (relDir ? `${relDir}/${filename}` : filename) : "";
   const directory = state.dataDir === "." ? "" : state.dataDir.replace(/[\\/]+$/, "");
   const separator = state.dataDir.includes("\\") ? "\\" : "/";
-  target.textContent = displayPath || "未选择数据库";
+  labelTarget.textContent = displayPath || "未选择数据库";
   target.title = filename ? `当前数据库：${directory ? directory + separator : ""}${filename}` : "请先选择或新建数据库";
   target.setAttribute("aria-label", displayPath ? `当前数据库文件：${displayPath}` : "未选择数据库");
+  if (filename) dbQuickSwitcher.record(workspacePath, filename);
 }
 function updateRecordsToolbar() {
   const title = el("records-table-title"), meta = el("records-table-meta");
@@ -2013,6 +2166,11 @@ function openRowContextMenu(event, record, index) {
   setDisabled("sample-hide", !hasExistingSample);
   setDisabled("sample-open-list", !state.database);
 
+  const canHideCurrentCol = Boolean(sampleColumn && !sampleColumn.primary_key && state.fields.size > 1);
+  setDisabled("col-hide-current", !canHideCurrentCol);
+  setDisabled("col-only-numeric", !state.resultColumns.length);
+  setDisabled("col-show-all", !state.resultColumns.length || state.fields.size >= state.resultColumns.length);
+
   const addBtn = menu.querySelector('[data-action="sample-add"]');
   const removeBtn = menu.querySelector('[data-action="sample-remove"]');
   const showLeftBtn = menu.querySelector('[data-action="sample-show-left"]');
@@ -2187,6 +2345,15 @@ function handleRowContextAction(actionName) {
     await window.rtdbSampleTrends.removeManyFromCells(existing.map((entry) => entry.series.key));
     renderGrid();
   });
+  else if (actionName === "col-hide-current") {
+    hideGridColumn(context.sampleField);
+  }
+  else if (actionName === "col-only-numeric") {
+    showOnlyNumericColumns();
+  }
+  else if (actionName === "col-show-all") {
+    showAllGridColumns();
+  }
 }
 function cellSelectionKey(index, field) { return `${index}\u0000${field}`; }
 function splitCellSelectionKey(key) { const separator = key.indexOf("\u0000"); return { index: Number(key.slice(0, separator)), field: key.slice(separator + 1) }; }
@@ -5351,7 +5518,28 @@ el("table-filter").addEventListener("keydown", (event) => {
   }
 });
 for (const id of ["exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
-if (el("current-database-file")) el("current-database-file").onclick = () => run(() => openDatabaseFileDialog("server"));
+if (el("current-database-file")) el("current-database-file").onclick = (event) => { event.stopPropagation(); dbQuickSwitcher.toggle(); };
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".db-switcher-wrap")) dbQuickSwitcher.close();
+});
+el("bottom-toggle-fullscreen")?.addEventListener("click", () => toggleBottomFullscreen());
+document.querySelector(".bottom-bar")?.addEventListener("dblclick", (event) => {
+  if (event.target.closest("button, select, input, a")) return;
+  toggleBottomFullscreen();
+});
+el("field-quick-all")?.addEventListener("click", (event) => {
+  event.preventDefault(); event.stopPropagation(); showAllGridColumns();
+});
+el("field-quick-num")?.addEventListener("click", (event) => {
+  event.preventDefault(); event.stopPropagation(); showOnlyNumericColumns();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (dbQuickSwitcher.isOpen()) { event.preventDefault(); dbQuickSwitcher.close(); return; }
+  if (document.documentElement.classList.contains("bottom-fullscreen") && !document.querySelector("dialog[open]")) {
+    event.preventDefault(); toggleBottomFullscreen(true);
+  }
+});
 if (el("open-tools-menu")) {
   el("open-tools-menu").onclick = (event) => {
     event.stopPropagation();
@@ -5491,7 +5679,7 @@ async function openDatabaseFileDialog(fileTab = "server") {
   if (fileTab === "server") showWorkspacePicker();
 }
 el("app-title").ondblclick = () => run(openDatabaseFileDialog);
-el("open-database-files").onclick = () => run(openDatabaseFileDialog);
+if (el("open-database-files")) el("open-database-files").onclick = () => run(openDatabaseFileDialog);
 bindWorkspacePicker();
 document.querySelectorAll("[data-database-file-tab]").forEach((button) => {
   button.onclick = () => run(async () => {
@@ -5736,7 +5924,14 @@ chartObserver.observe(el("chart-area"));
 virtualGrid.init();
 schemaTools.init();
 sqlDrawer.init();
-i18n.onChange(() => sqlDrawer.renderFavorites());
+i18n.onChange(() => {
+  sqlDrawer.renderFavorites();
+  const fsBtn = el("bottom-toggle-fullscreen");
+  if (fsBtn) {
+    const isFs = document.documentElement.classList.contains("bottom-fullscreen");
+    fsBtn.textContent = isFs ? (t("st.btnExitFullscreen") || "还原") : (t("st.btnFullscreen") || "全屏");
+  }
+});
 if (window.rtdbSampleTrends) {
   window.rtdbSampleTrends.init({
     getDatabase: () => state.database,
@@ -5747,8 +5942,10 @@ if (window.rtdbSampleTrends) {
     notice,
     openSampleChart: () => { chartLayout.expand(); bottomTab("sample"); },
     openSampleList: () => tab("sample-trends"),
+    toggleBottomFullscreen,
     onSeriesChange: () => {
       if (state.table && state.records.length) renderGrid();
+      if (window.rtdbOpsCenter) window.rtdbOpsCenter.refresh();
     },
     fetchTableSchema: (tableName) => request(`tables/${encodeURIComponent(tableName)}/schema`),
     fetchTableRows: (tableName, limit = 200) => request(`tables/${encodeURIComponent(tableName)}/rows?limit=${limit}&offset=0`)
@@ -5768,6 +5965,8 @@ if (window.rtdbOpsCenter) {
     openPerf: () => uiPerformance.show(),
     exportPerf: () => uiPerformance.export(),
     openRepair: (file) => openDatabaseRepair(file),
+    openSampleList: () => tab("sample-trends"),
+    getSampleCount: () => window.rtdbSampleTrends?.getSeriesCount?.() || 0,
     getPerfSamples: () => uiPerformance.samples || []
   });
 }

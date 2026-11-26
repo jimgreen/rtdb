@@ -252,6 +252,8 @@ window.rtdbOpsCenter = (function () {
     if (errEl) { errEl.textContent = ""; errEl.hidden = true; }
     const dbEl = el("ops-metric-current");
     if (dbEl) dbEl.textContent = host.getDatabase() || "—";
+    const sampleEl = el("ops-metric-samples");
+    if (sampleEl) sampleEl.textContent = String(host.getSampleCount ? host.getSampleCount() : 0);
     renderPerf();
     try {
       const currentDb = host.getDatabase();
@@ -286,6 +288,7 @@ window.rtdbOpsCenter = (function () {
     el("ops-open-tasks")?.addEventListener("click", () => host?.openTasks?.());
     el("ops-open-perf")?.addEventListener("click", () => host?.openPerf?.());
     el("ops-export-perf")?.addEventListener("click", () => host?.exportPerf?.());
+    el("ops-metric-samples")?.addEventListener("click", () => host?.openSampleList?.());
   }
 
   return {

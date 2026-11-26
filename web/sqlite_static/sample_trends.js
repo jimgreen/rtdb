@@ -1519,15 +1519,13 @@ window.rtdbSampleTrends = (function () {
   }
 
   function toggleFullscreen(forceOff = false) {
+    if (state.host?.toggleBottomFullscreen) {
+      state.host.toggleBottomFullscreen(forceOff);
+      return;
+    }
     const root = document.documentElement;
     const next = forceOff ? false : !root.classList.contains("bottom-fullscreen");
     root.classList.toggle("bottom-fullscreen", next);
-    const btn = el("st-toggle-fullscreen");
-    if (btn) {
-      btn.textContent = next
-        ? tr("st.btnExitFullscreen", null, "还原")
-        : tr("st.btnFullscreen", null, "全屏");
-    }
     requestAnimationFrame(drawChart);
   }
 
