@@ -58,7 +58,7 @@ def run(rows=100000, repeats=15):
                 dict(eng_name=n, chn_name=n, data_type=t, primary_key=k, disp_type='文本', disp_menu='')
                 for n, t, k in [('id', 'int', True), ('value', 'float', False)]]}
             manager.create_database_file({'name': 'bench', 'tables': [definition]})
-            scoped = manager.for_database('bench.sqlite3'); api = SQLiteManagement(scoped)
+            scoped = manager.for_database('bench.db'); api = SQLiteManagement(scoped)
             scoped.insert('samples', {'rows': [{'id': i, 'value': float(i)} for i in range(10000)]})
             edits = []
             for repeat in range(repeats):

@@ -5,13 +5,13 @@ async(page)=>{
   const idle=()=>page.waitForFunction(()=>!state.busy&&localDrafts.ready&&state.databases.length);
   page.on('pageerror',error=>errors.push(error.message));await page.goto(origin);await idle();
   check(await page.evaluate(()=>state.dataDir.includes('workflow-lab')),'isolated fixture verified');
-  const name='ui_indexes_'+Date.now(),suffix='?database=plant_a.sqlite3';
+  const name='ui_indexes_'+Date.now(),suffix='?database=plant_a.db';
   const original=await (await page.request.get(origin+'/api/manage/tables/devices/schema'+suffix)).json();
   const definition=structuredClone(original.definition);definition.head={eng_name:name,chn_name:'索引功能验证'};
   const created=await page.request.put(origin+'/api/manage/tables/'+name+'/schema'+suffix,{data:{creating:true,definition}});
   check(created.ok(),'scoped table created with receipt');
   try{
-    await page.locator('#database-select').selectOption('plant_a.sqlite3');await idle();
+    await page.locator('#database-select').selectOption('plant_a.db');await idle();
     await page.getByRole('button',{name:new RegExp(name)}).click();await idle();await page.locator('#nav-schema').click();
     const menu=async action=>{await page.locator('#schema-fields tbody tr').first().click({button:'right'});await page.locator('[data-schema-action="'+action+'"]').click();};
     await menu('indexes');check(await page.locator('#schema-index-dialog').isVisible(),'index editor opens from context menu');

@@ -2,14 +2,14 @@
 
 `web/sqlite_server.py` 提供 SQLite HTTP 服务，`web/sqlite_static/` 提供中文 HTML 界面。
 SQLite 管理终端的交互参考 Qt `tools/rtdbmng`，包括表索引、字段树、SQL 增删改查、排序、分页和日志区域。
-管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：一个 `.sqlite3` 文件可以包含多张逻辑表，
+管理对象为本项目 `core.sqlite_db.SQLiteDatabase` 的表：一个 `.db` 文件可以包含多张逻辑表，
 并在文件内的 `rtdb_schema_database`、`rtdb_schema_tables`、`rtdb_schema_columns` 中保存数据库、表和列定义。
 JSON/Python 文件作为导入、导出和旧文件首次迁移格式，运行时不再依赖；当前不直接管理任意第三方 SQLite 文件或跨表 JOIN。
 
 页面先选择数据库，再操作表与记录：
 
 1. 在顶部“选择 / 新建数据库”打开服务端文件列表，也可从左侧“当前数据库”下拉框切换已有库。
-2. 新建时填写数据库英文名和中文名；“首张表”可留空，先创建空的 `.sqlite3` 文件。
+2. 新建时填写数据库英文名和中文名；“首张表”可留空，先创建空的 `.db` 文件。
 3. 选库后，左侧只列出该库的表。“新建表”与“表结构”页管理表及字段；“结果展示”页通过右键菜单新增、复制、删除记录，双击单元格编辑，`Ctrl+S` 保存，SQL 输入框执行查询或确认后的写入。
 4. 不同数据库允许有同名表。切库时先处理未保存修改，并清空当前选择、曲线和编辑历史；SQL 历史按数据库和表隔离。删除最后一张空表后仍保留数据库文件，表改名也保留当前数据库文件名。
 
@@ -67,7 +67,7 @@ Web 服务对上述事务内审计事件采用后台投递：保存响应返回 
 
 `benchmarks/verify_web_drafts.js` 验证双页面草稿隔离、保存冲突、结构草稿及配额失败保护；`benchmarks/verify_web_virtual.js` 在渲染测试环境验证虚拟表格交互。`python -m unittest web.test_write_receipts` 验证事务回滚、日志补写去重、重复删除及提交后实际进程退出恢复。`benchmarks/benchmark_web_virtual.js` 比较同一 500×40 页面完整/虚拟绘制，`python benchmarks/benchmark_write_receipts.py --output output/write-receipts-performance.json` 比较管理层写入与日志开销；后者不包含 HTTP 和后台任务账本。性能测试应顺序执行，避免相互争用资源。
 
-前端性能基准见 `benchmarks/benchmark_web_render.js`，通过 Playwright CLI 的 `run-code --filename` 在隔离数据库 `lab.sqlite3/samples` 上运行。该基准会修改并恢复测试行，请勿指向业务数据。URL 带 `?force_full=1` 时仅在该测试页面临时禁用局部更新，可与正常模式在同一后端上做配对对比；原始样本包含 2 次预热和每场景 15 次计时。
+前端性能基准见 `benchmarks/benchmark_web_render.js`，通过 Playwright CLI 的 `run-code --filename` 在隔离数据库 `lab.db/samples` 上运行。该基准会修改并恢复测试行，请勿指向业务数据。URL 带 `?force_full=1` 时仅在该测试页面临时禁用局部更新，可与正常模式在同一后端上做配对对比；原始样本包含 2 次预热和每场景 15 次计时。
 
 运行 `python benchmarks/serve_web_render_lab.py` 可创建并启动上述隔离数据，控制台及 `output/browser-render-lab/server.json` 给出临时端口。需要验证任务进度时加 `--task-logs`，首次建立索引前运行 `benchmarks/verify_web_tasks.js`；`benchmarks/verify_web_render.js` 验证表格局部刷新与曲线/编辑行为。两个检查同样通过 Playwright CLI `run-code --filename` 执行。任务取消检查依赖冷索引，重复运行时应另准备冷索引测试数据。对照 JSON 可通过 `python benchmarks/compare_web_render.py BEFORE.json AFTER.json --output REPORT.html` 生成含全部原始样本的独立 HTML。
 
@@ -110,7 +110,7 @@ python -m web.server --engine sqlite --port 8878
 - 导入 CSV/JSON 采用一次事务，失败不留下部分记录；导出包含上一次成功 SQL 查询的全部结果及排序，最多 100,000 行，CSV 遵循显示字段选择。
 - 清空表、删除表和 SQL 写入需要输入表名确认；SQL 写入使用执行时最新内容，不带行版本检查。
 - 日志页读取服务端持久化审计日志，记录结构、数据和系统操作的成功/失败、HTTP 状态、耗时、结果摘要和错误信息；新日志按本地日期写入数据目录的 `rtdb-operation-logs/YYYY-MM-DD.jsonl`，旧版单文件日志继续兼容读取。页面支持指定日期、关键词、类别、状态过滤和分页；导出当前查询页。日志保留天数可在页面设置，`0` 表示永久保留；设置大于 0 后，服务启动及每天首次写入时自动清理过期日期文件，也可立即执行清理。
-- 双击顶部“RTDB 管理终端”标题也可打开数据库文件管理窗口。服务端文件页按文件名、表名列表、记录数、定义文件和校验状态浏览 `.sqlite3` 文件，可打开有效文件或新建空库及带首张表的数据库；上传本地文件页支持同名 `.sqlite3` 与可选 `.json` 定义。带 SQLite 内置结构的文件无需 JSON 即可加载、校验和上传；没有内置结构的旧文件才使用同名 JSON 首次迁移。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
+- 双击顶部“RTDB 管理终端”标题也可打开数据库文件管理窗口。服务端文件页按文件名、表名列表、记录数、定义文件和校验状态浏览 `.db` 文件，可打开有效文件或新建空库及带首张表的数据库；上传本地文件页支持同名 `.db` 与可选 `.json` 定义。带 SQLite 内置结构的文件无需 JSON 即可加载、校验和上传；没有内置结构的旧文件才使用同名 JSON 首次迁移。已有文件必须确认覆盖，失败不会替换原文件，相关成功/失败均写入操作日志。
 
 表定义统一为：
 
@@ -137,7 +137,7 @@ python -m web.server --engine sqlite --port 8878
 }
 ```
 
-`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义；空数组表示空数据库。SQLite 内部除上述三张结构表外，为每张逻辑表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。界面加载包含多个模块的 dbdef/E 文件时，各模块作为当前库中的表创建或更新。旧 API 未指定数据库时，仍默认按输入文件名生成一组同名 `.sqlite3`、`.json` 和 `.py` 文件；API 未提供源文件名时使用第一张表的英文名，也可通过 `database_name` 指定数据库文件名。删除 JSON/Python 后，SQLite 文件仍可独立打开、编辑和继续进行结构操作；结构修改时会按需重新生成外部定义文件。
+`tables` 中每张表仍使用完整的 `head` 和 `columns` 定义；空数组表示空数据库。SQLite 内部除上述三张结构表外，为每张逻辑表创建独立的 `rtdb_data_<表名>` 和 `rtdb_metadata_<表名>`，因此表级 CRUD、结构指纹和记录统计互不覆盖。界面加载包含多个模块的 dbdef/E 文件时，各模块作为当前库中的表创建或更新。旧 API 未指定数据库时，仍默认按输入文件名生成一组同名 `.db`、`.json` 和 `.py` 文件；API 未提供源文件名时使用第一张表的英文名，也可通过 `database_name` 指定数据库文件名。删除 JSON/Python 后，SQLite 文件仍可独立打开、编辑和继续进行结构操作；结构修改时会按需重新生成外部定义文件。
 
 文件映射、Redis、SQLite 三个版本都不再接受 `max_elements`、`data_length`。
 SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参数控制物理布局，详见
@@ -146,17 +146,17 @@ SQLite/Redis 没有定义级容量或长度限制。文件映射仍由引擎参�
 
 ## SQLite API
 
-`GET /api/manage/databases` 返回数据库目录（文件名、中文名、表数和异常信息），仅读取定义，不对每个库执行完整扫描。选择数据库是浏览器自身状态，不改变服务端全局当前库。所有表级接口及定义导入、备份恢复带 `?database=plant_a.sqlite3`，例如 `GET /api/manage/tables?database=plant_a.sqlite3`。文件名限定在服务配置的数据目录内；未指定数据库而存在同名表时拒绝歧义访问。审计操作路径同时记录数据库参数。
+`GET /api/manage/databases` 返回数据库目录（文件名、中文名、表数和异常信息），仅读取定义，不对每个库执行完整扫描。选择数据库是浏览器自身状态，不改变服务端全局当前库。所有表级接口及定义导入、备份恢复带 `?database=plant_a.db`，例如 `GET /api/manage/tables?database=plant_a.db`。文件名限定在服务配置的数据目录内；未指定数据库而存在同名表时拒绝歧义访问。审计操作路径同时记录数据库参数。
 
 SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspace`，本机对应 `D:\codex\workspace`。在“选择 / 新建数据库”中，输入数据库相对路径后按 Enter，或在浮层中展开目录并点选数据库。文件状态和“处理报警”入口在同一列表中显示。“上一级”和“工作区根目录”用于导航，“新建目录”和“新建数据库”作用于选中的目录。浏览目录不切换当前库。切换数据库会检查未保存编辑，各目录的数据库、任务、上传会话和草稿互相隔离。
 
 启动参数 `--workspace-dir` 可指定已有的绝对目录，也可用相对于 `--root` 的路径。默认数据目录为 `.`，定义目录为数据目录下的 `.rtdb-schema`。可用 `--data-dir` 和 `--schema-dir` 配置根目录内的其他位置，相对参数均从文件根目录解析。API 返回的数据和文件路径也以根目录为基准。目录请求只接受使用 `/` 分隔的相对路径，拒绝绝对路径、父级跳转、符号链接和 Windows 联接点。扫描跳过隐藏目录及运行日志。数据库、定义、任务、上传和快照均使用根目录内的目录。
 
-例如 `http://127.0.0.1:8877/?workspace=realtime/qinling/sqldb/model&database=devices.sqlite3`。数据库文件名与目录在 URL 中分别指定，不同目录可以使用相同文件名。同一浏览器会记住每个文件根目录上次使用的位置和各目录最后打开的数据库。直接打开首页时自动恢复，链接中的目录和数据库优先。API `GET /api/manage/workspaces` 返回根目录（`path: "."`）及各级子目录。验证命令为 `python -m unittest web.test_workspace`。
+例如 `http://127.0.0.1:8877/?workspace=realtime/qinling/sqldb/model&database=devices.db`。数据库文件名与目录在 URL 中分别指定，不同目录可以使用相同文件名。同一浏览器会记住每个文件根目录上次使用的位置和各目录最后打开的数据库。直接打开首页时自动恢复，链接中的目录和数据库优先。API `GET /api/manage/workspaces` 返回根目录（`path: "."`）及各级子目录。验证命令为 `python -m unittest web.test_workspace`。
 
 带 RTDB 内置定义的原生 SQLite 库（`storage_format=native`）可以在 Web 中查询、增删改记录，也可以新建表、修改表名和显示信息、增加或重命名字段，以及删除不受约束引用的字段和空表。结构变更使用 SQLite 的原生 DDL，物理表和内置定义在同一事务提交。已有字段的类型、默认值、主键及原有索引由原表定义。PAS、SCADA 等应用仍直接使用原表，调整它们依赖的表名和字段前应先核对应用配置。
 
-`POST /api/manage/database-files/create` 可传 `{"name":"plant_a","chn_name":"A站","tables":[]}` 创建空库。Python 调用可用 `SQLiteDatabase(data_dir, schema_directory=schema_dir, database_file="plant_a.sqlite3")` 定位同名表；此限定库实例当前使用直接事务，不支持 `write_process()`。
+`POST /api/manage/database-files/create` 可传 `{"name":"plant_a","chn_name":"A站","tables":[]}` 创建空库。Python 调用可用 `SQLiteDatabase(data_dir, schema_directory=schema_dir, database_file="plant_a.db")` 定位同名表；此限定库实例当前使用直接事务，不支持 `write_process()`。
 
 网页查询发送 `compact: true`：可编辑结果只返回 `records`，避免 `rows` 重复传输；只读结果只返回 `rows`。自动刷新附带上次的 `result_version`（请求字段 `if_version`），无变化返回 `unchanged: true`；可编辑结果再附带 `known_records` 时，变化响应只带新增/改变的记录与完整 `record_order`，客户端据此合并及移除已删除记录。无变化时保留现有表格 DOM。原有未开启 compact 的 API 和导出格式保持不变。
 
@@ -164,7 +164,7 @@ SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspa
 
 服务层性能基准：`python benchmarks/benchmark_web_workflow.py --output output/workflow-timing.json`，默认使用临时目录、两个各 10,000 行的数据库、每页 500 行和 30 次重复；报告完整查询、无变化刷新，以及另一数据库持有 150 ms 会话时的响应耗时。该基准不含 HTTP、浏览器绘制和审计日志 fsync，不能直接作为端到端响应时间。
 
-日志查询使用 `rtdb-operation-logs/.query-index.sqlite3` 作为可重建索引，日期 JSONL 文件仍是原始记录，写入时继续 flush/fsync。首次查询建立相关文件的索引；以后只解析追加内容，分页和过滤从索引读取。重启后复用索引；文件替换、截断、删除后重新同步，保留期清理同时移除索引中的过期记录。指定日期仅索引该日期及旧版单文件日志；读取日期列表不扫描各日期文件内容。关键词和操作名称保持 Unicode 大小写折叠及字面子串匹配（`%`、`_` 不作为通配符），记录顺序和分页总数保持原规则。索引构建不占用日志追加锁；索引损坏会重建，索引不可用时回退原始文件读取。索引会额外占用磁盘空间，首次建索引耗时应与后续查询分开评估。
+日志查询使用 `rtdb-operation-logs/.query-index.db` 作为可重建索引，日期 JSONL 文件仍是原始记录，写入时继续 flush/fsync。首次查询建立相关文件的索引；以后只解析追加内容，分页和过滤从索引读取。重启后复用索引；文件替换、截断、删除后重新同步，保留期清理同时移除索引中的过期记录。指定日期仅索引该日期及旧版单文件日志；读取日期列表不扫描各日期文件内容。关键词和操作名称保持 Unicode 大小写折叠及字面子串匹配（`%`、`_` 不作为通配符），记录顺序和分页总数保持原规则。索引构建不占用日志追加锁；索引损坏会重建，索引不可用时回退原始文件读取。索引会额外占用磁盘空间，首次建索引耗时应与后续查询分开评估。
 
 批量保存先在同一事务内分批读取所需主键记录（每次最多 900 个绑定参数），再校验版本、主键重复和字段值；复合主键也支持批量查询。所有检查通过后才执行写入，任一条冲突仍拒绝整批保存。该优化不放宽既有主键、类型或并发冲突约束。
 
@@ -180,12 +180,12 @@ SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspa
 | --- | --- | --- |
 | GET | `/api/health`、`/api/sqlite/info` | 服务、路径、SQLite 版本、持久化配置 |
 | GET | `/api/manage/logs?page=1&page_size=50&date=YYYY-MM-DD&keyword=...&category=...&status=...` | 按日期、关键词、类别和状态分页查询持久化操作日志 |
-| GET | `/api/manage/database-files` | 浏览服务端 RTDB `.sqlite3` 文件及定义、记录数、大小和校验状态 |
-| POST | `/api/manage/database-files/select` | 选择并校验服务端文件，参数为 `{ "filename": "devices.sqlite3" }` |
+| GET | `/api/manage/database-files` | 浏览服务端 RTDB `.db` 文件及定义、记录数、大小和校验状态 |
+| POST | `/api/manage/database-files/select` | 选择并校验服务端文件，参数为 `{ "filename": "devices.db" }` |
 | POST | `/api/manage/database-files/create` | 新建服务端数据库文件；单表参数为 `{ "name": "measurements", "chn_name": "测量表" }`，多表可增加 `tables: [{"head": ..., "columns": ...}, ...]` |
-| POST | `/api/manage/database-files/upload` | 上传并原子更新文件，参数为 Base64 `files: [{ "name": "x.sqlite3", "content": "..." }, { "name": "x.json", "content": "..." }]`；覆盖时增加 `confirm` |
+| POST | `/api/manage/database-files/upload` | 上传并原子更新文件，参数为 Base64 `files: [{ "name": "x.db", "content": "..." }, { "name": "x.json", "content": "..." }]`；覆盖时增加 `confirm` |
 | POST | `/api/manage/database-files/rebuild-embedded-definition` | 根据旧 `data` 表的 `cN` 字段生成 SQLite 内置定义，并归档操作前文件 |
-| POST | `/api/manage/database-files/delete-orphan` | 删除未定义数据表；必须携带 `{ "filename": "x.sqlite3", "confirm": "x.sqlite3" }`，文件会先归档 |
+| POST | `/api/manage/database-files/delete-orphan` | 删除未定义数据表；必须携带 `{ "filename": "x.db", "confirm": "x.db" }`，文件会先归档 |
 | POST | `/api/manage/database-files/rebuild-from-embedded` | 根据 SQLite 内置定义重建物理数据表、索引和元数据 |
 | GET / PUT | `/api/manage/log-config` | 读取/设置日志保留天数；`0` 表示永久保留 |
 | POST | `/api/manage/logs/cleanup` | 按当前保留天数立即清理旧日志文件 |
@@ -203,7 +203,7 @@ SQLite Web 使用一个文件根目录。默认是仓库根目录的 `../workspa
 | GET | `/api/sqlite/tables/{name}/export` | `format=csv/json`，可带 `where`、`order` |
 | GET | `/api/sqlite/tables/{name}/check` | quick_check、实际数量与元数据数量核对 |
 
-`POST /api/manage/definition-preview` 与 `POST /api/manage/definition-import` 接受可选的 `source_name` 或 `database_name`。一次请求包含多张表时，所有表始终写入同一个 grouped `.sqlite3`、`.json` 和 `.py` 文件；未提供数据库名时，使用请求中第一张表的英文名作为文件名。
+`POST /api/manage/definition-preview` 与 `POST /api/manage/definition-import` 接受可选的 `source_name` 或 `database_name`。一次请求包含多张表时，所有表始终写入同一个 grouped `.db`、`.json` 和 `.py` 文件；未提供数据库名时，使用请求中第一张表的英文名作为文件名。
 
 SELECT/WITH 查询和单条 INSERT/UPDATE/DELETE 使用 SQLite 原生执行。
 支持聚合、表达式、LIKE、IN 等；DML 通过受限可写视图触发器做类型和主键校验。
@@ -423,7 +423,7 @@ CSV/E 分块导入与E多表续作已实现，见后续章节。后续重点：�
 
 入口：左侧表列表右键 → **整库快照 / 恢复** → **上传本地快照**。也可在“选择 / 新建数据库”的本地上传区域点击“上传整库快照（大文件 / 续传）”。上传校验完成后，填写新库名称并点击“恢复为新数据库”；同名数据库拒绝覆盖，原库和未保存编辑保留。
 
-新入口接受带 RTDB 内置定义的自包含 `.sqlite3` 快照，单文件上限 **2 GiB**。在线数据库请先用“生成整库快照”取得一致副本，不要只复制仍在写入的主文件。原有 Base64 多文件上传接口仍保留 **16 MiB/文件**限制；新入口不接收 WAL/SHM 或 JSON 伴随文件。
+新入口接受带 RTDB 内置定义的自包含 `.db` 快照，单文件上限 **2 GiB**。在线数据库请先用“生成整库快照”取得一致副本，不要只复制仍在写入的主文件。原有 Base64 多文件上传接口仍保留 **16 MiB/文件**限制；新入口不接收 WAL/SHM 或 JSON 伴随文件。
 
 浏览器每次读取 **1 MiB**，计算当前块 SHA-256 后发送二进制内容。服务端刷写数据和进度清单后才确认接收；相同位置、相同内容重复发送返回原进度，不追加两遍。断线可重试，暂停后保留已确认内容。刷新页面后需重新选择同一文件；续传前核对文件名称、大小、修改时间和每个已接收块的哈希，防止混入不同文件。浏览器 Web Crypto 需要 localhost 或 HTTPS 安全上下文。
 
@@ -457,7 +457,7 @@ CSV/E 分块导入与E多表续作已实现，见后续章节。后续重点：�
 
 接口复用：
 
-- `POST /api/manage/database-uploads`：除原有 `id/filename/size/last_modified` 外，增加 `kind:"csv"`、`database:"目标.sqlite3"`、`table:"表名"`、`encoding:"utf-8-sig"` 或 `"gb18030"`。
+- `POST /api/manage/database-uploads`：除原有 `id/filename/size/last_modified` 外，增加 `kind:"csv"`、`database:"目标.db"`、`table:"表名"`、`encoding:"utf-8-sig"` 或 `"gb18030"`。
 - 分块 `PUT`、进度 `GET`、取消暂存 `DELETE` 与整库快照相同；`POST .../{id}/finalize` 返回总记录数、样本、字段类型、预览token，不写目标表。
 - `POST /api/manage/tables/{表名}/import?database={数据库}`：`{"upload_id":"上传编号","token":"预览token","mode":"append|merge|replace","confirm":"表名"}`；可使用后台任务参数。
 

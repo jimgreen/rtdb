@@ -12,7 +12,7 @@ from .tasks import checkpoint as task_checkpoint
 class AuditIndex:
     def __init__(self, audit):
         self.audit = audit
-        self.path = audit.log_dir / '.query-index.sqlite3'
+        self.path = audit.log_dir / '.query-index.db'
         self.lock_path = audit.log_dir / '.query-index.lock'
 
     @staticmethod

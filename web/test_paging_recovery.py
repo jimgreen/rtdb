@@ -12,7 +12,7 @@ class PagingRecoveryTests(unittest.TestCase):
     tearDown=test_database_scope.DatabaseScopeTests.tearDown
 
     def prepare(self):
-        self.scoped=self.manager.for_database('plant_a.sqlite3');self.api=SQLiteManagement(self.scoped)
+        self.scoped=self.manager.for_database('plant_a.db');self.api=SQLiteManagement(self.scoped)
         self.scoped.insert('nodes',{'rows':[{'id':i,'name':str(i%3)} for i in range(1,301)]})
         return {'sql':'SELECT * FROM nodes','compact':True,'limit':50,'offset':100}
 

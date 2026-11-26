@@ -103,10 +103,10 @@ def prepare(manager, value):
     task = current_task()
     value.update(state='validating', task_id=task['id'] if task else None, task_fingerprint=task['fingerprint'] if task else None)
     uploads._save(manager, value)
-    folder = uploads.session_path(manager, value['id']); raw_path = folder/'raw.sqlite3'
+    folder = uploads.session_path(manager, value['id']); raw_path = folder/'raw.db'
     try:
         checksum = uploads.verify(manager, value)
-        encoding = detect(folder/'payload.sqlite3', value['encoding'])
+        encoding = detect(folder/'payload.db', value['encoding'])
         raw_path.unlink(missing_ok=True)
         scoped = manager.for_database(value['database']); tables = []
         with closing(sqlite3.connect(raw_path)) as staging, scoped.read_scope():
@@ -117,7 +117,7 @@ def prepare(manager, value):
             definitions = {t['name']:t['definition'] for t in scoped.tables()['tables'] if not t.get('orphan')}
             seen_names = set()
             row_batch = []
-            with (folder/'payload.sqlite3').open('r', encoding=encoding, newline='') as source:
+            with (folder/'payload.db').open('r', encoding=encoding, newline='') as source:
                 for event, line, item in events(source):
                     if event == 'start':
                         name = scoped.name(item['name']); count = 0; samples = []; masks = []; present = []
@@ -186,11 +186,11 @@ def validate(manager, payload):
         if value.get('apply_started'): raise APIError(409,'该计划已开始提交，请继续未完成步骤；更改选项需重新上传')
         mode = payload.get('mode','merge')
         if mode not in ('append','merge','replace'): raise APIError(400,'未知导入方式')
-        if file_hash(folder/'raw.sqlite3') != value['raw_sha256']: raise APIError(422,'暂存 E 数据损坏，请重新上传')
+        if file_hash(folder/'raw.db') != value['raw_sha256']: raise APIError(422,'暂存 E 数据损坏，请重新上传')
         # Invalid changed choices must never leave an older executable preview.
         value.pop('validation',None); value.pop('plans',None); uploads._save(manager,value)
-        prepared = folder/'prepared.sqlite3'; prepared.unlink(missing_ok=True); plans=[]
-        with closing(sqlite3.connect(prepared)) as staging, closing(sqlite3.connect((folder/'raw.sqlite3').as_uri()+'?mode=ro',uri=True)) as source:
+        prepared = folder/'prepared.db'; prepared.unlink(missing_ok=True); plans=[]
+        with closing(sqlite3.connect(prepared)) as staging, closing(sqlite3.connect((folder/'raw.db').as_uri()+'?mode=ro',uri=True)) as source:
             staging.execute('PRAGMA cache_size=-2048')
             current={t['name']:t['definition'] for t in manager.tables()['tables'] if not t.get('orphan')}
             for index,item in enumerate(value['result']['tables']):
@@ -343,13 +343,13 @@ def apply(manager,payload):
     with uploads.lock(manager,ident),manager.exclusive():
         manager._recover();value,folder=session(manager,ident);validation=value.get('validation') or {}
         if payload.get('token')!=validation.get('token') or not validation:raise APIError(409,'请先校验当前字段选择')
-        if file_hash(folder/'prepared.sqlite3')!=value['prepared_sha256']:raise APIError(422,'导入计划损坏，请重新上传')
+        if file_hash(folder/'prepared.db')!=value['prepared_sha256']:raise APIError(422,'导入计划损坏，请重新上传')
         value['apply_started']=True;uploads._save(manager,value);results=[]
         for index,plan in enumerate(value['plans']):
             checkpoint(f'准备提交 {plan["summary"]["name"]}',index,len(value['plans']))
             try:
                 with committing(f'提交 {plan["summary"]["name"]}；单表失败整体回滚'):
-                    result=apply_table(manager,plan,folder/'prepared.sqlite3',ident,validation['token'])
+                    result=apply_table(manager,plan,folder/'prepared.db',ident,validation['token'])
                     table_completed(plan['summary']['name'])
                 results.append(result)
             except TaskCancelled:raise

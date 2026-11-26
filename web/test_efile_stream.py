@@ -21,7 +21,7 @@ def crash_after_first_efile_table(root,ident,token):
     from web.sqlite_service import SQLiteManager
     from web.tasks import TaskRegistry
     root=Path(root);manager=SQLiteManager(root/'data',root/'defs')
-    api=SQLiteManagement(manager.for_database('plant_a.sqlite3'));original=efile_imports.apply_table
+    api=SQLiteManagement(manager.for_database('plant_a.db'));original=efile_imports.apply_table
     def crash(manager,plan,*args):
         if plan['summary']['name']=='lines':os._exit(7)
         return original(manager,plan,*args)
@@ -38,13 +38,13 @@ class EfileStreamTests(unittest.TestCase):
 
     def upload(self, text, encoding='utf-8-sig'):
         data=text.encode(encoding);ident=uuid.uuid4().hex
-        uploads.create(self.manager,dict(id=ident,kind='e',filename='grid.e',size=len(data),database='plant_a.sqlite3',encoding='auto'))
+        uploads.create(self.manager,dict(id=ident,kind='e',filename='grid.e',size=len(data),database='plant_a.db',encoding='auto'))
         for offset in range(0,len(data),uploads.CHUNK):
             block=data[offset:offset+uploads.CHUNK]
             uploads.put_chunk(self.manager,ident,offset,block,hashlib.sha256(block).hexdigest())
         return ident,uploads.finalize(self.manager,ident)
 
-    def request(self, action, payload, database='plant_a.sqlite3'):
+    def request(self, action, payload, database='plant_a.db'):
         return SQLiteManagement(self.manager.for_database(database)).dispatch('POST',['definition-'+action],{},payload)
 
     def validate(self, ident, mode='merge', **choices):
@@ -54,7 +54,7 @@ class EfileStreamTests(unittest.TestCase):
         return self.request('import',dict(upload_id=ident,token=preview['token'],**extra))
 
     def rows(self, name):
-        with self.manager.for_database('plant_a.sqlite3').session(name) as table:return table.all()
+        with self.manager.for_database('plant_a.db').session(name) as table:return table.all()
 
     def test_multi_table_inference_preview_and_replay(self):
         ident,initial=self.upload("<meters>\n@ code id value\n# A 2 1\n# B 3 2.5\n</meters>\n<nodes>\n@ id name\n# 1 '北侧\n电表'\n</nodes>")
@@ -72,12 +72,12 @@ class EfileStreamTests(unittest.TestCase):
         ident,initial=self.upload('<meters>\n@ code reading\n# 1 1\n# 2 2.5\n</meters>')
         columns=copy.deepcopy(initial['tables'][0]['definition']['columns']);columns[1]['data_type']='int'
         with self.assertRaises(Exception):self.validate(ident,definition_overrides={'meters':{'columns':columns}})
-        self.assertNotIn('meters',[t['name'] for t in self.manager.for_database('plant_a.sqlite3').tables()['tables']])
+        self.assertNotIn('meters',[t['name'] for t in self.manager.for_database('plant_a.db').tables()['tables']])
         columns[1]['data_type']='str';columns[0]['primary_key']=False;columns[1]['primary_key']=True
         preview=self.validate(ident,definition_overrides={'meters':{'columns':columns}})
         self.assertTrue(self.apply(ident,preview)['ok']);self.assertEqual(self.rows('meters')[1]['reading'],'2.5')
         ident,_=self.upload('<nodes>\n@ id name\n# 1 new\n</nodes>');preview=self.validate(ident)
-        self.manager.for_database('plant_a.sqlite3').insert('nodes',{'rows':[{'id':9,'name':'external'}]})
+        self.manager.for_database('plant_a.db').insert('nodes',{'rows':[{'id':9,'name':'external'}]})
         self.assertFalse(self.apply(ident,preview)['ok']);self.assertEqual(self.rows('nodes')[0]['name'],'external')
 
     def test_partial_commit_retry_skips_completed_even_after_later_edit(self):
@@ -89,13 +89,13 @@ class EfileStreamTests(unittest.TestCase):
             return original(manager,plan,*args)
         with patch.object(efile_imports,'apply_table',fail):result=self.apply(ident,preview)
         self.assertFalse(result['ok']);self.assertEqual(self.rows('lines'),[])
-        self.manager.for_database('plant_a.sqlite3').insert('nodes',{'rows':[{'id':3,'name':'later'}]})
+        self.manager.for_database('plant_a.db').insert('nodes',{'rows':[{'id':3,'name':'later'}]})
         result=self.apply(ident,preview);self.assertTrue(result['ok']);self.assertTrue(result['results'][0]['replayed'])
         self.assertEqual(len(self.rows('nodes')),2);self.assertEqual(len(self.rows('lines')),1)
         with self.assertRaises(APIError):self.validate(ident,mode='replace')
 
     def test_duplicate_policies_positions_and_sibling_isolation(self):
-        scoped=self.manager.for_database('plant_a.sqlite3')
+        scoped=self.manager.for_database('plant_a.db')
         scoped.insert('nodes',{'rows':[{'id':1,'name':'old'},{'id':8,'name':'keep'}]})
         with scoped.session('nodes') as table:old_pos=dict(table._connection().execute(f'SELECT c0,_pos FROM {table._data_sql}'))
         source='<nodes>\n@ id name\n# 1 first\n# 2 second\n# 1 last\n</nodes>'
@@ -108,13 +108,13 @@ class EfileStreamTests(unittest.TestCase):
             self.assertEqual(8 in rows,mode!='replace')
             with scoped.session('nodes') as table:self.assertEqual(table._connection().execute(f'SELECT _pos FROM {table._data_sql} WHERE c0=1').fetchone()[0],old_pos[1])
         self.assertEqual(self.rows('lines'),[])
-        self.assertEqual(self.manager.for_database('plant_b.sqlite3').rows('nodes')['rows'],[])
+        self.assertEqual(self.manager.for_database('plant_b.db').rows('nodes')['rows'],[])
 
     def test_late_transaction_failure_rolls_back_schema_and_rows(self):
         ident,_=self.upload('<nodes>\n@ id name extra\n# 1 changed 2.5\n</nodes>');preview=self.validate(ident)
         with patch('web.write_receipts.record_step',side_effect=RuntimeError('injected after data')):result=self.apply(ident,preview)
         self.assertFalse(result['ok']);self.assertEqual(self.rows('nodes'),[])
-        self.assertNotIn('extra',self.manager.for_database('plant_a.sqlite3').definition('nodes').column_names)
+        self.assertNotIn('extra',self.manager.for_database('plant_a.db').definition('nodes').column_names)
         self.assertTrue(self.apply(ident,preview)['ok']);self.assertEqual(self.rows('nodes')[0]['extra'],2.5)
         self.assertTrue(any(e['status']=='failure' for e in self.manager.audit_log.read()))
 
@@ -132,12 +132,12 @@ class EfileStreamTests(unittest.TestCase):
 
     def test_rejects_wrong_target_tokens_and_tampered_staging(self):
         ident,_=self.upload('<nodes>\n@ id name\n# 1 x\n</nodes>')
-        with self.assertRaises(APIError):self.request('preview',{'upload_id':ident},'plant_b.sqlite3')
+        with self.assertRaises(APIError):self.request('preview',{'upload_id':ident},'plant_b.db')
         preview=self.validate(ident)
         with self.assertRaises(APIError):self.apply(ident,{'token':'wrong'})
-        path=uploads.session_path(self.manager,ident)/'prepared.sqlite3';path.write_bytes(b'bad')
+        path=uploads.session_path(self.manager,ident)/'prepared.db';path.write_bytes(b'bad')
         with self.assertRaises(APIError):self.apply(ident,preview)
-        path=uploads.session_path(self.manager,ident)/'raw.sqlite3';path.write_bytes(b'bad')
+        path=uploads.session_path(self.manager,ident)/'raw.db';path.write_bytes(b'bad')
         with self.assertRaises(APIError):self.validate(ident)
 
     def test_type_failure_clears_executable_preview_and_key_empty_rejected(self):
@@ -160,7 +160,7 @@ class EfileStreamTests(unittest.TestCase):
         def cancelled(manager,value):
             with patch.object(efile_imports,'checkpoint',side_effect=TaskCancelled):return original(manager,value)
         ident=uuid.uuid4().hex;data=b'<x>\n@ id\n# 1\n</x>'
-        uploads.create(self.manager,dict(id=ident,kind='e',filename='x.e',size=len(data),database='plant_a.sqlite3'))
+        uploads.create(self.manager,dict(id=ident,kind='e',filename='x.e',size=len(data),database='plant_a.db'))
         uploads.put_chunk(self.manager,ident,0,data,hashlib.sha256(data).hexdigest())
         with patch.object(efile_imports,'prepare',cancelled):
             with self.assertRaises(TaskCancelled):uploads.finalize(self.manager,ident)
@@ -168,14 +168,14 @@ class EfileStreamTests(unittest.TestCase):
         self.assertEqual(uploads.finalize(self.manager,ident)['tables'][0]['incoming'],1)
 
     def test_empty_replace_preserves_sequence_and_export_recovery(self):
-        scoped=self.manager.for_database('plant_a.sqlite3');scoped.insert('nodes',{'rows':[{'id':1,'name':'x'}]})
+        scoped=self.manager.for_database('plant_a.db');scoped.insert('nodes',{'rows':[{'id':1,'name':'x'}]})
         ident,_=self.upload('<nodes>\n@ id name extra\n</nodes>');preview=self.validate(ident,'replace')
         # Structural rebuild is empty: the original AUTOINCREMENT high-water mark survives.
         self.assertTrue(self.apply(ident,preview)['ok']);scoped.insert('nodes',{'rows':[{'id':2,'name':'new','extra':None}]})
         with scoped.session('nodes') as table:self.assertGreater(table._connection().execute(f'SELECT _pos FROM {table._data_sql}').fetchone()[0],1)
 
     def test_populated_schema_protection_and_bounded_sample(self):
-        scoped=self.manager.for_database('plant_a.sqlite3');scoped.insert('nodes',{'rows':[{'id':1,'name':'x'}]})
+        scoped=self.manager.for_database('plant_a.db');scoped.insert('nodes',{'rows':[{'id':1,'name':'x'}]})
         ident,initial=self.upload('<nodes>\n@ id name\n'+''.join(f'# {i} n\n' for i in range(2,1502))+'</nodes>')
         self.assertEqual(len(initial['tables'][0]['sample']),5)
         columns=copy.deepcopy(initial['tables'][0]['definition']['columns']);columns[0]['data_type']='str'
@@ -187,7 +187,7 @@ class EfileStreamTests(unittest.TestCase):
         from web.tasks import TaskRegistry
         ident,_=self.upload('<nodes>\n@ id name\n# 1 a\n</nodes>\n<lines>\n@ id name\n# 2 b\n</lines>')
         preview=self.validate(ident);directory=self.root/'tasks';registry=TaskRegistry(directory,self.manager)
-        api=SQLiteManagement(self.manager.for_database('plant_a.sqlite3'));payload=dict(upload_id=ident,token=preview['token']);original=efile_imports.apply_table
+        api=SQLiteManagement(self.manager.for_database('plant_a.db'));payload=dict(upload_id=ident,token=preview['token']);original=efile_imports.apply_table
         def fail(manager,plan,*args):
             if plan['summary']['name']=='lines':raise RuntimeError('interruption')
             return original(manager,plan,*args)
@@ -226,7 +226,7 @@ class EfileStreamTests(unittest.TestCase):
         self.assertEqual(len(self.rows('nodes')),1);self.assertEqual(self.rows('lines'),[])
         registry=TaskRegistry(self.root/'crash-tasks',self.manager)
         try:
-            recovered=registry.get('e'*32,'plant_a.sqlite3')
+            recovered=registry.get('e'*32,'plant_a.db')
             self.assertEqual(recovered['details']['completed_tables'],['nodes'])
             result=self.apply(ident,preview);self.assertTrue(result['ok']);self.assertTrue(result['results'][0]['replayed'])
             self.assertEqual(len(self.rows('nodes')),1);self.assertEqual(len(self.rows('lines')),1)

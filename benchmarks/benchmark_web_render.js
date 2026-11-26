@@ -3,7 +3,7 @@ async (page) => {
   const forceFull=new URL(page.url()).searchParams.has('force_full');
   await page.goto(origin);
   await page.waitForFunction(()=>!state.busy && state.databases.length);
-  await page.locator('#database-select').selectOption('lab.sqlite3');
+  await page.locator('#database-select').selectOption('lab.db');
   await page.waitForFunction(()=>!state.busy && state.records.length);
   await page.locator('#page-size').selectOption('500');
   await page.waitForFunction(()=>!state.busy && state.records.length===500);
@@ -38,7 +38,7 @@ async (page) => {
     timings[kind]=Object.fromEntries(['ready_ms','frame_ms','grid_ms','chart_ms','added_cells'].map(key=>[key,summarize(samples.map(s=>s[key]))]));
     timings[kind].all_first_cells_reused=samples.every(s=>s.first_cell_reused);
   }
-  const restored=await page.request.post(origin+'/api/manage/tables/samples/sql?database=lab.sqlite3',{data:{sql:'UPDATE samples SET v08=101.08 WHERE id=101',confirm:'samples'}});
+  const restored=await page.request.post(origin+'/api/manage/tables/samples/sql?database=lab.db',{data:{sql:'UPDATE samples SET v08=101.08 WHERE id=101',confirm:'samples'}});
   if(!restored.ok())throw Error('fixture restoration failed');
   return {rows:500,columns:40,repeats:15,warmup:2,forceFull,scope:'browser query start to DOM ready / second animation frame; includes HTTP and JSON',browser:await page.evaluate(()=>navigator.userAgent),timings,samples:metrics};
 }

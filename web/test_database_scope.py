@@ -30,22 +30,22 @@ class DatabaseScopeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_same_named_tables_are_isolated_and_unqualified_access_fails(self):
-        for filename, value in [('plant_a.sqlite3', 'A'), ('plant_b.sqlite3', 'B')]:
+        for filename, value in [('plant_a.db', 'A'), ('plant_b.db', 'B')]:
             scoped = self.manager.for_database(filename)
             scoped.insert('nodes', {'rows': [{'id': 1, 'name': value}]})
         def read(filename):
             with self.manager.for_database(filename).session('nodes') as table:
                 return table.all()[0]['name']
         with ThreadPoolExecutor(2) as pool:
-            self.assertEqual(list(pool.map(read, ['plant_a.sqlite3', 'plant_b.sqlite3'])), ['A', 'B'])
+            self.assertEqual(list(pool.map(read, ['plant_a.db', 'plant_b.db'])), ['A', 'B'])
         with self.assertRaises((APIError, SchemaError)):
             with self.manager.session('nodes'):
                 pass
         self.assertEqual(len(self.manager.tables()['tables']), 4)
 
     def test_schema_creation_and_rename_stay_in_selected_file(self):
-        a = self.manager.for_database('plant_a.sqlite3')
-        b = self.manager.for_database('plant_b.sqlite3')
+        a = self.manager.for_database('plant_a.db')
+        b = self.manager.for_database('plant_b.db')
         added = table_definition('meters', '电表', 'id')
         a.save_schema('meters', {'definition': added}, creating=True)
         self.assertEqual({t['name'] for t in a.tables()['tables']}, {'nodes', 'lines', 'meters'})
@@ -58,25 +58,25 @@ class DatabaseScopeTests(unittest.TestCase):
         self.assertEqual(len(a.tables()['tables']), 2)
 
     def test_invalid_and_missing_database_are_rejected(self):
-        for filename in ('../plant_a.sqlite3', 'C:/x.sqlite3', 'missing.sqlite3'):
+        for filename in ('../plant_a.db', 'C:/x.db', 'missing.db'):
             with self.assertRaises(APIError):
                 self.manager.for_database(filename)
 
     def test_empty_database_survives_last_table_deletion(self):
         self.manager.create_database_file({'name': 'empty', 'tables': []})
-        scoped = self.manager.for_database('empty.sqlite3')
+        scoped = self.manager.for_database('empty.db')
         self.assertEqual(scoped.tables()['tables'], [])
         added = table_definition('empty', '同名表', 'id')
         scoped.save_schema('empty', {'definition': added}, creating=True)
         scoped.drop('empty', {'confirm': 'empty', 'version': fingerprint(added)})
-        self.assertTrue((self.root / 'data/empty.sqlite3').is_file())
+        self.assertTrue((self.root / 'data/empty.db').is_file())
         self.assertEqual(scoped.tables()['tables'], [])
-        self.assertTrue(self.manager.select_database_file({'filename': 'empty.sqlite3'})['selected'])
+        self.assertTrue(self.manager.select_database_file({'filename': 'empty.db'})['selected'])
 
     def test_legacy_single_file_can_add_tables_without_losing_data(self):
         old = table_definition('legacy', '旧表', 'id')
         self.manager.save_schema('legacy', {'definition': old}, creating=True)
-        scoped = self.manager.for_database('legacy.sqlite3')
+        scoped = self.manager.for_database('legacy.db')
         scoped.insert('legacy', {'rows': [{'id': 1, 'name': 'retained'}]})
         scoped.save_schema('nodes', {'definition': table_definition('nodes', '新表', 'id')}, creating=True)
         with scoped.session('legacy') as table:
@@ -88,26 +88,26 @@ class DatabaseScopeTests(unittest.TestCase):
     def test_scoped_legacy_table_rename_keeps_database_filename(self):
         old = table_definition('legacy', '旧表', 'id')
         self.manager.save_schema('legacy', {'definition': old}, creating=True)
-        scoped = self.manager.for_database('legacy.sqlite3')
+        scoped = self.manager.for_database('legacy.db')
         scoped.insert('legacy', {'rows': [{'id': 1, 'name': 'retained'}]})
         desired = copy.deepcopy(old)
         desired['head']['eng_name'] = 'nodes'
         scoped.save_schema('legacy', {'definition': desired, 'version': fingerprint(old)})
-        self.assertTrue((self.root / 'data/legacy.sqlite3').is_file())
+        self.assertTrue((self.root / 'data/legacy.db').is_file())
         self.assertEqual([t['name'] for t in scoped.tables()['tables']], ['nodes'])
         with scoped.session('nodes') as table:
             self.assertEqual(table.all()[0]['name'], 'retained')
         renamed = copy.deepcopy(desired)
         renamed['head']['eng_name'] = 'plant_b'
         scoped.save_schema('nodes', {'definition':renamed, 'version':fingerprint(desired)})
-        self.assertTrue((self.root / 'data/legacy.sqlite3').is_file())
+        self.assertTrue((self.root / 'data/legacy.db').is_file())
         self.assertEqual([t['name'] for t in scoped.tables()['tables']], ['plant_b'])
 
     def test_embedded_database_does_not_resurrect_stale_json_tables(self):
         self.manager.create_database_file({'name': 'empty', 'tables': []})
         (self.root / 'defs/empty.json').write_text(json.dumps({'database': {'eng_name':'empty'},
             'tables':[table_definition('ghost', '旧定义', 'id')]}), encoding='utf-8')
-        scoped = self.manager.for_database('empty.sqlite3')
+        scoped = self.manager.for_database('empty.db')
         self.assertEqual(scoped.tables()['tables'], [])
         with self.assertRaises(APIError):
             with scoped.session('ghost'):
@@ -129,46 +129,46 @@ class DatabaseScopeTests(unittest.TestCase):
             with response:
                 return response.status, json.loads(response.read())
         try:
-            for filename, value in [('plant_a.sqlite3', 'A'), ('plant_b.sqlite3', 'B')]:
+            for filename, value in [('plant_a.db', 'A'), ('plant_b.db', 'B')]:
                 self.manager.for_database(filename).insert('nodes', {'rows':[{'id':1, 'name':value}]})
             def query(filename):
                 status, data = call('tables/nodes/sql?database='+filename, {'sql':'SELECT * FROM nodes', 'compact':True})
                 self.assertEqual(status, 200, data)
                 return data['records'][0]['row']['name']
             with ThreadPoolExecutor(2) as pool:
-                self.assertEqual(list(pool.map(query, ['plant_a.sqlite3', 'plant_b.sqlite3'])), ['A', 'B'])
-            status, result = call('tables/nodes/sql?database=plant_a.sqlite3',
+                self.assertEqual(list(pool.map(query, ['plant_a.db', 'plant_b.db'])), ['A', 'B'])
+            status, result = call('tables/nodes/sql?database=plant_a.db',
                 {'sql':"UPDATE nodes SET name='updated A' WHERE id=1", 'confirm':'nodes'})
             self.assertEqual(status, 200, result)
-            self.assertEqual(query('plant_b.sqlite3'), 'B')
-            self.assertEqual(query('plant_a.sqlite3'), 'updated A')
+            self.assertEqual(query('plant_b.db'), 'B')
+            self.assertEqual(query('plant_a.db'), 'updated A')
             self.assertNotEqual(call('tables/nodes/sql', {'sql':'SELECT * FROM nodes'})[0], 200)
-            self.assertEqual(call('tables?database=missing.sqlite3')[0], 404)
+            self.assertEqual(call('tables?database=missing.db')[0], 404)
         finally:
             server.shutdown(); server.server_close(); thread.join(3)
 
     def test_import_preview_cannot_be_applied_to_another_database(self):
         from web.definition_import import DefinitionImporter
         payload = {'format':'e', 'text':'<nodes>\n@ id name\n# 1 A\n</nodes>', 'mode':'merge'}
-        a = DefinitionImporter(self.manager.for_database('plant_a.sqlite3'))
-        b = DefinitionImporter(self.manager.for_database('plant_b.sqlite3'))
+        a = DefinitionImporter(self.manager.for_database('plant_a.db'))
+        b = DefinitionImporter(self.manager.for_database('plant_b.db'))
         token = a.run(payload, preview=True)['token']
         with self.assertRaises(APIError):
             b.run({**payload, 'token':token}, preview=False)
 
     def test_scoped_e_import_uses_only_selected_database(self):
         from web.definition_import import DefinitionImporter
-        scoped = self.manager.for_database('plant_a.sqlite3')
+        scoped = self.manager.for_database('plant_a.db')
         payload = {'format': 'e', 'text': '<nodes>\n@ id name\n# 1 A\n</nodes>\n<plant_b>\n@ id name\n# 2 M\n</plant_b>', 'mode': 'merge'}
         importer = DefinitionImporter(scoped)
         preview = importer.run(payload, preview=True)
         result = importer.run({**payload, 'token': preview['token']}, preview=False)
         self.assertTrue(result['ok'], result)
         self.assertEqual(len(scoped.tables()['tables']), 3)
-        self.assertEqual(len(self.manager.for_database('plant_b.sqlite3').tables()['tables']), 2)
+        self.assertEqual(len(self.manager.for_database('plant_b.db').tables()['tables']), 2)
 
     def test_compact_conditional_and_delta_queries(self):
-        scoped = self.manager.for_database('plant_a.sqlite3')
+        scoped = self.manager.for_database('plant_a.db')
         scoped.insert('nodes', {'rows': [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]})
         api = SQLiteManagement(scoped)
         payload = {'sql': 'SELECT * FROM nodes', 'compact': True}

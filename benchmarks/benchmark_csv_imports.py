@@ -30,7 +30,7 @@ def measure(count,repeats=3):
         serial=0
         def run(method,memory=False):
             nonlocal serial
-            serial+=1;database=f'case_{serial}.sqlite3'
+            serial+=1;database=f'case_{serial}.db'
             manager.create_database_file({'name':database[:-8],'tables':[table_definition('nodes','节点','id')]})
             scoped=manager.for_database(database);api=SQLiteManagement(scoped)
             with scoped.session('nodes') as table:

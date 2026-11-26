@@ -65,9 +65,9 @@ class WebPhase4RegressionTests(unittest.TestCase):
             manager.create_database_file({'name': 'station', 'chn_name': '站点', 'tables': [_device_schema()]})
             ro_manager = copy.copy(manager)
             ro_manager.read_only = True
-            scoped = database_snapshots.scope(ro_manager, 'station.sqlite3')
+            scoped = database_snapshots.scope(ro_manager, 'station.db')
             self.assertTrue(scoped.read_only)
-            self.assertEqual(scoped.database_file, 'station.sqlite3')
+            self.assertEqual(scoped.database_file, 'station.db')
         finally:
             manager.close()
 
@@ -127,8 +127,8 @@ class WebPhase4RegressionTests(unittest.TestCase):
         manager = SQLiteManager(self.data_dir, self.schema_dir)
         try:
             manager.create_database_file({'name': 'rcpt', 'chn_name': '回执库', 'tables': [_device_schema()]})
-            scoped = manager.for_database('rcpt.sqlite3')
-            db_path = self.data_dir / 'rcpt.sqlite3'
+            scoped = manager.for_database('rcpt.db')
+            db_path = self.data_dir / 'rcpt.db'
             with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     f'CREATE TABLE {receipt_maintenance.TABLE} '

@@ -330,7 +330,7 @@ class DefinitionImportTests(unittest.TestCase):
         payload, preview = self.preview(DBDEF.replace('meters', 'newmeters'), 'dbdef')
         with patch.object(DefinitionImporter, '_apply_table', fail_after_drop):
             self.assertFalse(self.apply(payload, preview)['ok'])
-        self.assertFalse((self.root / 'sqlite_dat/newmeters.sqlite3').exists())
+        self.assertFalse((self.root / 'sqlite_dat/newmeters.db').exists())
         self.assertFalse((self.root / 'def/table/newmeters.json').exists())
         self.assertTrue(self.apply(payload, preview)['ok'])
 

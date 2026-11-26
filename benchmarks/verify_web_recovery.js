@@ -8,8 +8,8 @@ async (page) => {
   const reload=async()=>{await page.evaluate(async()=>{await localDrafts.flush();localDrafts.suspended=true;state.pendingEdits.clear();state.records=state.records.filter(r=>!r.draftId);state.schemaDirty=false;});await page.reload();await idle();};
   const cell=(row,field)=>page.locator(`#data-grid td[data-cell-row="${row}"][data-cell-field="${field}"]`);
   const edit=async(row,field,value)=>{await cell(row,field).dblclick();const input=cell(row,field).locator('input');await input.fill(value);await input.press('Enter');};
-  const remote=async sql=>{const r=await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.sqlite3',{data:{sql,confirm:'devices'}});if(!r.ok())throw Error(await r.text());return r.json();};
-  const choose=async()=>{await page.locator('#database-select').selectOption('plant_a.sqlite3');await idle();};
+  const remote=async sql=>{const r=await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.db',{data:{sql,confirm:'devices'}});if(!r.ok())throw Error(await r.text());return r.json();};
+  const choose=async()=>{await page.locator('#database-select').selectOption('plant_a.db');await idle();};
   const add=async id=>{
     await cell(4,'value').click({button:'right'});await page.locator('[data-action="add-row"]').click();
     await page.locator('#add-rows-form button[type="submit"]').click();await idle();
@@ -66,15 +66,15 @@ async (page) => {
   // Structure mismatch blocks recovery while allowing draft export.
   await page.locator('#nav-chart').click();await edit(4,'value','45.5');
   await page.waitForFunction(()=>!!localDrafts.read());
-  const schema=await (await page.request.get(origin+'/api/manage/tables/devices/schema?database=plant_a.sqlite3')).json();
+  const schema=await (await page.request.get(origin+'/api/manage/tables/devices/schema?database=plant_a.db')).json();
   const definition=structuredClone(schema.definition);definition.head.chn_name+='恢复检查';
-  const changed=await page.request.put(origin+'/api/manage/tables/devices/schema?database=plant_a.sqlite3',{data:{definition,version:schema.version}});check(changed.ok(),'fixture schema changed');
+  const changed=await page.request.put(origin+'/api/manage/tables/devices/schema?database=plant_a.db',{data:{definition,version:schema.version}});check(changed.ok(),'fixture schema changed');
   await reload();await choose();
   check(await page.locator('#restore-local-draft').isDisabled(),'schema mismatch blocks unsafe draft restore');
   check(await page.locator('#export-local-draft').isEnabled(),'mismatched draft remains exportable');
   await page.locator('#delete-local-draft').click();
-  const latest=await (await page.request.get(origin+'/api/manage/tables/devices/schema?database=plant_a.sqlite3')).json();
-  await page.request.put(origin+'/api/manage/tables/devices/schema?database=plant_a.sqlite3',{data:{definition:schema.definition,version:latest.version}});
+  const latest=await (await page.request.get(origin+'/api/manage/tables/devices/schema?database=plant_a.db')).json();
+  await page.request.put(origin+'/api/manage/tables/devices/schema?database=plant_a.db',{data:{definition:schema.definition,version:latest.version}});
   await remote('DELETE FROM devices WHERE id IN (9001,9002)');await remote("UPDATE devices SET value=10.5,other=11,name='plant_a' WHERE id=5");
   check(errors.length===0,'no browser exceptions');return {passed:checks.length,checks,errors};
 }

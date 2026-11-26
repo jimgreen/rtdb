@@ -45,16 +45,25 @@ const uiThemeAliases = {
 };
 const uiThemes = new Set([
   "minimalist-light",
-  "precision-dark",
+  "arctic-frost",
+  "warm-paper",
+  "slate-daylight",
   "bento-grid",
-  "glassmorphism",
   "editorial",
+  "precision-dark",
+  "ocean-slate",
+  "nord-dark",
+  "industrial-amber",
+  "glassmorphism",
   "sci-fi-cyan",
   "sci-fi-purple",
   "sci-fi-matrix"
 ]);
 const darkThemes = new Set([
   "precision-dark",
+  "ocean-slate",
+  "nord-dark",
+  "industrial-amber",
   "glassmorphism",
   "sci-fi-cyan",
   "sci-fi-purple",
@@ -63,10 +72,16 @@ const darkThemes = new Set([
 // 各视觉风格专属色盲友好 6 色工程序列
 const chartPalettes = {
   "minimalist-light": ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
-  "precision-dark": ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"],
+  "arctic-frost": ["#0284C7", "#0D9488", "#D97706", "#DC2626", "#6366F1", "#4B6A82"],
+  "warm-paper": ["#15803D", "#B45309", "#0369A1", "#B91C1C", "#7C3AED", "#6B6255"],
+  "slate-daylight": ["#1D4ED8", "#047857", "#B45309", "#DC2626", "#6D28D9", "#475569"],
   "bento-grid": ["#0071E3", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#6E6E73"],
-  "glassmorphism": ["#60A5FA", "#FBBF24", "#34D399", "#F472B6", "#A78BFA", "#94A3B8"],
   "editorial": ["#9F1239", "#1D4ED8", "#0F766E", "#A16207", "#6D28D9", "#52525B"],
+  "precision-dark": ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"],
+  "ocean-slate": ["#38BDF8", "#34D399", "#FBBF24", "#FB7185", "#A78BFA", "#8EB2CE"],
+  "nord-dark": ["#88C0D0", "#A3BE8C", "#EBCB8B", "#BF616A", "#B48EAD", "#81A1C1"],
+  "industrial-amber": ["#F59E0B", "#34D399", "#38BDF8", "#F87171", "#C084FC", "#B5AA9A"],
+  "glassmorphism": ["#60A5FA", "#FBBF24", "#34D399", "#F472B6", "#A78BFA", "#94A3B8"],
   "sci-fi-cyan": ["#00E5FF", "#00E6A8", "#FFB020", "#FF4D6D", "#A855F7", "#7DA2C4"],
   "sci-fi-purple": ["#C084FC", "#2DD4BF", "#FBBF24", "#FB7185", "#60A5FA", "#A695C9"],
   "sci-fi-matrix": ["#00E676", "#38BDF8", "#FBBF24", "#FF5C77", "#A78BFA", "#7EB396"]
@@ -104,6 +119,30 @@ function chartThemeTokens() {
       tooltipTitle: "#00E676", tooltipLabel: "#7EB396", tooltipValue: "#E2FBE9"
     };
   }
+  if (theme === "ocean-slate") {
+    return {
+      canvasBg: "#0D2036", gridLine: "rgba(56, 189, 248, 0.12)", axisLine: "rgba(56, 189, 248, 0.28)",
+      axisText: "#8EB2CE", titleColor: "#EAF4FC", cursorLine: "#38BDF8",
+      tooltipBg: "rgba(7, 20, 34, 0.95)", tooltipBorder: "rgba(56, 189, 248, 0.36)",
+      tooltipTitle: "#38BDF8", tooltipLabel: "#8EB2CE", tooltipValue: "#EAF4FC"
+    };
+  }
+  if (theme === "nord-dark") {
+    return {
+      canvasBg: "#2E3440", gridLine: "rgba(216, 222, 233, 0.10)", axisLine: "rgba(216, 222, 233, 0.24)",
+      axisText: "#A5B1C6", titleColor: "#ECEFF4", cursorLine: "#88C0D0",
+      tooltipBg: "rgba(36, 41, 51, 0.96)", tooltipBorder: "rgba(136, 192, 208, 0.38)",
+      tooltipTitle: "#88C0D0", tooltipLabel: "#D8DEE9", tooltipValue: "#ECEFF4"
+    };
+  }
+  if (theme === "industrial-amber") {
+    return {
+      canvasBg: "#1C1A18", gridLine: "rgba(245, 158, 11, 0.13)", axisLine: "rgba(245, 158, 11, 0.30)",
+      axisText: "#B5AA9A", titleColor: "#FAF5ED", cursorLine: "#F59E0B",
+      tooltipBg: "rgba(18, 17, 16, 0.95)", tooltipBorder: "rgba(245, 158, 11, 0.42)",
+      tooltipTitle: "#F59E0B", tooltipLabel: "#D4C8B8", tooltipValue: "#FAF5ED"
+    };
+  }
   if (theme === "glassmorphism") {
     return {
       canvasBg: "#0F172A", gridLine: "rgba(255, 255, 255, 0.10)", axisLine: "rgba(255, 255, 255, 0.24)",
@@ -118,6 +157,30 @@ function chartThemeTokens() {
       axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#94A3B8",
       tooltipBg: "rgba(15, 23, 42, 0.94)", tooltipBorder: "rgba(148, 163, 184, 0.32)",
       tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+    };
+  }
+  if (theme === "arctic-frost") {
+    return {
+      canvasBg: "#FFFFFF", gridLine: "#E3EFF8", axisLine: "#B0CEE5",
+      axisText: "#4B6A82", titleColor: "#0C2233", cursorLine: "#0284C7",
+      tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#B0CEE5",
+      tooltipTitle: "#0C2233", tooltipLabel: "#4B6A82", tooltipValue: "#0C2233"
+    };
+  }
+  if (theme === "warm-paper") {
+    return {
+      canvasBg: "#FFFDF8", gridLine: "#ECE5D8", axisLine: "#CBBFA9",
+      axisText: "#6B6255", titleColor: "#231F1A", cursorLine: "#15803D",
+      tooltipBg: "rgba(255, 253, 248, 0.97)", tooltipBorder: "#CBBFA9",
+      tooltipTitle: "#231F1A", tooltipLabel: "#6B6255", tooltipValue: "#231F1A"
+    };
+  }
+  if (theme === "slate-daylight") {
+    return {
+      canvasBg: "#FAFBFD", gridLine: "#DCE3EC", axisLine: "#94A3B8",
+      axisText: "#475569", titleColor: "#111827", cursorLine: "#1D4ED8",
+      tooltipBg: "rgba(250, 251, 253, 0.97)", tooltipBorder: "#94A3B8",
+      tooltipTitle: "#111827", tooltipLabel: "#475569", tooltipValue: "#111827"
     };
   }
   if (theme === "editorial") {
@@ -648,9 +711,9 @@ async function uploadDatabaseFile() {
   if (!files.length) throw new Error("请选择数据库文件");
   const total = files.reduce((sum, file) => sum + file.size, 0);
   if (files.some((file) => file.size > 16 * 1024 * 1024) || total > 22 * 1024 * 1024) throw new Error("单个文件不超过 16 MiB，合计不超过 22 MiB");
-  const database = files.find((file) => /\.sqlite3$/i.test(file.name));
-  if (!database) throw new Error("必须选择 .sqlite3 数据库文件");
-  const name = database.name.replace(/\.sqlite3$/i, "");
+  const database = files.find((file) => /\.db$/i.test(file.name));
+  if (!database) throw new Error("必须选择 .db 数据库文件");
+  const name = database.name.replace(/\.db$/i, "");
   const listing = await request("database-files");
   const existing = listing.files.some((item) => item.filename === database.name);
   if (existing && !await confirmAction("覆盖服务端数据库文件", `将覆盖服务端 ${database.name}，同时更新同名定义文件。`, name)) return;
@@ -1446,7 +1509,7 @@ const dbQuickSwitcher = {
         btn.type = "button";
         btn.setAttribute("role", "menuitem");
         const nameSpan = node("span", item.filename, "db-quick-name");
-        const meta = item.error ? "异常" : item.read_only ? "只读" : (item.label && item.label !== item.filename.replace(/\.sqlite3$/i, "") ? item.label : "");
+        const meta = item.error ? "异常" : item.read_only ? "只读" : (item.label && item.label !== item.filename.replace(/\.db$/i, "") ? item.label : "");
         btn.append(nameSpan);
         if (meta) btn.append(node("span", meta, `db-quick-meta${item.error ? " is-danger" : ""}`));
         btn.onclick = () => {
@@ -1553,7 +1616,7 @@ function renderCurrentDatabaseFile() {
   if (!target) return;
   const labelTarget = el("current-database-label") || target;
   const item = state.tables.find((entry) => entry.name === state.table);
-  const filename = state.database || (state.table ? item?.database_file || `${state.table}.sqlite3` : "");
+  const filename = state.database || (state.table ? item?.database_file || `${state.table}.db` : "");
   const relDir = dbQuickSwitcher.normalizeDir(workspacePath);
   const displayPath = filename ? (relDir ? `${relDir}/${filename}` : filename) : "";
   const directory = state.dataDir === "." ? "" : state.dataDir.replace(/[\\/]+$/, "");

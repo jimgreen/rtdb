@@ -20,7 +20,7 @@ def crash_after_commit(root, ident):
     from web.sqlite_service import SQLiteManager
     root=Path(root)
     manager=SQLiteManager(root/'data',root/'defs')
-    scoped=manager.for_database('plant_a.sqlite3')
+    scoped=manager.for_database('plant_a.db')
     registry=TaskRegistry(root/'tasks')
     def dispatch(*args):
         scoped.insert('nodes',{'rows':[{'id':1,'name':'committed before crash'}]})
@@ -34,7 +34,7 @@ class PersistentTaskTests(unittest.TestCase):
         test_database_scope.DatabaseScopeTests.setUp(self)
         self.directory=self.root/'tasks'
         self.registry=TaskRegistry(self.directory)
-        self.scoped=self.manager.for_database('plant_a.sqlite3')
+        self.scoped=self.manager.for_database('plant_a.db')
         self.calls=0
         def dispatch(*args):
             self.calls+=1
@@ -77,9 +77,9 @@ class PersistentTaskTests(unittest.TestCase):
         self.assertEqual(caught.exception.status,409);self.assertEqual(self.calls,1)
 
     def test_interrupted_receipt_is_not_reexecuted(self):
-        task=dict(id=self.ident,database='plant_a.sqlite3',method='PUT',path='tables/nodes/cell-edits',
+        task=dict(id=self.ident,database='plant_a.db',method='PUT',path='tables/nodes/cell-edits',
             created=1,status='running',phase='提交中',cancellable=False,completed_tables=['first'])
-        signature=request_fingerprint('plant_a.sqlite3','PUT',['tables','nodes','cell-edits'],{},{})
+        signature=request_fingerprint('plant_a.db','PUT',['tables','nodes','cell-edits'],{},{})
         self.registry.store.put(task,signature)
         self.restart();result=self.submit()
         self.assertEqual(result['status'],'interrupted');self.assertEqual(result['completed_tables'],['first'])
@@ -87,7 +87,7 @@ class PersistentTaskTests(unittest.TestCase):
 
     def test_receipt_database_isolation_and_no_payload_storage(self):
         self.finish(self.submit({'secret_input':'not-stored'}))
-        with self.assertRaises(APIError):self.registry.get(self.ident,'plant_b.sqlite3')
+        with self.assertRaises(APIError):self.registry.get(self.ident,'plant_b.db')
         with closing(sqlite3.connect(self.registry.store.path)) as c:
             stored=c.execute('SELECT state FROM tasks').fetchone()[0]
         self.assertNotIn('secret_input',stored)
@@ -130,7 +130,7 @@ class PersistentTaskHTTPTests(unittest.TestCase):
 
     def test_put_receipt_and_duplicate_insert_protection(self):
         ident='b'*32
-        path='/api/manage/tables/devices/cell-edits?database=devices.sqlite3&background=1&request_id='+ident
+        path='/api/manage/tables/devices/cell-edits?database=devices.db&background=1&request_id='+ident
         payload={'inserts':[test_sqlite_server.record(77)]}
         original=TaskRegistry.wait_initial
         with patch.object(TaskRegistry,'wait_initial',lambda registry,ident,database:original(registry,ident,database,5)):
@@ -138,9 +138,9 @@ class PersistentTaskHTTPTests(unittest.TestCase):
             again=self.call('PUT',path,payload)
             self.assertEqual(first,again);self.assertEqual(first['inserted'],1)
             self.call('PUT',path,{'inserts':[test_sqlite_server.record(78)]},status=409)
-        receipt=self.call('GET','/api/manage/tasks/'+ident+'?database=devices.sqlite3')
+        receipt=self.call('GET','/api/manage/tasks/'+ident+'?database=devices.db')
         self.assertEqual(receipt['status'],'done')
-        self.assertEqual(self.call('GET','/api/manage/tables/devices/rows?database=devices.sqlite3')['total'],1)
+        self.assertEqual(self.call('GET','/api/manage/tables/devices/rows?database=devices.db')['total'],1)
 
     def test_post_background_and_scoped_cancel(self):
         entered,release=threading.Event(),threading.Event();original=SQLiteManagement.dispatch
@@ -149,9 +149,9 @@ class PersistentTaskHTTPTests(unittest.TestCase):
             return original(api,method,parts,query,payload)
         try:
             with patch.object(SQLiteManagement,'dispatch',slow):
-                task=self.call('POST','/api/manage/backup?database=devices.sqlite3&background=1',{'tables':['devices']},status=202)['task']
+                task=self.call('POST','/api/manage/backup?database=devices.db&background=1',{'tables':['devices']},status=202)['task']
                 self.assertTrue(entered.is_set())
-                self.call('POST','/api/manage/tasks/'+task['id']+'/cancel?database=devices.sqlite3',{})
-                release.set();self.server.tasks.wait_initial(task['id'],'devices.sqlite3',5)
-                self.assertEqual(self.call('GET','/api/manage/tasks/'+task['id']+'?database=devices.sqlite3')['status'],'cancelled')
+                self.call('POST','/api/manage/tasks/'+task['id']+'/cancel?database=devices.db',{})
+                release.set();self.server.tasks.wait_initial(task['id'],'devices.db',5)
+                self.assertEqual(self.call('GET','/api/manage/tasks/'+task['id']+'?database=devices.db')['status'],'cancelled')
         finally:release.set()

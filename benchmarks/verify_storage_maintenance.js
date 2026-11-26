@@ -32,7 +32,7 @@ async(page)=>{
   await page.waitForFunction(()=>!storageMaintenance.busy&&document.getElementById('storage-status').textContent.startsWith('已处理'));
   check(await page.locator('#storage-candidates tbody tr').count()===0,'confirmed background cleanup removes old candidates');
   check(!await page.locator('#storage-clean').isEnabled(),'empty cleanup disabled');
-  const rows=await page.request.get(new URL('/api/manage/tables/nodes/rows?database=storage_lab.sqlite3',page.url()).href);
+  const rows=await page.request.get(new URL('/api/manage/tables/nodes/rows?database=storage_lab.db',page.url()).href);
   const data=await rows.json();check(data.total===1||data.count===1||data.rows?.length===1,'business record survives cleanup');
   const recent=await (await page.request.get(new URL('/api/manage/tasks',page.url()).href)).json();
   check(recent.tasks.some(t=>t.path==='storage-maintenance'&&t.status==='done'),'cleanup task persisted');

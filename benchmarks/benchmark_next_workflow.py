@@ -26,7 +26,7 @@ from web import write_receipts
 def saves(root):
     server=create_sqlite_server('127.0.0.1',0,root=root)
     server.sqlite_manager.create_database_file({'name':'lab','tables':[definition()]})
-    manager=server.sqlite_manager.for_database('lab.sqlite3');manager.insert('samples',{'rows':[{'id':i,'v01':0} for i in range(1,501)]})
+    manager=server.sqlite_manager.for_database('lab.db');manager.insert('samples',{'rows':[{'id':i,'v01':0} for i in range(1,501)]})
     thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01});thread.start()
     origin=f'http://127.0.0.1:{server.server_port}';groups=[]
     def call(method,path,body=None):
@@ -43,13 +43,13 @@ def saves(root):
                     payload={'changes':[{'ref':r['ref'],'values':{'v01':value}} for r in records]}
                     ident=uuid.uuid4().hex;requests=0;started=time.perf_counter()
                     if mode=='previous':
-                        assert call('POST','/api/manage/tables/samples/validate-edits?database=lab.sqlite3',payload)['ok'];requests+=1
-                    result=call('PUT','/api/manage/tables/samples/cell-edits?database=lab.sqlite3&background=1&request_id='+ident,payload);requests+=1
+                        assert call('POST','/api/manage/tables/samples/validate-edits?database=lab.db',payload)['ok'];requests+=1
+                    result=call('PUT','/api/manage/tables/samples/cell-edits?database=lab.db&background=1&request_id='+ident,payload);requests+=1
                     while 'task' in result:
                         task=result['task']
                         if task['status']=='done':result=task['result'];break
                         assert task['status'] in ('queued','running'),task
-                        url='/api/manage/tasks/'+ident+'?database=lab.sqlite3'
+                        url='/api/manage/tasks/'+ident+'?database=lab.db'
                         if mode=='previous':time.sleep(.15)
                         else:url+='&wait=2&revision='+str(task.get('revision',0))
                         result={'task':call('GET',url)};requests+=1
@@ -57,7 +57,7 @@ def saves(root):
                     assert result['updated']==count
                     assert server.audit_delivery.drain(10)
                     logged=(time.perf_counter()-started)*1000
-                    timings=server.tasks.get(ident,'lab.sqlite3')['timings']
+                    timings=server.tasks.get(ident,'lab.db')['timings']
                     assert all(r['row']['v01']==value for r in SQLiteManagement(manager).rows('samples',{'limit':500})['records'][:count])
                     if iteration>=0:samples[mode].append({'save_ms':saved,'log_complete_ms':logged,'requests':requests,'phases':timings})
             groups.append({'rows':count,'timings':{mode:{key:summary([s[key] for s in values]) for key in ('save_ms','log_complete_ms','requests')} for mode,values in samples.items()},'samples':samples})
@@ -79,8 +79,8 @@ def scheduling():
                 registry=TaskRegistry()
                 def submit(database,callback):return registry.submit(SimpleNamespace(manager=SimpleNamespace(database_file=database),dispatch=callback),'POST',['definition-preview'],{}, {})
                 try:
-                    submit('a.sqlite3',busy);submit('a.sqlite3',busy);assert entered.wait(2)
-                    started=time.perf_counter();task=submit('b.sqlite3',lambda *_:{'ok':True})
+                    submit('a.db',busy);submit('a.db',busy);assert entered.wait(2)
+                    started=time.perf_counter();task=submit('b.db',lambda *_:{'ok':True})
                     assert registry.wait_initial(task['id'],task['database'],2)['status']=='done';elapsed=(time.perf_counter()-started)*1000
                 finally:registry.close()
             if iteration>=0:samples[mode].append(elapsed)
@@ -90,14 +90,14 @@ def scheduling():
 
 def compression(root):
     manager=SQLiteManager(root/'data',root/'defs');manager.create_database_file({'name':'lab','tables':[definition()]})
-    scoped=manager.for_database('lab.sqlite3');api=SQLiteManagement(scoped)
+    scoped=manager.for_database('lab.db');api=SQLiteManagement(scoped)
     try:
         api.dispatch('POST',['tables','samples','rows'],{}, {'rows':[{'id':1,'v01':1}]})
         with closing(sqlite3.connect(scoped.data_dir/scoped.database_file)) as c,c:
             result=json.dumps({'updated':500,'columns':['value_'+str(i) for i in range(40)]})
             c.execute('DELETE FROM rtdb_web_commits')
             for i in range(2000):
-                event=json.dumps({'id':f'{i:032x}','timestamp':'2020-01-01T00:00:00Z','database':'lab.sqlite3','operation':'修改单元格数据','status':'success','result':{'updated':500}},ensure_ascii=False)
+                event=json.dumps({'id':f'{i:032x}','timestamp':'2020-01-01T00:00:00Z','database':'lab.db','operation':'修改单元格数据','status':'success','result':{'updated':500}},ensure_ascii=False)
                 c.execute('INSERT INTO rtdb_web_commits VALUES(?,?,?,?,1)',(f'{i:032x}','fixture',result,event))
         timings=[];batches=[]
         while True:

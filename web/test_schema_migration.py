@@ -166,8 +166,8 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(response['name'], 'renamed_devices')
         self.assertFalse((self.root / 'def/table/devices.json').exists())
         self.assertTrue((self.root / 'def/table/renamed_devices.json').exists())
-        self.assertFalse((self.root / 'sqlite_dat/devices.sqlite3').exists())
-        self.assertTrue((self.root / 'sqlite_dat/renamed_devices.sqlite3').exists())
+        self.assertFalse((self.root / 'sqlite_dat/devices.db').exists())
+        self.assertTrue((self.root / 'sqlite_dat/renamed_devices.db').exists())
         rows = self.call('GET', '/api/sqlite/tables/renamed_devices/rows')['rows']
         self.assertEqual(rows[0]['device_id'], '1')
         self.assertEqual(rows[0]['reading'], 1)

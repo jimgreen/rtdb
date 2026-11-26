@@ -1,7 +1,7 @@
 """独立侧库采样点定义与后台历史趋势采集服务。
 
 参考 SCADA 采样点与曲线板（PointTrendHistory）设计，并升级为分点独立参数：
-- 不侵入业务 SQLite 库，在 <data_dir>/.rtdb-trends/<hash>.sqlite3 独立保存采样配置与分点样本；
+- 不侵入业务 SQLite 库，在 <data_dir>/.rtdb-trends/<hash>.db 独立保存采样配置与分点样本；
 - 支持任意 RTDB 标准表及原生 SQLite 表的数值 / 布尔字段按主键定位采集（每库最多 24 点）；
 - 每个采样点独立定义采样周期（interval_seconds，单位秒）与后台留存点数（retention_points，单位点数）；
 - 后台守护线程按各点独立节拍批量只读采集、按各自留存点数精确裁剪并定期执行增量 vacuum；
@@ -483,7 +483,7 @@ class SampleTrendHistory:
         self._stop = threading.Event()
         self._closed = False
         self._thread: threading.Thread | None = None
-        self._file_lock = _FileLock(storage_path.with_suffix('.sqlite3.lock'))
+        self._file_lock = _FileLock(storage_path.with_suffix('.db.lock'))
         self._conn: sqlite3.Connection | None = None
         self._settings = default_settings()
         self._revision = self._compute_revision(self._settings)
@@ -880,7 +880,7 @@ class SampleTrendRegistry:
 
     def _storage_path(self, db_key: str) -> Path:
         digest = hashlib.sha256(db_key.encode('utf-8')).hexdigest()[:32]
-        return self.trends_dir / f'{digest}.sqlite3'
+        return self.trends_dir / f'{digest}.db'
 
     def for_manager(self, manager) -> SampleTrendHistory:
         db_key = manager.database_file or '__default__'

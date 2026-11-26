@@ -29,7 +29,7 @@ class StorageTests(unittest.TestCase):
 
     def upload(self, state='receiving', days=40):
         ident = uuid.uuid4().hex
-        uploads.create(self.manager, dict(id=ident, filename='test.sqlite3', size=10))
+        uploads.create(self.manager, dict(id=ident, filename='test.db', size=10))
         folder = uploads.session_path(self.manager, ident)
         meta = folder/'state.json'
         value = json.loads(meta.read_text(encoding='utf-8'))
@@ -39,9 +39,9 @@ class StorageTests(unittest.TestCase):
         return folder
 
     def snap(self):
-        item = snapshots.create(self.manager.for_database('plant_a.sqlite3'))
+        item = snapshots.create(self.manager.for_database('plant_a.db'))
         root = snapshots.directory(self.manager)
-        for ext in ('.sqlite3', '.json'): self.age(root/(item['id']+ext))
+        for ext in ('.db', '.json'): self.age(root/(item['id']+ext))
         return item
 
     def task(self, store, status='done', days=40, **extra):
@@ -58,7 +58,7 @@ class StorageTests(unittest.TestCase):
         return self.service.clean({'token':self.service.preview()['token']})
 
     def test_stats_and_cleanup_preserve_business_database(self):
-        source = self.manager.data_dir/'plant_a.sqlite3'
+        source = self.manager.data_dir/'plant_a.db'
         before = source.read_bytes()
         folder = self.upload()
         self.manager.record_operation(category='system',operation='fixture',status='success',http_status=200,method='GET',path='/fixture')
@@ -76,7 +76,7 @@ class StorageTests(unittest.TestCase):
         self.service.configure({**storage.DEFAULTS,'snapshot_retention_days':0})
         self.assertEqual(self.clean()['cleaned'],1)
         self.assertFalse(folder.exists())
-        path = snapshots.directory(self.manager)/(item['id']+'.sqlite3')
+        path = snapshots.directory(self.manager)/(item['id']+'.db')
         self.assertTrue(path.exists())
         self.service.configure(storage.DEFAULTS)
         self.assertEqual(self.clean()['cleaned'],1)
@@ -88,8 +88,8 @@ class StorageTests(unittest.TestCase):
         other = self.upload()
         (other/'do-not-delete.txt').write_text('user file')
         root = snapshots.directory(self.manager)
-        orphan = root/(uuid.uuid4().hex+'.sqlite3');orphan.write_bytes(b'unknown');self.age(orphan)
-        temporary = root/'.building-old';temporary.mkdir();(temporary/'snapshot.sqlite3').write_bytes(b'temp');self.age(temporary)
+        orphan = root/(uuid.uuid4().hex+'.db');orphan.write_bytes(b'unknown');self.age(orphan)
+        temporary = root/'.building-old';temporary.mkdir();(temporary/'snapshot.db').write_bytes(b'temp');self.age(temporary)
         preview = self.service.preview()
         self.assertFalse(preview['candidates'])
         self.assertEqual(preview['protected_count'],4)
@@ -99,7 +99,7 @@ class StorageTests(unittest.TestCase):
     def test_preview_change_rejects_all_deletion(self):
         folder = self.upload();self.snap()
         preview = self.service.preview()
-        (folder/'payload.sqlite3').write_bytes(b'new data')
+        (folder/'payload.db').write_bytes(b'new data')
         with self.assertRaisesRegex(APIError, '变化'):
             self.service.clean({'token':preview['token']})
         self.assertTrue(folder.exists())
@@ -188,7 +188,7 @@ class StorageTests(unittest.TestCase):
 
     def test_recent_file_is_not_candidate_even_when_state_is_old(self):
         folder=self.upload()
-        (folder/'payload.sqlite3').write_bytes(b'new')
+        (folder/'payload.db').write_bytes(b'new')
         self.assertFalse(self.service.preview()['candidates'])
 
     def test_result_auto_expiration_obeys_retention(self):

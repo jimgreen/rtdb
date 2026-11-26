@@ -23,7 +23,7 @@ class ScadaNativeSQLiteTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.schema_dir = self.root / 'definitions'
-        self.path = self.root / 'scdfe_c.sqlite3'
+        self.path = self.root / 'scdfe_c.db'
         self.columns = [self._column('rtu_id', 'int', True), self._column('pnt_no', 'int', True),
                         self._column('value', 'float'), self._column('payload', 'blob')]
         with closing(sqlite3.connect(self.path)) as connection, connection:
@@ -188,7 +188,7 @@ class ScadaNativeSQLiteTests(unittest.TestCase):
             self.assertEqual(connection.execute('PRAGMA index_info(fes_yc_value)').fetchone()[2], 'value')
 
     def test_dotted_scada_database_filename_round_trips_through_manager(self):
-        self.path = self.path.rename(self.root / 'scdfe_s.scdfe_s.connections.sqlite3')
+        self.path = self.path.rename(self.root / 'scdfe_s.scdfe_s.connections.db')
         manager = SQLiteManager(self.root, self.schema_dir)
         self.addCleanup(manager.close)
         self.assertTrue(manager.select_database_file({'filename': self.path.name})['selected'])

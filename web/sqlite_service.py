@@ -27,8 +27,9 @@ from pathlib import Path
 
 from core import SQLiteDatabase, TableDefinition, SchemaError, SchemaRegistry, load_database_definition
 from core.sqlite_db import _INT, _FLOAT, _BOOL, _TEXT, _OBJECT, _BLOB
-from core.sqlite_schema import (_read_embedded_database, ensure_embedded_schema, find_embedded_table, load_embedded_database,
-                                native_database, remove_embedded_definition, sqlite_filename, validate_native_table,
+from core.sqlite_schema import (DB_SUFFIX, _read_embedded_database, ensure_embedded_schema, find_embedded_table,
+                                is_rtdb_database_file, load_embedded_database, native_database,
+                                remove_embedded_definition, sqlite_filename, validate_native_table,
                                 write_embedded_definition)
 from core.definition_files import python_definition, normalize_definition_labels
 from .audit import OperationAuditLog, error_summary, result_summary
@@ -173,7 +174,7 @@ def _rename_shared_table(connection, old_name, new_name, desired=None):
 
 
 def _sqlite_bundle(root, name):
-    base = Path(root) / (name + '.sqlite3')
+    base = Path(root) / (name + DB_SUFFIX)
     return [base, Path(str(base) + '-wal'), Path(str(base) + '-shm')]
 
 
@@ -192,7 +193,7 @@ def _rename_sqlite_bundle(root, old_name, new_name):
             os.replace(source_path, target_path)
 
 
-_DATABASE_FILE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\.sqlite3$')
+_DATABASE_FILE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\.db$')
 _DATABASE_JSON_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\.json$')
 _DATABASE_SIDE_FILES = ('-wal', '-shm')
 _MAX_DATABASE_UPLOAD_BYTES = 16 * 1024 * 1024
@@ -203,8 +204,8 @@ def is_native_database(path):
     return sqlite_filename(path.name) and native_database(path)
 
 
-def is_listed_database(path):
-    return path.is_file() and (_DATABASE_FILE_RE.fullmatch(path.name) or is_native_database(path))
+def is_listed_database(path, schema_dir=None):
+    return path.is_file() and (is_rtdb_database_file(path, schema_dir) or is_native_database(path))
 
 
 def _file_mtime(path):
@@ -505,7 +506,7 @@ class SQLiteManager:
                 except Exception:
                     pass
                 scoped.database_file = database_file or (
-                    raw_tag if Path(raw_tag).suffix.lower() in ('.db', '.sqlite', '.sqlite3') else raw_tag + '.sqlite3'
+                    raw_tag if Path(raw_tag).suffix.lower() in ('.db', '.sqlite', '.sqlite3') else raw_tag + DB_SUFFIX
                 )
                 scoped._journal = journal
                 scoped._recover()
@@ -562,12 +563,12 @@ class SQLiteManager:
                 (self.schema_dir / (path.stem + '.json')).is_file()):
             raise APIError(404, f'数据库文件不存在：{filename}')
         native = is_native_database(path)
-        if not native and not _DATABASE_FILE_RE.fullmatch(filename):
+        if not native and (not _DATABASE_FILE_RE.fullmatch(filename) or (path.is_file() and not is_rtdb_database_file(path, self.schema_dir))):
             raise APIError(404, f'找不到带内置结构的外部数据库：{filename}')
         scoped = copy.copy(self)  # Request-local identity; locks/audit remain shared.
         scoped.database_file = filename
         scoped.native = native
-        tag = path.stem if path.suffix.lower() == '.sqlite3' else filename
+        tag = path.stem if path.suffix.lower() == DB_SUFFIX else filename
         scoped._journal = self.schema_dir / ('.sqlite-web.' + tag + '.pending.json')
         return scoped
 
@@ -592,9 +593,9 @@ class SQLiteManager:
 
     def databases(self):
         files = {p.name for p in self.data_dir.iterdir()
-                 if p.resolve() == p and is_listed_database(p)}
-        files.update(p.stem + '.sqlite3' for p in self.schema_dir.glob('*.json')
-                     if _DATABASE_FILE_RE.fullmatch(p.stem + '.sqlite3'))
+                 if p.resolve() == p and is_listed_database(p, self.schema_dir)}
+        files.update(p.stem + DB_SUFFIX for p in self.schema_dir.glob('*.json')
+                     if _DATABASE_FILE_RE.fullmatch(p.stem + DB_SUFFIX))
         items = []
         for filename in sorted(files, key=str.lower):
             try:
@@ -651,16 +652,16 @@ class SQLiteManager:
             return embedded[1].path
         try:
             source = self.definition_source(name)
-            return self.data_dir / (source.stem + '.sqlite3')
+            return self.data_dir / (source.stem + DB_SUFFIX)
         except APIError:
-            return self.data_dir / ((fallback or name) + '.sqlite3')
+            return self.data_dir / ((fallback or name) + DB_SUFFIX)
 
     def _recover(self):
         if not self._journal.exists():
             return
         pending = json.loads(self._journal.read_text(encoding='utf-8'))
         if self.strict_paths:
-            for key, directory, suffix in (('database_path', self.data_dir, '.sqlite3'),
+            for key, directory, suffix in (('database_path', self.data_dir, DB_SUFFIX),
                                            ('schema_path', self.schema_dir, '.json')):
                 if key in pending:
                     target = Path(pending[key])
@@ -707,8 +708,8 @@ class SQLiteManager:
         old_definition, new_definition = pending.get('old'), pending.get('new')
         old_fingerprint = fingerprint(old_definition) if old_definition else None
         new_fingerprint = fingerprint(new_definition) if new_definition else None
-        old_path = self.data_dir / (old_name + '.sqlite3')
-        new_path = self.data_dir / (new_name + '.sqlite3')
+        old_path = self.data_dir / (old_name + DB_SUFFIX)
+        new_path = self.data_dir / (new_name + DB_SUFFIX)
         old_actual = _sqlite_fingerprint(old_path)
         new_actual = _sqlite_fingerprint(new_path) if new_name != old_name else None
 
@@ -906,7 +907,7 @@ class SQLiteManager:
     def database_files(self):
         files = []
         for path in sorted(self.data_dir.iterdir(), key=lambda candidate: candidate.name.lower()):
-            if path.resolve() != path or not is_listed_database(path):
+            if path.resolve() != path or not is_listed_database(path, self.schema_dir):
                 continue
             try:
                 files.append(self._database_file_snapshot(path, check_integrity=False))
@@ -934,7 +935,7 @@ class SQLiteManager:
     def _database_filename(payload):
         filename = payload.get('filename') if isinstance(payload, dict) else None
         if not isinstance(filename, str) or not _DATABASE_FILE_RE.fullmatch(filename):
-            raise APIError(400, '请选择有效的 .sqlite3 数据库文件')
+            raise APIError(400, '请选择有效的 .db 数据库文件')
         return filename
 
     def rebuild_embedded_definition(self, payload):
@@ -1140,10 +1141,10 @@ class SQLiteManager:
                 except SchemaError as error:
                     raise APIError(422, f'{table_name} 定义无效：{error}') from error
             target_json = self.schema_dir / (name + '.json')
-            target_db = self.data_dir / (name + '.sqlite3')
+            target_db = self.data_dir / (name + DB_SUFFIX)
             target_python = self.schema_dir / (name + '.py')
             if any(path.exists() for path in (target_json, target_db, target_python)):
-                raise APIError(409, f'数据库文件已存在：{name}.sqlite3')
+                raise APIError(409, f'数据库文件已存在：{name}{DB_SUFFIX}')
             document = {'database': {'eng_name': name, 'chn_name': label.strip()},
                         'tables': [definition.to_mapping() for definition in definitions]}
             atomic_json(target_json, document)
@@ -1151,7 +1152,7 @@ class SQLiteManager:
                 if not definitions:
                     with closing(sqlite3.connect(target_db)) as connection, connection:
                         ensure_embedded_schema(connection, name, label.strip())
-                with self._database(name + '.sqlite3') as db:
+                with self._database(name + DB_SUFFIX) as db:
                     for definition in definitions:
                         db[definition.eng_name]
                 atomic_text(target_python, python_definition(document))
@@ -1182,7 +1183,7 @@ class SQLiteManager:
             definition.setdefault('head', {})['eng_name'] = name
             definition['head'].setdefault('chn_name', label.strip())
         result = self.save_schema(name, {'definition': definition}, creating=True, _already_locked=True)
-        return {'created': True, 'filename': name + '.sqlite3', **result}
+        return {'created': True, 'filename': name + DB_SUFFIX, **result}
 
     @staticmethod
     def _decode_database_upload(item):
@@ -1207,13 +1208,13 @@ class SQLiteManager:
             raise APIError(400, '上传文件名不能重复')
         database_items = [(name, content) for name, content in decoded if _DATABASE_FILE_RE.fullmatch(name)]
         if len(database_items) != 1:
-            raise APIError(400, '必须且只能上传一个 .sqlite3 数据库文件')
+            raise APIError(400, '必须且只能上传一个 .db 数据库文件')
         database_name, database_bytes = database_items[0]
-        name = database_name[:-len('.sqlite3')]
+        name = database_name[:-len(DB_SUFFIX)]
         expected = {name + '.json', database_name + '-wal', database_name + '-shm'}
         unknown = set(names) - {database_name} - expected
         if unknown:
-            raise APIError(400, '只支持同名 .json、.sqlite3-wal 和 .sqlite3-shm 文件')
+            raise APIError(400, '只支持同名 .json、.db-wal 和 .db-shm 文件')
         json_items = [(file_name, content) for file_name, content in decoded if _DATABASE_JSON_RE.fullmatch(file_name)]
         if len(json_items) > 1 or (json_items and json_items[0][0] != name + '.json'):
             raise APIError(400, 'JSON 定义文件必须与数据库文件同名')
@@ -1408,7 +1409,7 @@ class SQLiteManager:
                 else:
                     definition = db.schema_registry.load(name)
                     document = db.schema_registry.database_definition(name)
-                    database_path = self.data_dir / (self.database_file or (document.eng_name + '.sqlite3'))
+                    database_path = self.data_dir / (self.database_file or (document.eng_name + DB_SUFFIX))
                 item = dict(name=name, definition=definition.to_mapping(), schema_version=fingerprint(definition.to_mapping()),
                             database_file=database_path.name, database_name=database_path.stem,
                             orphan=False, selectable=True)
@@ -1422,16 +1423,16 @@ class SQLiteManager:
                 except (SchemaError, sqlite3.Error) as exc:
                     item.update(row_count=None, bytes=0, error=str(exc))
                 result.append(item)
-        for path in sorted(self.data_dir.glob('*.sqlite3'), key=lambda candidate: candidate.name.lower()):
+        for path in sorted(self.data_dir.glob('*' + DB_SUFFIX), key=lambda candidate: candidate.name.lower()):
             if self.database_file and path.name != self.database_file:
                 continue
-            if not _DATABASE_FILE_RE.fullmatch(path.name) or path.name in known_database_files:
+            if not _DATABASE_FILE_RE.fullmatch(path.name) or path.name in known_database_files or not is_rtdb_database_file(path, self.schema_dir):
                 continue
             name = path.stem
             definition = {'head': {'chn_name': '缺少内置结构定义', 'eng_name': name}, 'columns': []}
             result.append(dict(name=name, definition=definition, schema_version=None,
                                row_count=None, bytes=path.stat().st_size, database_file=path.name,
-                               database_name=name, error=f'缺少 {name}.sqlite3 内置结构定义',
+                               database_name=name, error=f'缺少 {name}{DB_SUFFIX} 内置结构定义',
                                orphan=True, selectable=False))
         result.sort(key=lambda item: item['name'].lower())
         return {'tables': result}
@@ -1928,7 +1929,7 @@ class SQLiteManager:
         if creating:
             filename = payload.get('database_file')
             if isinstance(filename, str) and '.' not in filename:
-                filename += '.sqlite3'
+                filename += DB_SUFFIX
             if sqlite_filename(filename):
                 path = self.data_dir / filename
                 if path.resolve() == path and is_native_database(path):
@@ -1958,14 +1959,14 @@ class SQLiteManager:
             if creating and payload.get('database_file'):
                 database_file = payload.get('database_file')
                 if not isinstance(database_file, str):
-                    raise APIError(400, 'database_file 必须是 .sqlite3 文件名')
-                database_name = database_file[:-len('.sqlite3')] if database_file.endswith('.sqlite3') else database_file
+                    raise APIError(400, 'database_file 必须是 .db 文件名')
+                database_name = database_file[:-len(DB_SUFFIX)] if database_file.endswith(DB_SUFFIX) else database_file
                 database_name = self.name(database_name)
                 grouped_schema = self.schema_dir / (database_name + '.json')
-                grouped_db = self.data_dir / (database_name + '.sqlite3')
+                grouped_db = self.data_dir / (database_name + DB_SUFFIX)
                 self.require_writable(path=grouped_db)
                 if not grouped_db.is_file():
-                    raise APIError(404, f'目标数据库文件不存在：{database_name}.sqlite3')
+                    raise APIError(404, f'目标数据库文件不存在：{database_name}{DB_SUFFIX}')
                 embedded_document = load_embedded_database(grouped_db)
                 raw_document = embedded_document.to_mapping() if embedded_document else _read_definition_json(grouped_schema)
                 if not (isinstance(raw_document, dict) and isinstance(raw_document.get('tables'), list)):
@@ -1976,13 +1977,13 @@ class SQLiteManager:
                 new_document = copy.deepcopy(raw_document)
                 new_document['tables'].append(desired.to_mapping())
                 if embedded_document and not embedded_document.is_grouped:
-                    self._promote_single_table(database_name + '.sqlite3', embedded_document.tables[0].eng_name)
+                    self._promote_single_table(database_name + DB_SUFFIX, embedded_document.tables[0].eng_name)
                 if self.database_file:
                     from .schema_operations import create
                     return create(self,desired)
                 atomic_json(grouped_schema, new_document)
                 try:
-                    with self._database(database_name + '.sqlite3') as db:
+                    with self._database(database_name + DB_SUFFIX) as db:
                         db[new_name]
                     atomic_text(grouped_schema.with_suffix('.py'), python_definition(new_document))
                 except BaseException:
@@ -2009,8 +2010,8 @@ class SQLiteManager:
                 target_exists = embedded_target_exists
             if creating and (target_exists or embedded_target_exists):
                 raise APIError(409, '表名已存在')
-            if creating and (self.data_dir / (new_name + '.sqlite3')).exists():
-                raise APIError(409, f'数据库文件已存在但缺少可用的内置结构定义：{new_name}.sqlite3，请先加载 JSON 定义或恢复结构')
+            if creating and (self.data_dir / (new_name + DB_SUFFIX)).exists():
+                raise APIError(409, f'数据库文件已存在但缺少可用的内置结构定义：{new_name}{DB_SUFFIX}，请先加载 JSON 定义或恢复结构')
             if not creating and not exists:
                 raise APIError(404, '表不存在')
             if not creating and new_name != old_name and (target_exists or (not old_grouped and not self.database_file and any(
@@ -2032,12 +2033,12 @@ class SQLiteManager:
             if grouped:
                 new_document = _replace_definition_table(old_document, old_name, desired_mapping)
                 schema_path = old_schema_path
-                database_path = self.data_dir / (old_schema_path.stem + '.sqlite3')
+                database_path = self.data_dir / (old_schema_path.stem + DB_SUFFIX)
                 physical_name = new_name
             else:
                 new_document = desired_mapping
                 schema_path = self.schema_dir / (new_name + '.json')
-                database_path = self.data_dir / (new_name + '.sqlite3')
+                database_path = self.data_dir / (new_name + DB_SUFFIX)
                 physical_name = old_name
             pending = dict(name=old_name, old_name=old_name, new_name=new_name,
                            old=old_mapping, new=desired_mapping, python=True,
@@ -2052,7 +2053,7 @@ class SQLiteManager:
                     with self._database(database_path.name) as db:
                         db[new_name]
                 else:
-                    with self._database(old_schema_path.stem + '.sqlite3') as db:
+                    with self._database(old_schema_path.stem + DB_SUFFIX) as db:
                         table = db[old_name]
                         structural = [(c.eng_name, c.data_type, c.primary_key) for c in old.columns] != [
                             (c.eng_name, c.data_type, c.primary_key) for c in desired.columns]

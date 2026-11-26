@@ -39,7 +39,7 @@ class SQLiteMultiDatabaseTests(unittest.TestCase):
                 nodes.insert_one({'id': 1, 'name': 'N1'})
                 lines.insert_one({'line_id': 7, 'name': 'L7'})
                 self.assertEqual(nodes.path, lines.path)
-                self.assertEqual(nodes.path.name, 'ems.sqlite3')
+                self.assertEqual(nodes.path.name, 'ems.db')
                 self.assertEqual(nodes.all(), [{'id': 1, 'name': 'N1'}])
                 self.assertEqual(lines.all(), [{'line_id': 7, 'name': 'L7'}])
                 connection = nodes._connection()

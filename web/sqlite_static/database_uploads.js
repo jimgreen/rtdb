@@ -38,7 +38,7 @@ const databaseUploads={
     const value=this.session,bar=el('chunk-progress');bar.max=value?.size||1;bar.value=value?.received||0;
     el('chunk-session').textContent=value?`${value.filename} · 已确认 ${formatBytes(value.received||0)} / ${formatBytes(value.size)} · 临时上传保留至 ${new Date(value.expires_at*1000).toLocaleString()}`:'请选择本地整库快照';
     el('chunk-preview').textContent=value?.result?`校验通过：${value.result.table_count} 张表（${value.result.tables.join('、')}）\nSHA-256：${value.result.sha256}`:'';
-    if(value?.result&&!el('chunk-target').value)el('chunk-target').value=value.result.database.replace(/\.sqlite3$/,'')+'_copy';
+    if(value?.result&&!el('chunk-target').value)el('chunk-target').value=value.result.database.replace(/\.db$/,'')+'_copy';
     this.controls();
   },
   async open(){
@@ -61,7 +61,7 @@ const databaseUploads={
     if(this.active||state.busy)return;
     const file=el('chunk-file').files[0];if(!file)return;
     if(!crypto.subtle){this.message('此入口需要通过 localhost 或 HTTPS 访问，以便校验上传内容。');return;}
-    if(!/\.sqlite3$/i.test(file.name)||!file.size||file.size>2*1024**3){this.message('请选择不超过2 GiB的 .sqlite3 整库快照');return;}
+    if(!/\.db$/i.test(file.name)||!file.size||file.size>2*1024**3){this.message('请选择不超过2 GiB的 .db 整库快照');return;}
     if(this.session&&!this.sameFile(file)&&this.session.state!=='ready'){this.message('文件名称、大小或修改时间不同。请选择原文件，或先放弃当前临时上传。');return;}
     this.active=true;this.paused=false;this.controls();
     try{

@@ -20,10 +20,10 @@ def seed(manager, count=32, file_bytes=8*1024**2):
     old=time.time()-40*86400
     for _ in range(count):
         ident=uuid.uuid4().hex
-        path=root/(ident+'.sqlite3')
+        path=root/(ident+'.db')
         with path.open('wb') as stream:stream.truncate(file_bytes)
         manifest=path.with_suffix('.json')
-        manifest.write_text(json.dumps(dict(id=ident,filename='benchmark_'+ident[:8]+'.sqlite3',bytes=file_bytes)),encoding='utf-8')
+        manifest.write_text(json.dumps(dict(id=ident,filename='benchmark_'+ident[:8]+'.db',bytes=file_bytes)),encoding='utf-8')
         for item in (path,manifest):os.utime(item,(old,old))
     store=TaskStore(manager.data_dir/'.web-tasks')
     try:

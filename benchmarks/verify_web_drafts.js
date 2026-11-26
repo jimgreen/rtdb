@@ -4,15 +4,15 @@ async(page)=>{
   const check=(condition,message)=>{if(!condition)throw Error(message);checks.push(message);};
   const idle=p=>p.waitForFunction(()=>!state.busy&&localDrafts.ready&&state.databases.length);
   const edit=async(p,value)=>{const td=p.locator('#data-grid td[data-cell-row="0"][data-cell-field="value"]');await td.dblclick();await td.locator('input').fill(value);await td.locator('input').press('Enter');await p.evaluate(()=>localDrafts.flush());};
-  const reload=async p=>{await p.evaluate(async()=>{await localDrafts.flush();localDrafts.suspended=true;state.pendingEdits.clear();state.records=state.records.filter(r=>!r.draftId);state.schemaDirty=false;});await p.reload();await idle(p);await p.locator('#database-select').selectOption('plant_a.sqlite3');await idle(p);};
+  const reload=async p=>{await p.evaluate(async()=>{await localDrafts.flush();localDrafts.suspended=true;state.pendingEdits.clear();state.records=state.records.filter(r=>!r.draftId);state.schemaDirty=false;});await p.reload();await idle(p);await p.locator('#database-select').selectOption('plant_a.db');await idle(p);};
   page.on('pageerror',e=>errors.push(e.message));await page.evaluate(()=>{if(!state.dataDir.includes('workflow-lab'))throw Error('fixture only');localDrafts.suspended=true;state.pendingEdits.clear();state.schemaDirty=false;});await page.goto(origin);await idle(page);
   await page.evaluate(async()=>{if(!state.dataDir.includes('workflow-lab'))throw Error('fixture only');for(const key of draftStore.cache.keys())await localDrafts.dropKey(key);});
-  await page.locator('#database-select').selectOption('plant_a.sqlite3');await idle(page);
-  await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.sqlite3',{data:{sql:'UPDATE devices SET value=10.1 WHERE id=1',confirm:'devices'}});await page.evaluate(()=>queryRows());
+  await page.locator('#database-select').selectOption('plant_a.db');await idle(page);
+  await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.db',{data:{sql:'UPDATE devices SET value=10.1 WHERE id=1',confirm:'devices'}});await page.evaluate(()=>queryRows());
   const original=await page.evaluate(()=>structuredClone(state.records[0].row));
   const second=await page.context().newPage();second.on('pageerror',e=>errors.push(e.message));
   try{
-    await second.goto(origin);await idle(second);await second.locator('#database-select').selectOption('plant_a.sqlite3');await idle(second);
+    await second.goto(origin);await idle(second);await second.locator('#database-select').selectOption('plant_a.db');await idle(second);
     await edit(page,'21.25');await edit(second,'31.25');
     check(await page.evaluate(()=>localDrafts.owner)!==await second.evaluate(()=>localDrafts.owner),'pages have distinct draft identities');
     await page.evaluate(()=>draftStore.refresh());
@@ -44,7 +44,7 @@ async(page)=>{
     await page.evaluate(async key=>{draftStore.put=window.originalDraftPut;await localDrafts.flush();await localDrafts.dropKey(key);},sourceKey);
     await page.locator('#refresh').click();await page.locator('#confirm-action').click();await idle(page);
     check(await page.evaluate(()=>!localDrafts.candidates('schema').length),'explicit discard clears own schema draft');
-    const result=await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.sqlite3',{data:{sql:`UPDATE devices SET value=${original.value} WHERE id=${original.id}`,confirm:'devices'}});
+    const result=await page.request.post(origin+'/api/manage/tables/devices/sql?database=plant_a.db',{data:{sql:`UPDATE devices SET value=${original.value} WHERE id=${original.id}`,confirm:'devices'}});
     check(result.ok(),'fixture restored');check(errors.length===0,'no browser exceptions');
     return {passed:checks.length,checks,errors};
   }finally{await second.evaluate(()=>{localDrafts.suspended=true;state.pendingEdits.clear();state.schemaDirty=false;});await second.close();}

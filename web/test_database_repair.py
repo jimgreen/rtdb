@@ -14,7 +14,7 @@ class DatabaseRepairTests(unittest.TestCase):
         self.schema = root / 'def' / 'table'
         self.data.mkdir(parents=True)
         self.schema.mkdir(parents=True)
-        self.path = self.data / 'legacy.sqlite3'
+        self.path = self.data / 'legacy.db'
         connection = sqlite3.connect(self.path)
         try:
             connection.execute('CREATE TABLE data (_pos INTEGER PRIMARY KEY AUTOINCREMENT, c0 INTEGER NOT NULL, c1 TEXT, c2 REAL)')
@@ -36,7 +36,7 @@ class DatabaseRepairTests(unittest.TestCase):
     def test_generate_embedded_definition_preserves_rows_and_clears_alarm(self):
         before = self.manager.database_files()['files'][0]
         self.assertEqual(before['status'], '缺少内置结构定义')
-        result = self.manager.rebuild_embedded_definition({'filename': 'legacy.sqlite3'})
+        result = self.manager.rebuild_embedded_definition({'filename': 'legacy.db'})
         self.assertTrue(result['generated'])
         self.assertEqual(result['primary_keys'], ['c0'])
         self.assertEqual(result['row_count'], 2)
@@ -57,7 +57,7 @@ class DatabaseRepairTests(unittest.TestCase):
         self.assertEqual(names, {'rtdb_schema_database', 'rtdb_schema_tables', 'rtdb_schema_columns'})
 
     def test_rebuild_from_embedded_definition_recreates_physical_table(self):
-        self.manager.rebuild_embedded_definition({'filename': 'legacy.sqlite3'})
+        self.manager.rebuild_embedded_definition({'filename': 'legacy.db'})
         connection = sqlite3.connect(self.path)
         try:
             connection.execute('DROP INDEX primary_key')
@@ -67,7 +67,7 @@ class DatabaseRepairTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
-        result = self.manager.rebuild_from_embedded_definition({'filename': 'legacy.sqlite3'})
+        result = self.manager.rebuild_from_embedded_definition({'filename': 'legacy.db'})
         self.assertTrue(result['rebuilt'])
         connection = sqlite3.connect(self.path)
         try:
@@ -81,16 +81,16 @@ class DatabaseRepairTests(unittest.TestCase):
 
     def test_delete_orphan_archives_the_database(self):
         result = self.manager.delete_orphan_database_file({
-            'filename': 'legacy.sqlite3', 'confirm': 'legacy.sqlite3',
+            'filename': 'legacy.db', 'confirm': 'legacy.db',
         })
         self.assertTrue(result['deleted'])
         self.assertFalse(self.path.exists())
-        self.assertTrue((Path(result['archive']) / 'legacy.sqlite3').is_file())
+        self.assertTrue((Path(result['archive']) / 'legacy.db').is_file())
         self.assertEqual(self.manager.database_files()['files'], [])
 
     def test_delete_requires_exact_filename_confirmation(self):
         with self.assertRaises(Exception):
-            self.manager.delete_orphan_database_file({'filename': 'legacy.sqlite3', 'confirm': 'wrong.sqlite3'})
+            self.manager.delete_orphan_database_file({'filename': 'legacy.db', 'confirm': 'wrong.db'})
         self.assertTrue(self.path.exists())
 
 

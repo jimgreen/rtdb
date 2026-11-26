@@ -25,9 +25,9 @@ _RUNTIME_FILES = {
     'rtdb-operation-log-config.json', 'rtdb-operation-log-config.json.lock',
 }
 _UNLISTED_DIRECTORIES = {'node_modules', '__pycache__', 'rtdb-operation-logs'}
-_SQLITE_SUFFIXES = ('.sqlite3', '.sqlite3-wal', '.sqlite3-shm', '.sqlite3-journal',
+_SQLITE_SUFFIXES = ('.db', '.db-wal', '.db-shm', '.db-journal',
                     '.sqlite', '.sqlite-wal', '.sqlite-shm', '.sqlite-journal',
-                    '.db', '.db-wal', '.db-shm', '.db-journal')
+                    '.sqlite3', '.sqlite3-wal', '.sqlite3-shm', '.sqlite3-journal')
 
 
 def _is_link(info):
@@ -178,7 +178,7 @@ class WorkspaceCatalog:
                     and _ordinary(folder / name))
                 names = sorted(
                     name for name in files
-                    if name.lower().endswith(('.sqlite3', '.sqlite', '.db'))
+                    if name.lower().endswith(('.db', '.sqlite', '.sqlite3'))
                     and _ordinary(folder / name)
                     and is_listed_database(folder / name)
                 )

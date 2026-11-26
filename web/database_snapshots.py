@@ -40,7 +40,7 @@ def scope(manager, filename):
     scoped.database_file = filename
     target_path = manager.data_dir / scoped.database_file
     scoped.native = is_native_database(target_path)
-    tag = target_path.stem if target_path.suffix.lower() == '.sqlite3' else scoped.database_file
+    tag = target_path.stem if target_path.suffix.lower() == '.db' else scoped.database_file
     scoped._journal = manager.schema_dir / ('.sqlite-web.' + tag + '.pending.json')
     return scoped
 
@@ -58,7 +58,7 @@ def _public(item):
 def resolve(manager, ident):
     if not manager.database_file: raise APIError(400, '请指定快照所属数据库')
     root = directory(manager); ident = identifier(ident)
-    path = root / (ident + '.sqlite3'); manifest = root / (ident + '.json')
+    path = root / (ident + '.db'); manifest = root / (ident + '.json')
     if not path.is_file() or not manifest.is_file() or path.resolve().parent != root.resolve():
         raise APIError(404, '快照不存在或尚未完成')
     item = json.loads(manifest.read_text(encoding='utf-8'))
@@ -125,12 +125,12 @@ def create(manager):
     if not manager.database_file: raise APIError(400, '请先选择数据库')
     root = directory(manager); source = manager.data_dir / manager.database_file
     task = current_task(); ident = task['id'] if task else uuid.uuid4().hex
-    target = root / (ident + '.sqlite3'); manifest = root / (ident + '.json')
+    target = root / (ident + '.db'); manifest = root / (ident + '.json')
     if manifest.exists(): return resolve(manager, ident)[1]
     started = time.perf_counter(); published = False
     # Each invocation owns only its uniquely created temporary directory.
     with tempfile.TemporaryDirectory(prefix='.building-', dir=root) as temporary:
-        stage = Path(temporary) / 'snapshot.sqlite3'
+        stage = Path(temporary) / 'snapshot.db'
         with manager.read_scope():
             if not source.is_file(): raise APIError(404, '数据库文件不存在')
             with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True, timeout=5)) as src, closing(sqlite3.connect(stage)) as dst:
@@ -147,7 +147,7 @@ def create(manager):
         digest = _hash(stage)
         now = datetime.now(timezone.utc)
         item = dict(id=ident, database=manager.database_file, created=now.isoformat(),
-                    filename=f'{source.stem}_{now:%Y%m%d_%H%M%S}_{ident[:8]}.sqlite3',
+                    filename=f'{source.stem}_{now:%Y%m%d_%H%M%S}_{ident[:8]}.db',
                     bytes=stage.stat().st_size, sha256=digest, table_count=len(document.tables),
                     tables=list(document.table_names), task_fingerprint=task['fingerprint'] if task else None,
                     duration_ms=round((time.perf_counter()-started)*1000, 3))
@@ -171,7 +171,7 @@ def _origin(path):
 
 def recover_definition(manager, pending):
     """Complete sidecar exports after publication; an unpublished intent is harmless."""
-    name = manager.name(pending['name']); path = manager.data_dir / (name + '.sqlite3')
+    name = manager.name(pending['name']); path = manager.data_dir / (name + '.db')
     if path.is_file():
         origin = _origin(path)
         if not origin or origin.get('restore_id') != pending['restore_id']:
@@ -189,7 +189,7 @@ def restore(manager, ident, payload):
     label = payload.get('chn_name') or name
     if not isinstance(label, str): raise APIError(400, '中文名称必须为文字')
     label = label.strip() or name
-    target = manager.data_dir / (name + '.sqlite3')
+    target = manager.data_dir / (name + '.db')
     outputs = [target, manager.schema_dir / (name + '.json'), manager.schema_dir / (name + '.py'),
                target.with_name(target.name + '-wal'), target.with_name(target.name + '-shm')]
     if any(path.exists() for path in outputs): raise APIError(409, f'目标数据库或定义已存在：{name}')
@@ -248,7 +248,7 @@ def recover_task(manager, task, signature):
     if not manifest.is_file(): return None
     item = json.loads(manifest.read_text(encoding='utf-8'))
     if item.get('database') != manager.database_file or item.get('task_fingerprint') != signature: return None
-    result = item['result']; name = manager.name(result['name']); target = manager.data_dir / (name + '.sqlite3')
+    result = item['result']; name = manager.name(result['name']); target = manager.data_dir / (name + '.db')
     if target.is_file() and _origin(target) == result: return result
     return None
 

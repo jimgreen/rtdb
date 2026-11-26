@@ -502,7 +502,7 @@ with SQLiteDatabase(r"D:\codex\rtdb\dat") as db:
 
 Definitions may use the legacy one-table shape (`head` + `columns`) or a
 grouped document with `database` + `tables`. In the grouped shape, all logical
-tables in one JSON file share `<directory>/<database>.sqlite3`; each table has
+tables in one JSON file share `<directory>/<database>.db`; each table has
 its own physical `rtdb_data_<table>` and `rtdb_metadata_<table>` tables, so
 their fingerprints, row counts and indexes remain independent. The SQLite file
 also stores the database, table, column, display and default-value definitions

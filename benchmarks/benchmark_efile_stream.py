@@ -30,7 +30,7 @@ def case(count,kind,memory=False):
         for definition in definitions:
             for column in definition['columns']:column.update(disp_type='文本',disp_menu='')
         manager.create_database_file(dict(name='grid',tables=definitions))
-        scoped=manager.for_database('grid.sqlite3');api=SQLiteManagement(scoped)
+        scoped=manager.for_database('grid.db');api=SQLiteManagement(scoped)
         try:
             for definition in definitions:
                 scoped.insert(definition['head']['eng_name'],{'rows':[dict(id=i,value=i/10,label='old') for i in range(count)]})
@@ -50,7 +50,7 @@ def case(count,kind,memory=False):
                 result=api.dispatch('POST',['definition-import'],{},{**payload,'token':preview['token']})
             else:
                 ident=uuid.uuid4().hex
-                uploads.create(manager,dict(id=ident,kind='e',filename='grid.e',size=path.stat().st_size,database='grid.sqlite3'))
+                uploads.create(manager,dict(id=ident,kind='e',filename='grid.e',size=path.stat().st_size,database='grid.db'))
                 with path.open('rb') as stream:
                     offset=0
                     while block:=stream.read(uploads.CHUNK):

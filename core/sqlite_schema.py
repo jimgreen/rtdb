@@ -252,6 +252,9 @@ def native_database(path: str | Path) -> bool:
         raise
 
 
+DB_SUFFIX = '.db'
+
+
 def sqlite_filename(filename: str) -> bool:
     """Accept a safe leaf name for discovering application-owned files."""
     return (
@@ -263,7 +266,43 @@ def sqlite_filename(filename: str) -> bool:
 
 
 def legacy_sqlite_filename(filename: str) -> bool:
-    return bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.sqlite3', filename))
+    """判断是否为 RTDB 默认托管的 .db 规范文件名。"""
+    return bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.db', filename))
+
+
+def is_rtdb_database_file(path: str | Path, schema_directory: str | Path | None = None) -> bool:
+    """判断一个磁盘文件是否属于 RTDB 托管库（含内置结构库、原生注册库、旧 RTDB 物理库或损坏的规范 .db 库），
+    避免把普通第三方未标记的 .db 文件误识别为 RTDB 库。"""
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        return legacy_sqlite_filename(target.name)
+    if not target.is_file():
+        return False
+    if schema_directory is not None and legacy_sqlite_filename(target.name):
+        if (Path(schema_directory) / (target.stem + '.json')).is_file():
+            return True
+    try:
+        with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)) as connection:
+            names = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if EMBEDDED_DATABASE_TABLE in names:
+                return True
+            if not legacy_sqlite_filename(target.name):
+                return False
+            # 识别无内置 schema 表的旧版 RTDB 库（含 data+metadata 或 rtdb_* 物理表）
+            if 'metadata' in names and 'data' in names:
+                return True
+            if any(name.startswith(('rtdb_data_', 'rtdb_metadata_', 'rtdb_schema_')) for name in names):
+                return True
+            return False
+    except sqlite3.Error as error:
+        code = getattr(error, 'sqlite_errorcode', 0) & 0xff
+        if legacy_sqlite_filename(target.name) and code in (sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_CORRUPT):
+            return True
+        return False
 
 
 def load_embedded_database(path: str | Path, *, ignore_unavailable: bool = False) -> DatabaseDefinition | None:

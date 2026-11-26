@@ -33,8 +33,16 @@
       "topbar.connecting": "连接中",
       "chart.quickPlot": "一键绘制数值列",
       "grid.selStats": "均值 {avg} · 最小 {min} · 最大 {max} · 求和 {sum}",
+      "theme.groupLight": "日间 / 浅色",
+      "theme.groupDark": "夜间 / 暗色与科幻",
       "theme.minimalist-light": "极简明亮",
+      "theme.arctic-frost": "极地冰蓝",
+      "theme.warm-paper": "护眼暖纸",
+      "theme.slate-daylight": "冷灰工程",
       "theme.precision-dark": "精密暗黑",
+      "theme.ocean-slate": "深海工业蓝",
+      "theme.nord-dark": "北欧极夜",
+      "theme.industrial-amber": "碳黑琥珀",
       "theme.bento-grid": "便当盒网格",
       "theme.glassmorphism": "毛玻璃拟态",
       "theme.editorial": "编辑杂志",
@@ -293,8 +301,16 @@
       "topbar.connecting": "Connecting",
       "chart.quickPlot": "Plot Numeric Columns",
       "grid.selStats": "Avg {avg} · Min {min} · Max {max} · Sum {sum}",
+      "theme.groupLight": "Light / Daylight",
+      "theme.groupDark": "Dark / Night & Sci-Fi",
       "theme.minimalist-light": "Minimalist Light",
+      "theme.arctic-frost": "Arctic Frost",
+      "theme.warm-paper": "Warm Paper",
+      "theme.slate-daylight": "Slate Daylight",
       "theme.precision-dark": "Precision Dark",
+      "theme.ocean-slate": "Ocean Slate",
+      "theme.nord-dark": "Nord Dark",
+      "theme.industrial-amber": "Industrial Amber",
       "theme.bento-grid": "Bento Grid",
       "theme.glassmorphism": "Glassmorphism",
       "theme.editorial": "Editorial",
@@ -553,8 +569,16 @@
       "topbar.connecting": "Подключение",
       "chart.quickPlot": "Построить числовые столбцы",
       "grid.selStats": "Сред. {avg} · Мин {min} · Макс {max} · Сумма {sum}",
+      "theme.groupLight": "Светлые темы",
+      "theme.groupDark": "Тёмные и сай-фай",
       "theme.minimalist-light": "Минимализм светлый",
+      "theme.arctic-frost": "Арктический лёд",
+      "theme.warm-paper": "Тёплая бумага",
+      "theme.slate-daylight": "Инженерный серый",
       "theme.precision-dark": "Строгий тёмный",
+      "theme.ocean-slate": "Глубокий океан",
+      "theme.nord-dark": "Северная ночь",
+      "theme.industrial-amber": "Уголь и янтарь",
       "theme.bento-grid": "Сетка Bento",
       "theme.glassmorphism": "Глассморфизм",
       "theme.editorial": "Журнальный",
@@ -1084,7 +1108,7 @@
     "例如 A站数据库": ["e.g. Station A DB", "напр. БД станции A"],
     "首张表（可选）": ["Initial Table (optional)", "Первая таблица (опц.)"],
     "留空创建空库": ["Leave empty for blank DB", "Пусто — пустая БД"],
-    "选择本地文件（.sqlite3 必选，同名 .json 可选，≤16 MiB）": ["Select local files (.sqlite3 required, matching .json optional, ≤16 MiB)", "Локальные файлы (.sqlite3 обязательно, .json опц., ≤16 МиБ)"],
+    "选择本地文件（.db 必选，同名 .json 可选，≤16 MiB）": ["Select local files (.db required, matching .json optional, ≤16 MiB)", "Локальные файлы (.db обязательно, .json опц., ≤16 МиБ)"],
     "上传整库快照（大文件 / 续传）": ["Upload Full Snapshot (Large / Resumable)", "Загрузить снимок БД (крупный / докачка)"],
     "上传并更新服务端": ["Upload & Activate", "Загрузить на сервер"],
     "处理数据库报警": ["Database Integrity Repair", "Восстановление БД"],
@@ -1390,6 +1414,9 @@
     }
     if (elem.dataset.i18nTitle) {
       elem.setAttribute("title", t(elem.dataset.i18nTitle));
+    }
+    if (elem.dataset.i18nLabel) {
+      elem.setAttribute("label", t(elem.dataset.i18nLabel));
     }
     if (elem.dataset.i18nPlaceholder) {
       elem.setAttribute("placeholder", t(elem.dataset.i18nPlaceholder));

@@ -20,7 +20,7 @@ class SnapshotTests(unittest.TestCase):
     tearDown = test_database_scope.DatabaseScopeTests.tearDown
 
     def source(self):
-        return self.manager.for_database('plant_a.sqlite3')
+        return self.manager.for_database('plant_a.db')
 
     def create(self):
         return snapshots.create(self.source())
@@ -45,7 +45,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertFalse(path.with_name(path.name + '-wal').exists())
             self.assertEqual(snapshots.listing(manager)['snapshots'][0]['id'], result['id'])
             with self.assertRaises(APIError):
-                snapshots.resolve(self.manager.for_database('plant_b.sqlite3'), result['id'])
+                snapshots.resolve(self.manager.for_database('plant_b.db'), result['id'])
 
     def test_restore_new_database_and_definitions_without_overwriting(self):
         self.source().insert('nodes', {'rows': [{'id': 1, 'name': '保存值'}]})
@@ -69,7 +69,7 @@ class SnapshotTests(unittest.TestCase):
             stream.seek(-1, 2); stream.write(b'X')
         with self.assertRaises(APIError):
             snapshots.restore(self.source(), item['id'], {'name': 'broken'})
-        self.assertFalse((self.manager.data_dir / 'broken.sqlite3').exists())
+        self.assertFalse((self.manager.data_dir / 'broken.db').exists())
         for invalid in ('../x', 'rtdb_x', ''):
             with self.assertRaises(APIError):
                 snapshots.restore(self.source(), item['id'], {'name': invalid})
@@ -83,7 +83,7 @@ class SnapshotTests(unittest.TestCase):
         with patch.object(snapshots, 'checkpoint', side_effect=TaskCancelled()):
             with self.assertRaises(TaskCancelled):
                 snapshots.restore(self.source(), item['id'], {'name': 'cancelled'})
-        self.assertFalse((self.manager.data_dir / 'cancelled.sqlite3').exists())
+        self.assertFalse((self.manager.data_dir / 'cancelled.db').exists())
 
     def test_missing_source_is_not_recreated_and_scope_required(self):
         source = self.source()
@@ -96,7 +96,7 @@ class SnapshotTests(unittest.TestCase):
         item = self.create()
         source = self.source(); (source.data_dir / source.database_file).unlink()
         self.assertEqual(snapshots.listing(self.manager)['snapshots'][0]['id'], item['id'])
-        scoped = snapshots.scope(self.manager, 'plant_a.sqlite3')
+        scoped = snapshots.scope(self.manager, 'plant_a.db')
         restored = snapshots.restore(scoped, item['id'], {'name': 'disaster_copy'})
         self.assertTrue((source.data_dir / restored['filename']).is_file())
 
@@ -147,22 +147,22 @@ class SnapshotTests(unittest.TestCase):
         registry=TaskRegistry(self.root/'snapshot-tasks',self.manager)
         try:
             for ident in ('1'*32,'2'*32):
-                self.assertEqual(registry.get(ident,'plant_a.sqlite3')['status'],'done')
+                self.assertEqual(registry.get(ident,'plant_a.db')['status'],'done')
             self.assertEqual(len(snapshots.listing(api.manager)['snapshots']),1)
         finally: registry.close()
 
     def test_empty_database_can_be_restored(self):
         self.manager.create_database_file({'name': 'empty', 'tables': []})
-        source = self.manager.for_database('empty.sqlite3')
+        source = self.manager.for_database('empty.db')
         item = snapshots.create(source)
         snapshots.restore(source, item['id'], {'name': 'empty_copy'})
-        self.assertEqual(self.manager.for_database('empty_copy.sqlite3').tables()['tables'], [])
+        self.assertEqual(self.manager.for_database('empty_copy.db').tables()['tables'], [])
 
     def test_publication_failure_does_not_leave_usable_partial_snapshot(self):
         with patch.object(snapshots, 'atomic_json', side_effect=OSError('disk full')):
             with self.assertRaises(OSError): self.create()
         self.assertEqual(snapshots.listing(self.source())['snapshots'], [])
-        self.assertFalse(list((self.manager.data_dir / '.web-snapshots').glob('*.sqlite3')))
+        self.assertFalse(list((self.manager.data_dir / '.web-snapshots').glob('*.db')))
 
     def test_download_ranges_and_scoped_http(self):
         from web.sqlite_server import create_sqlite_server
@@ -171,7 +171,7 @@ class SnapshotTests(unittest.TestCase):
         try:
             item = self.create()
             path, _ = snapshots.resolve(self.source(), item['id'])
-            url = f'http://127.0.0.1:{server.server_port}/api/manage/database-snapshots/{item["id"]}/download?database=plant_a.sqlite3'
+            url = f'http://127.0.0.1:{server.server_port}/api/manage/database-snapshots/{item["id"]}/download?database=plant_a.db'
             with urlopen(url) as response:
                 whole = response.read(); etag = response.headers['ETag']
                 self.assertEqual(len(whole), item['bytes'])

@@ -272,12 +272,12 @@ class ManagementTests(unittest.TestCase):
     def test_database_file_management_create_select_upload_and_validate(self):
         created = self.call('POST', '/api/manage/database-files/create',
                             {'name': 'created_file', 'chn_name': '新建文件'})
-        self.assertEqual(created['filename'], 'created_file.sqlite3')
+        self.assertEqual(created['filename'], 'created_file.db')
         files = self.call('GET', '/api/manage/database-files')
-        created_file = next(item for item in files['files'] if item['filename'] == 'created_file.sqlite3')
+        created_file = next(item for item in files['files'] if item['filename'] == 'created_file.db')
         self.assertTrue(created_file['selectable'])
         self.assertEqual(self.call('POST', '/api/manage/database-files/select',
-                                    {'filename': 'created_file.sqlite3'})['name'], 'created_file')
+                                    {'filename': 'created_file.db'})['name'], 'created_file')
 
         source = self.root / 'upload-source'
         (source / 'def').mkdir(parents=True)
@@ -287,8 +287,8 @@ class ManagementTests(unittest.TestCase):
         with SQLiteDatabase(source / 'data', schema_directory=source / 'def') as database:
             database['uploaded_file'].insert_many([record(9)])
         payload = {'files': [
-            {'name': 'uploaded_file.sqlite3',
-             'content': base64.b64encode((source / 'data' / 'uploaded_file.sqlite3').read_bytes()).decode()},
+            {'name': 'uploaded_file.db',
+             'content': base64.b64encode((source / 'data' / 'uploaded_file.db').read_bytes()).decode()},
             {'name': 'uploaded_file.json',
              'content': base64.b64encode((source / 'def' / 'uploaded_file.json').read_bytes()).decode()},
         ]}
@@ -298,7 +298,7 @@ class ManagementTests(unittest.TestCase):
         self.call('POST', '/api/manage/database-files/upload', payload, status=409)
         self.call('POST', '/api/manage/database-files/upload', {**payload, 'confirm': 'uploaded_file'})
         self.call('POST', '/api/manage/database-files/upload', {
-            'files': [{'name': '../escape.sqlite3', 'content': payload['files'][0]['content']}]}, status=400)
+            'files': [{'name': '../escape.db', 'content': payload['files'][0]['content']}]}, status=400)
         audit = self.call('GET', '/api/manage/logs?limit=500')['logs']
         self.assertTrue(any(item['operation'] == '上传并更新数据库文件' and item['status'] == 'success' for item in audit))
         self.assertTrue(any(item['operation'] == '上传并更新数据库文件' and item['status'] == 'failure' for item in audit))

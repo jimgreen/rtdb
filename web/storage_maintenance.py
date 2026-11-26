@@ -17,9 +17,9 @@ from .sqlite_runtime import file_fence
 DEFAULTS = dict(upload_retention_days=1, snapshot_retention_days=30, task_retention_days=7)
 LIMIT = 200
 PREVIEW_SECONDS = 600
-UPLOAD_FILES = frozenset(('state.json', 'payload.sqlite3', 'payload.sqlite3-wal',
-    'payload.sqlite3-shm', 'prepared.sqlite3', 'prepared.sqlite3-journal',
-    'raw.sqlite3', 'raw.sqlite3-journal'))
+UPLOAD_FILES = frozenset(('state.json', 'payload.db', 'payload.db-wal',
+    'payload.db-shm', 'prepared.db', 'prepared.db-journal',
+    'raw.db', 'raw.db-journal'))
 
 
 def configuration(manager):
@@ -205,8 +205,8 @@ class StorageMaintenance:
                     if path.is_dir():
                         # Old temporary folders have no durable owner marker. Do not guess.
                         raise ValueError('临时目录归属无法确认，保留')
-                    if not re.fullmatch('[a-f0-9]{32}\\.sqlite3', path.name):
-                        if path.suffix == '.json' and not path.with_suffix('.sqlite3').exists():
+                    if not re.fullmatch('[a-f0-9]{32}\\.db', path.name):
+                        if path.suffix == '.json' and not path.with_suffix('.db').exists():
                             raise ValueError('缺少配对快照，保留清单')
                         continue
                     manifest = path.with_suffix('.json')

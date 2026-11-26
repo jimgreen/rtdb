@@ -22,7 +22,7 @@ def main():
         try:
             columns=[dict(eng_name=n,chn_name=n,data_type=t,primary_key=n=='id',disp_type='文本',disp_menu='') for n,t in [('id','int'),('name','str')]]
             manager.create_database_file({'name':'lab','tables':[{'head':{'eng_name':'samples','chn_name':'样本'},'columns':columns}]})
-            api=SQLiteManagement(manager.for_database('lab.sqlite3'));api.manager.insert('samples',{'rows':[{'id':i,'name':'base'} for i in range(1,501)]})
+            api=SQLiteManagement(manager.for_database('lab.db'));api.manager.insert('samples',{'rows':[{'id':i,'name':'base'} for i in range(1,501)]})
             results=[];durable_write=write_receipts.write
             for size in (1,100,500):
                 samples={'previous':[],'receipts':[]}

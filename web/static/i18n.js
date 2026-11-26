@@ -13,8 +13,16 @@
       "topbar.themeTitle": "切换界面视觉风格",
       "topbar.themeAria": "界面风格",
       "topbar.refreshTitle": "刷新",
+      "theme.groupLight": "日间 / 浅色",
+      "theme.groupDark": "夜间 / 暗色与科幻",
       "theme.minimalist-light": "极简明亮",
+      "theme.arctic-frost": "极地冰蓝",
+      "theme.warm-paper": "护眼暖纸",
+      "theme.slate-daylight": "冷灰工程",
       "theme.precision-dark": "精密暗黑",
+      "theme.ocean-slate": "深海工业蓝",
+      "theme.nord-dark": "北欧极夜",
+      "theme.industrial-amber": "碳黑琥珀",
       "theme.bento-grid": "便当盒网格",
       "theme.glassmorphism": "毛玻璃拟态",
       "theme.editorial": "编辑杂志",
@@ -80,8 +88,16 @@
       "topbar.themeTitle": "Switch Visual Theme",
       "topbar.themeAria": "Visual theme",
       "topbar.refreshTitle": "Refresh",
+      "theme.groupLight": "Light / Daylight",
+      "theme.groupDark": "Dark / Night & Sci-Fi",
       "theme.minimalist-light": "Minimalist Light",
+      "theme.arctic-frost": "Arctic Frost",
+      "theme.warm-paper": "Warm Paper",
+      "theme.slate-daylight": "Slate Daylight",
       "theme.precision-dark": "Precision Dark",
+      "theme.ocean-slate": "Ocean Slate",
+      "theme.nord-dark": "Nord Dark",
+      "theme.industrial-amber": "Industrial Amber",
       "theme.bento-grid": "Bento Grid",
       "theme.glassmorphism": "Glassmorphism",
       "theme.editorial": "Editorial",
@@ -147,8 +163,16 @@
       "topbar.themeTitle": "Переключить тему оформления",
       "topbar.themeAria": "Тема оформления",
       "topbar.refreshTitle": "Обновить",
+      "theme.groupLight": "Светлые темы",
+      "theme.groupDark": "Тёмные и сай-фай",
       "theme.minimalist-light": "Минимализм светлый",
+      "theme.arctic-frost": "Арктический лёд",
+      "theme.warm-paper": "Тёплая бумага",
+      "theme.slate-daylight": "Инженерный серый",
       "theme.precision-dark": "Строгий тёмный",
+      "theme.ocean-slate": "Глубокий океан",
+      "theme.nord-dark": "Северная ночь",
+      "theme.industrial-amber": "Уголь и янтарь",
       "theme.bento-grid": "Сетка Bento",
       "theme.glassmorphism": "Глассморфизм",
       "theme.editorial": "Журнальный",
@@ -239,6 +263,9 @@
     });
     root.querySelectorAll("[data-i18n-title]").forEach((node) => {
       node.setAttribute("title", t(node.dataset.i18nTitle));
+    });
+    root.querySelectorAll("[data-i18n-label]").forEach((node) => {
+      node.setAttribute("label", t(node.dataset.i18nLabel));
     });
     root.querySelectorAll("[data-i18n-aria-label]").forEach((node) => {
       node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));

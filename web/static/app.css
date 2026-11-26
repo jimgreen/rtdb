@@ -284,6 +284,217 @@ html[data-theme="sci-fi-matrix"] {
   --radius-lg: 8px;
 }
 
+/* 9. 极地冰蓝（Arctic Frost） */
+html[data-theme="arctic-frost"] {
+  color-scheme: light;
+  --bg-canvas: #F0F6FB;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #E6F0F8;
+  --bg-hover: #E0F2FE;
+  --bg-active: rgba(2, 132, 199, 0.12);
+  --bg-option: #FFFFFF;
+  --table-stripe: #F5FAFD;
+  --table-hover: #E0F2FE;
+  --text-primary: #0C2233;
+  --text-secondary: #37576F;
+  --text-muted: #4B6A82;
+  --border: #D4E4F1;
+  --border-strong: #B0CEE5;
+  --accent: #0284C7;
+  --accent-btn: #0284C7;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #0369A1;
+  --accent-ring: rgba(2, 132, 199, 0.30);
+  --success: #0D9488;
+  --danger: #DC2626;
+  --danger-hover: #B91C1C;
+  --danger-bg: rgba(220, 38, 38, 0.10);
+  --danger-border: rgba(220, 38, 38, 0.28);
+  --shadow-sm: 0 2px 8px rgba(12, 34, 51, 0.05);
+  --shadow-lg: 0 20px 54px rgba(12, 34, 51, 0.18);
+  --backdrop: rgba(12, 34, 51, 0.42);
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+}
+
+/* 10. 护眼暖纸（Warm Paper） */
+html[data-theme="warm-paper"] {
+  color-scheme: light;
+  --bg-canvas: #F6F2E9;
+  --bg-surface: #FFFDF8;
+  --bg-subtle: #EFE9DC;
+  --bg-hover: #E9E2D2;
+  --bg-active: rgba(21, 128, 61, 0.10);
+  --bg-option: #FFFDF8;
+  --table-stripe: #F9F6EE;
+  --table-hover: #EDF6EF;
+  --text-primary: #231F1A;
+  --text-secondary: #534B40;
+  --text-muted: #6B6255;
+  --border: #E2DACB;
+  --border-strong: #CBBFA9;
+  --accent: #15803D;
+  --accent-btn: #15803D;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #166534;
+  --accent-ring: rgba(21, 128, 61, 0.28);
+  --success: #15803D;
+  --danger: #B91C1C;
+  --danger-hover: #991B1B;
+  --danger-bg: rgba(185, 28, 28, 0.11);
+  --danger-border: rgba(185, 28, 28, 0.28);
+  --shadow-sm: 0 1px 3px rgba(35, 31, 26, 0.05);
+  --shadow-lg: 0 18px 48px rgba(35, 31, 26, 0.18);
+  --backdrop: rgba(35, 31, 26, 0.44);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 11. 冷灰工程（Slate Daylight） */
+html[data-theme="slate-daylight"] {
+  color-scheme: light;
+  --bg-canvas: #EDF1F5;
+  --bg-surface: #FAFBFD;
+  --bg-subtle: #E2E8F0;
+  --bg-hover: #DDE5F0;
+  --bg-active: rgba(29, 78, 216, 0.10);
+  --bg-option: #FFFFFF;
+  --table-stripe: #F2F5F9;
+  --table-hover: #E6EFFC;
+  --text-primary: #111827;
+  --text-secondary: #334155;
+  --text-muted: #475569;
+  --border: #CBD5E1;
+  --border-strong: #94A3B8;
+  --accent: #1D4ED8;
+  --accent-btn: #1D4ED8;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #1E40AF;
+  --accent-ring: rgba(29, 78, 216, 0.28);
+  --success: #047857;
+  --danger: #DC2626;
+  --danger-hover: #B91C1C;
+  --danger-bg: rgba(220, 38, 38, 0.11);
+  --danger-border: rgba(220, 38, 38, 0.28);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 18px 48px rgba(15, 23, 42, 0.18);
+  --backdrop: rgba(15, 23, 42, 0.45);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* 12. 深海工业蓝（Ocean Slate） */
+html[data-theme="ocean-slate"] {
+  color-scheme: dark;
+  --bg-canvas: #071422;
+  --bg-surface: #0D2036;
+  --bg-subtle: #142C48;
+  --bg-hover: #183657;
+  --bg-active: rgba(56, 189, 248, 0.15);
+  --bg-option: #0D2036;
+  --table-stripe: #10263F;
+  --table-hover: #183657;
+  --text-primary: #EAF4FC;
+  --text-secondary: #B4CFE4;
+  --text-muted: #8EB2CE;
+  --border: rgba(56, 189, 248, 0.16);
+  --border-strong: rgba(56, 189, 248, 0.30);
+  --accent: #38BDF8;
+  --accent-btn: #0284C7;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #0EA5E9;
+  --accent-ring: rgba(56, 189, 248, 0.36);
+  --success: #34D399;
+  --danger: #FB7185;
+  --danger-hover: #F43F5E;
+  --danger-bg: rgba(251, 113, 133, 0.16);
+  --danger-border: rgba(251, 113, 133, 0.36);
+  --shadow-sm: 0 4px 18px rgba(2, 10, 20, 0.36);
+  --shadow-lg: 0 24px 64px rgba(1, 6, 14, 0.72);
+  --backdrop: rgba(3, 10, 20, 0.70);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 13. 北欧极夜（Nord Dark） */
+html[data-theme="nord-dark"] {
+  color-scheme: dark;
+  --bg-canvas: #242933;
+  --bg-surface: #2E3440;
+  --bg-subtle: #3B4252;
+  --bg-hover: #434C5E;
+  --bg-active: rgba(136, 192, 208, 0.16);
+  --bg-option: #2E3440;
+  --table-stripe: #333A47;
+  --table-hover: #434C5E;
+  --text-primary: #ECEFF4;
+  --text-secondary: #D8DEE9;
+  --text-muted: #A5B1C6;
+  --border: rgba(216, 222, 233, 0.12);
+  --border-strong: rgba(216, 222, 233, 0.24);
+  --accent: #88C0D0;
+  --accent-btn: #5E81AC;
+  --accent-btn-text: #ECEFF4;
+  --accent-hover: #8FBCBB;
+  --accent-ring: rgba(136, 192, 208, 0.36);
+  --success: #A3BE8C;
+  --danger: #BF616A;
+  --danger-hover: #D06F79;
+  --danger-bg: rgba(191, 97, 106, 0.20);
+  --danger-border: rgba(191, 97, 106, 0.40);
+  --shadow-sm: 0 4px 16px rgba(15, 19, 26, 0.28);
+  --shadow-lg: 0 22px 58px rgba(10, 14, 20, 0.62);
+  --backdrop: rgba(15, 19, 26, 0.65);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 14. 碳黑琥珀（Industrial Amber） */
+html[data-theme="industrial-amber"] {
+  color-scheme: dark;
+  --bg-canvas: #121110;
+  --bg-surface: #1C1A18;
+  --bg-subtle: #272420;
+  --bg-hover: #2E2922;
+  --bg-active: rgba(245, 158, 11, 0.16);
+  --bg-option: #1C1A18;
+  --table-stripe: #211E1B;
+  --table-hover: #2E2922;
+  --text-primary: #FAF5ED;
+  --text-secondary: #D4C8B8;
+  --text-muted: #B5AA9A;
+  --border: rgba(245, 158, 11, 0.18);
+  --border-strong: rgba(245, 158, 11, 0.34);
+  --accent: #F59E0B;
+  --accent-btn: #D97706;
+  --accent-btn-text: #121110;
+  --accent-hover: #FBBF24;
+  --accent-ring: rgba(245, 158, 11, 0.38);
+  --success: #34D399;
+  --danger: #F87171;
+  --danger-hover: #EF4444;
+  --danger-bg: rgba(248, 113, 113, 0.18);
+  --danger-border: rgba(248, 113, 113, 0.38);
+  --shadow-sm: 0 4px 18px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.72);
+  --backdrop: rgba(8, 7, 6, 0.74);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+html { accent-color: var(--accent); }
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); border: 2px solid transparent; background-clip: content-box; }
+
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: var(--bg-canvas); color: var(--text-primary); }
 [hidden] { display: none !important; }

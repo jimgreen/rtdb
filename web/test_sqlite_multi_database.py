@@ -63,7 +63,7 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
             db['lines'].insert_one({'line_id': 7, 'name': 'L7'})
         tables = self.manager.tables()['tables']
         self.assertEqual({item['name'] for item in tables}, {'nodes', 'lines'})
-        self.assertEqual({item['database_file'] for item in tables}, {'ems.sqlite3'})
+        self.assertEqual({item['database_file'] for item in tables}, {'ems.db'})
         self.assertEqual(self.api.rows('nodes', {})['table_total'], 1)
         self.assertEqual(self.api.rows('lines', {})['table_total'], 1)
 
@@ -110,17 +110,20 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         self.assertTrue((self.schema / 'ems.json').is_file())
 
     def test_legacy_sqlite_file_is_visible_and_collision_is_explicit(self):
-        path = self.data / 'devices.sqlite3'
+        path = self.data / 'devices.db'
         connection = sqlite3.connect(path)
         try:
             connection.execute('CREATE TABLE data (id INTEGER)')
+            connection.execute('CREATE TABLE metadata (version INTEGER PRIMARY KEY, fingerprint TEXT, row_count INTEGER)')
             connection.execute('INSERT INTO data VALUES (1)')
+            connection.execute('INSERT INTO metadata VALUES (1, ?, 1)', ('legacy',))
+            connection.commit()
         finally:
             connection.close()
         item = next(item for item in self.manager.tables()['tables'] if item['name'] == 'devices')
         self.assertTrue(item['orphan'])
         self.assertFalse(item['selectable'])
-        self.assertIn('缺少 devices.sqlite3 内置结构定义', item['error'])
+        self.assertIn('缺少 devices.db 内置结构定义', item['error'])
         with self.assertRaises(APIError) as context:
             self.manager.save_schema('devices', {'definition': table_definition('devices', '设备表', 'id')}, creating=True)
         self.assertEqual(context.exception.status, 409)
@@ -134,7 +137,7 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         self.assertTrue(snapshot['selectable'])
         self.assertEqual({item['name'] for item in snapshot['tables']}, {'nodes', 'lines'})
         files = []
-        for path in [self.data / 'ems.sqlite3', self.schema / 'ems.json']:
+        for path in [self.data / 'ems.db', self.schema / 'ems.json']:
             files.append({'name': path.name, 'content': base64.b64encode(path.read_bytes()).decode('ascii')})
         result = self.manager.upload_database_file({'files': files, 'confirm': 'ems'})
         self.assertEqual({item['name'] for item in result['tables']}, {'nodes', 'lines'})
@@ -148,8 +151,8 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         self.assertTrue(snapshot['selectable'])
         self.assertTrue(snapshot['embedded_definition_exists'])
         result = self.manager.upload_database_file({
-            'files': [{'name': 'ems.sqlite3', 'content': base64.b64encode(
-                (self.data / 'ems.sqlite3').read_bytes()).decode('ascii')}],
+            'files': [{'name': 'ems.db', 'content': base64.b64encode(
+                (self.data / 'ems.db').read_bytes()).decode('ascii')}],
             'confirm': 'ems',
         })
         self.assertTrue(result['embedded_definition_used'])
@@ -162,8 +165,8 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
             db['nodes'].insert_one({'id': 1, 'name': 'N1'})
         (self.schema / 'ems.json').write_text('{ invalid json', encoding='utf-8')
         result = self.manager.upload_database_file({
-            'files': [{'name': 'ems.sqlite3', 'content': base64.b64encode(
-                (self.data / 'ems.sqlite3').read_bytes()).decode('ascii')}],
+            'files': [{'name': 'ems.db', 'content': base64.b64encode(
+                (self.data / 'ems.db').read_bytes()).decode('ascii')}],
             'confirm': 'ems',
         })
         self.assertTrue(result['embedded_definition_used'])
@@ -186,7 +189,7 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         version = fingerprint(self.manager.definition('nodes').to_mapping())
         result = self.manager.drop('nodes', {'confirm': 'nodes', 'version': version})
         self.assertTrue(result['deleted'])
-        self.assertFalse((self.data / 'ems.sqlite3').exists())
+        self.assertFalse((self.data / 'ems.db').exists())
 
     def test_multi_table_e_import_creates_one_bundle(self):
         (self.schema / 'ems.json').unlink()
@@ -208,11 +211,11 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
         text = '''<nodes>\n@ id name\n// 编号 名称\n# 1 N1\n</nodes>\n<lines>\n@ line_id name\n// 线路 名称\n# 7 L7\n</lines>\n'''
         importer = DefinitionImporter(self.manager)
         preview = importer.run({'text': text, 'format': 'e', 'mode': 'merge'}, preview=True)
-        self.assertEqual({item['database_file'] for item in preview['tables']}, {'nodes.sqlite3'})
+        self.assertEqual({item['database_file'] for item in preview['tables']}, {'nodes.db'})
         self.assertEqual({Path(item['json_path']).name for item in preview['tables']}, {'nodes.json'})
         result = importer.run({'text': text, 'format': 'e', 'mode': 'merge', 'token': preview['token']}, preview=False)
         self.assertTrue(result['ok'])
-        self.assertTrue((self.data / 'nodes.sqlite3').is_file())
+        self.assertTrue((self.data / 'nodes.db').is_file())
         self.assertTrue((self.schema / 'nodes.json').is_file())
         self.assertTrue((self.schema / 'nodes.py').is_file())
         document = json.loads((self.schema / 'nodes.json').read_text(encoding='utf-8'))
@@ -241,7 +244,7 @@ class SQLiteManagementMultiDatabaseTests(unittest.TestCase):
             table_definition('nodes', '节点表', 'id'), table_definition('lines', '线路表', 'line_id')
         ]})
         self.schema.joinpath('ems.json').unlink()
-        self.manager.save_schema('extra', {'creating': True, 'database_file': 'ems.sqlite3', 'definition':
+        self.manager.save_schema('extra', {'creating': True, 'database_file': 'ems.db', 'definition':
             table_definition('extra', '扩展表', 'id')}, creating=True)
         loaded = json.loads(self.schema.joinpath('ems.json').read_text(encoding='utf-8'))
         self.assertEqual({item['head']['eng_name'] for item in loaded['tables']}, {'nodes', 'lines', 'extra'})

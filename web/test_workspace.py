@@ -87,29 +87,29 @@ class WorkspaceWebTests(unittest.TestCase):
             self.assertEqual(len(self.call('databases', workspace=workspace)['databases']), 1)
             files = self.call('database-files', workspace=workspace)
             self.assertEqual(files['data_dir'], workspace)
-            self.assertEqual(files['files'][0]['path'], workspace + '/devices.sqlite3')
+            self.assertEqual(files['files'][0]['path'], workspace + '/devices.db')
             result = self.call('database-files/select', workspace=workspace, method='POST',
-                               body={'filename': 'devices.sqlite3'})
+                               body={'filename': 'devices.db'})
             self.assertTrue(result['selected'])
-            self.assertEqual(result['file']['path'], workspace + '/devices.sqlite3')
-            rows = self.call('tables/nodes/rows', workspace=workspace, database='devices.sqlite3')
+            self.assertEqual(result['file']['path'], workspace + '/devices.db')
+            rows = self.call('tables/nodes/rows', workspace=workspace, database='devices.db')
             self.assertEqual(rows['records'][0]['row']['name'], project)
         self.assertEqual(self.call('databases')['databases'], [])
-        self.assertFalse((self.server.sqlite_manager.data_dir / 'devices.sqlite3').exists())
+        self.assertFalse((self.server.sqlite_manager.data_dir / 'devices.db').exists())
 
     def test_default_directory_does_not_include_legacy_data_outside_root(self):
         legacy = self.project_root / 'sqlite_dat'
         legacy.mkdir(parents=True, exist_ok=True)
-        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.sqlite3'
-        shutil.copyfile(source, legacy / 'outside.sqlite3')
+        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.db'
+        shutil.copyfile(source, legacy / 'outside.db')
 
         self.assertEqual(self.server.sqlite_manager.data_dir, self.workspace.resolve())
         self.assertEqual(self.call('info')['data_dir'], '.')
         self.assertEqual(self.call('info')['schema_dir'], '.rtdb-schema')
         self.assertEqual(self.call('database-files')['files'], [])
         self.call('database-files/select', method='POST',
-                  body={'filename': 'outside.sqlite3'}, status=404)
-        self.assertTrue((legacy / 'outside.sqlite3').is_file())
+                  body={'filename': 'outside.db'}, status=404)
+        self.assertTrue((legacy / 'outside.db').is_file())
 
     def test_startup_rejects_storage_outside_configured_root(self):
         for option in ('data_dir', 'schema_dir'):
@@ -138,9 +138,9 @@ class WorkspaceWebTests(unittest.TestCase):
         result = self.call('database-files/create', workspace=relative, method='POST',
                            body={'name': 'empty_project', 'tables': []})
         self.assertTrue(result['created'])
-        self.assertTrue((target / 'empty_project.sqlite3').is_file())
+        self.assertTrue((target / 'empty_project.db').is_file())
         self.assertEqual(self.call('databases', workspace=relative)['databases'][0]['filename'],
-                         'empty_project.sqlite3')
+                         'empty_project.db')
         self.assertEqual(self.call('info', workspace='.')['data_dir'], '.')
 
     def test_new_directory_requires_an_existing_workspace_parent_and_valid_name(self):
@@ -161,7 +161,7 @@ class WorkspaceWebTests(unittest.TestCase):
         workspace = 'qinling/sqldb/model'
         request_id = 'a' * 32
         task_route = 'tasks/' + request_id
-        result = self.call('tables/nodes/sql', workspace=workspace, database='devices.sqlite3',
+        result = self.call('tables/nodes/sql', workspace=workspace, database='devices.db',
                            method='POST', body={'sql': "UPDATE nodes SET name='updated' WHERE id=1", 'confirm': 'nodes'},
                            background='1', request_id=request_id, status=(200, 202))
         if 'task' in result:
@@ -169,17 +169,17 @@ class WorkspaceWebTests(unittest.TestCase):
             for _ in range(5):
                 if task['status'] not in ('queued', 'running'):
                     break
-                task = self.call(task_route, workspace=workspace, database='devices.sqlite3',
+                task = self.call(task_route, workspace=workspace, database='devices.db',
                                  wait=1, revision=task['revision'])
             self.assertEqual(task['status'], 'done', task)
             result = task['result']
         self.assertEqual(result['rowcount'], 1)
-        task = self.call(task_route, workspace=workspace, database='devices.sqlite3')
+        task = self.call(task_route, workspace=workspace, database='devices.db')
         self.assertEqual(task['status'], 'done')
-        self.call(task_route, workspace='another/sqldb/model', database='devices.sqlite3', status=404)
-        rows = self.call('tables/nodes/rows', workspace='another/sqldb/model', database='devices.sqlite3')
+        self.call(task_route, workspace='another/sqldb/model', database='devices.db', status=404)
+        rows = self.call('tables/nodes/rows', workspace='another/sqldb/model', database='devices.db')
         self.assertEqual(rows['records'][0]['row']['name'], 'another')
-        with SQLiteDatabase(self.workspace / workspace, database_file='devices.sqlite3') as db:
+        with SQLiteDatabase(self.workspace / workspace, database_file='devices.db') as db:
             self.assertEqual(db['nodes'].get_by_pk(1)['name'], 'updated')
 
     def test_rejects_absolute_traversal_and_missing_directories(self):
@@ -224,12 +224,12 @@ class WorkspaceWebTests(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_linked_database_outside_workspace_is_not_listed_or_opened(self):
-        outside = Path(self.temp.name) / 'outside.sqlite3'
-        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.sqlite3'
+        outside = Path(self.temp.name) / 'outside.db'
+        source = self.workspace / 'qinling' / 'sqldb' / 'model' / 'devices.db'
         shutil.copyfile(source, outside)
         folder = self.workspace / 'linked_database'
         folder.mkdir()
-        link = folder / 'outside.sqlite3'
+        link = folder / 'outside.db'
         try:
             link.symlink_to(outside)
         except OSError:
@@ -238,7 +238,7 @@ class WorkspaceWebTests(unittest.TestCase):
         item = next(item for item in root_listing['directories'] if item['path'] == 'linked_database')
         self.assertEqual(item['files'], [])
         self.call('database-files/select', workspace='linked_database', method='POST',
-                  body={'filename': 'outside.sqlite3'}, status=(400, 404))
+                  body={'filename': 'outside.db'}, status=(400, 404))
 
 
 if __name__ == '__main__':

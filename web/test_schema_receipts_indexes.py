@@ -21,7 +21,7 @@ from web.test_sqlite_multi_database import table_definition
 
 
 def crash_schema(root, operation):
-    root=Path(root);manager=SQLiteManager(root/'data',root/'defs');api=SQLiteManagement(manager.for_database('plant_a.sqlite3'))
+    root=Path(root);manager=SQLiteManager(root/'data',root/'defs');api=SQLiteManagement(manager.for_database('plant_a.db'))
     registry=TaskRegistry(root/'tasks',manager)
     if operation=='create':
         method='PUT';name='created';payload={'creating':True,'definition':table_definition(name,name,'id')}
@@ -36,7 +36,7 @@ def crash_schema(root, operation):
 
 
 def crash_import(root):
-    root=Path(root);manager=SQLiteManager(root/'data',root/'defs');api=SQLiteManagement(manager.for_database('plant_a.sqlite3'))
+    root=Path(root);manager=SQLiteManager(root/'data',root/'defs');api=SQLiteManagement(manager.for_database('plant_a.db'))
     payload={'format':'e','text':'<nodes>\n@ id name\n# 1 once\n</nodes>\n<lines>\n@ id name\n# 2 later\n</lines>','mode':'merge'}
     payload['token']=api.dispatch('POST',['definition-preview'],{},payload)['token']
     registry=TaskRegistry(root/'tasks',manager)
@@ -49,7 +49,7 @@ class SchemaReceiptIndexTests(unittest.TestCase):
     setUp=test_database_scope.DatabaseScopeTests.setUp
     tearDown=test_database_scope.DatabaseScopeTests.tearDown
 
-    def api(self):return SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+    def api(self):return SQLiteManagement(self.manager.for_database('plant_a.db'))
     def save(self, desired, **extra):
         api=self.api()
         return api.dispatch('PUT',['tables','nodes','schema'],{},dict(definition=desired,version=fingerprint(api.manager.definition('nodes').to_mapping()),**extra))
@@ -112,8 +112,8 @@ class SchemaReceiptIndexTests(unittest.TestCase):
                 self.assertEqual(child.exitcode,9)
                 manager=SQLiteManager(root/'data',root/'defs');registry=TaskRegistry(root/'tasks',manager)
                 try:
-                    result=registry.get('d'*32,'plant_a.sqlite3');self.assertEqual(result['status'],'done')
-                    names=[table['name'] for table in manager.for_database('plant_a.sqlite3').tables()['tables']]
+                    result=registry.get('d'*32,'plant_a.db');self.assertEqual(result['status'],'done')
+                    names=[table['name'] for table in manager.for_database('plant_a.db').tables()['tables']]
                     if operation=='create':self.assertIn('created',names)
                     elif operation=='rename':self.assertIn('renamed',names);self.assertNotIn('nodes',names)
                     else:self.assertNotIn('lines',names)
@@ -127,7 +127,7 @@ class SchemaReceiptIndexTests(unittest.TestCase):
             with patch.object(self.manager.audit_log,'write_event',side_effect=blocked):
                 result=self.api().dispatch('POST',['tables','nodes','rows'],{}, {'rows':[{'id':1,'name':'durable'}]})
                 self.assertTrue(result['audit_pending']);self.assertTrue(entered.wait(2));self.assertFalse(delivery.drain(.02))
-                with closing(sqlite3.connect(self.root/'data/plant_a.sqlite3')) as c:
+                with closing(sqlite3.connect(self.root/'data/plant_a.db')) as c:
                     self.assertEqual(c.execute('SELECT delivered FROM rtdb_web_commits').fetchone()[0],0)
                 release.set();self.assertTrue(delivery.drain(3))
             self.assertFalse(delivery.status()['pending_databases'])
@@ -147,7 +147,7 @@ class SchemaReceiptIndexTests(unittest.TestCase):
         self.assertEqual(child.exitcode,9)
         registry=TaskRegistry(self.root/'tasks',self.manager)
         try:
-            task=registry.get('e'*32,'plant_a.sqlite3')
+            task=registry.get('e'*32,'plant_a.db')
             self.assertEqual(task['status'],'interrupted');self.assertEqual(task['completed_tables'],['nodes'])
             self.assertEqual(task['details']['committed_results'],[{'name':'nodes','ok':True,'rows':1}])
             self.assertEqual(self.api().rows('nodes',{})['total'],1);self.assertEqual(self.api().rows('lines',{})['total'],0)

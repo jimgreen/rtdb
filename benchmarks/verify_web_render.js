@@ -2,9 +2,9 @@ async (page) => {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));const checks=[];
   const check=(ok,name)=>{if(!ok)throw Error(name);checks.push(name);};
   const origin=new URL(page.url()).origin, cell=(row,field)=>page.locator(`#data-grid td[data-cell-row="${row}"][data-cell-field="${field}"]`);
-  const remote=async sql=>{const r=await page.request.post(origin+'/api/manage/tables/samples/sql?database=lab.sqlite3',{data:{sql,confirm:'samples'}});if(!r.ok())throw Error(await r.text());return r.json();};
+  const remote=async sql=>{const r=await page.request.post(origin+'/api/manage/tables/samples/sql?database=lab.db',{data:{sql,confirm:'samples'}});if(!r.ok())throw Error(await r.text());return r.json();};
   await page.goto(origin);await page.waitForFunction(()=>!state.busy&&state.databases.length);
-  await page.locator('#database-select').selectOption('lab.sqlite3');await page.waitForFunction(()=>!state.busy&&state.records.length);
+  await page.locator('#database-select').selectOption('lab.db');await page.waitForFunction(()=>!state.busy&&state.records.length);
   await remote('UPDATE samples SET v08=11.08 WHERE id=11');await page.evaluate(()=>queryRows());
   await cell(10,'v08').click();
   check(await cell(10,'v08').locator('input').count()===0,'single click selects without editing');

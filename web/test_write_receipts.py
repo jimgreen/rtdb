@@ -18,7 +18,7 @@ def crash_with_receipt(root):
     root=Path(root); manager=SQLiteManager(root/'data',root/'defs')
     registry=TaskRegistry(root/'tasks',manager)
     with patch('web.write_receipts.publish',side_effect=lambda *a,**kw:os._exit(9)):
-        task=registry.submit(SQLiteManagement(manager.for_database('plant_a.sqlite3')),'PUT',
+        task=registry.submit(SQLiteManagement(manager.for_database('plant_a.db')),'PUT',
             ['tables','nodes','cell-edits'],{}, {'inserts':[{'id':1,'name':'once'}]}, 'a'*32)
         registry.wait_initial(task['id'],task['database'],10)
 
@@ -27,10 +27,10 @@ class WriteReceiptTests(unittest.TestCase):
     setUp=test_database_scope.DatabaseScopeTests.setUp
     tearDown=test_database_scope.DatabaseScopeTests.tearDown
 
-    def api(self): return SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+    def api(self): return SQLiteManagement(self.manager.for_database('plant_a.db'))
 
     def receipts(self):
-        with closing(sqlite3.connect(self.root/'data/plant_a.sqlite3')) as c:
+        with closing(sqlite3.connect(self.root/'data/plant_a.db')) as c:
             exists=c.execute("SELECT 1 FROM sqlite_master WHERE name=?",(write_receipts.TABLE,)).fetchone()
             return c.execute(f'SELECT id,result,event,delivered FROM {write_receipts.TABLE}').fetchall() if exists else []
 
@@ -38,7 +38,7 @@ class WriteReceiptTests(unittest.TestCase):
         result=self.api().dispatch('PUT',['tables','nodes','cell-edits'],{}, {'inserts':[{'id':1,'name':'ok'}]})
         receipt=self.receipts()[0]; event=json.loads(receipt[2])
         self.assertEqual(json.loads(receipt[1]),result); self.assertEqual(receipt[3],1)
-        self.assertEqual(event['database'],'plant_a.sqlite3'); self.assertEqual(event['request_id'],receipt[0])
+        self.assertEqual(event['database'],'plant_a.db'); self.assertEqual(event['request_id'],receipt[0])
 
     def test_invalid_batch_rolls_back_data_and_receipt(self):
         with self.assertRaises(APIError):
@@ -62,7 +62,7 @@ class WriteReceiptTests(unittest.TestCase):
     def test_crash_between_append_and_delivery_marker_does_not_duplicate_log(self):
         self.api().dispatch('POST',['tables','nodes','rows'],{}, {'rows':[{'id':1,'name':'ok'}]})
         ident=self.receipts()[0][0]
-        with closing(sqlite3.connect(self.root/'data/plant_a.sqlite3')) as c,c:
+        with closing(sqlite3.connect(self.root/'data/plant_a.db')) as c,c:
             c.execute(f'UPDATE {write_receipts.TABLE} SET delivered=0')
         write_receipts.recover_pending(self.manager)
         self.assertEqual(sum(r['id']==ident for r in self.manager.audit_log.read()),1)
@@ -81,7 +81,7 @@ class WriteReceiptTests(unittest.TestCase):
         self.assertEqual(child.exitcode,9)
         registry=TaskRegistry(self.root/'tasks',self.manager)
         try:
-            result=registry.get('a'*32,'plant_a.sqlite3')
+            result=registry.get('a'*32,'plant_a.db')
             self.assertEqual(result['status'],'done');self.assertEqual(result['result']['inserted'],1)
             again=registry.submit(self.api(),'PUT',['tables','nodes','cell-edits'],{}, {'inserts':[{'id':1,'name':'once'}]},'a'*32)
             self.assertEqual(again['status'],'done');self.assertEqual(self.api().manager.rows('nodes')['total'],1)
@@ -94,7 +94,7 @@ class ReceiptHTTPTests(unittest.TestCase):
     call=test_sqlite_server.SQLiteWebTests.call
 
     def test_delete_query_parameters_and_duplicate_delete_receipt(self):
-        suffix='?database=devices.sqlite3'
+        suffix='?database=devices.db'
         self.call('POST','/api/manage/tables/devices/rows'+suffix,{'rows':[test_sqlite_server.record(1)]})
         row=self.call('GET','/api/manage/tables/devices/rows'+suffix)['records'][0]
         endpoint='/api/manage/tables/devices/rows'+suffix+'&background=1&request_id='+'c'*32
@@ -103,5 +103,5 @@ class ReceiptHTTPTests(unittest.TestCase):
             first=self.call('DELETE',endpoint,{'records':[row['ref']]})
             second=self.call('DELETE',endpoint,{'records':[row['ref']]})
         self.assertEqual(first,second);self.assertEqual(second['deleted'],1)
-        task=self.server.tasks.get('c'*32,'devices.sqlite3')
+        task=self.server.tasks.get('c'*32,'devices.db')
         self.assertEqual(task['status'],'done');self.assertEqual(task['result']['deleted'],1)

@@ -57,7 +57,7 @@ const databaseSnapshots = {
         this.selected=item;el('snapshot-restore').disabled=false;
         host.querySelectorAll('tr').forEach(tr=>tr.classList.remove('snapshot-selected'));row.classList.add('snapshot-selected');
         el('snapshot-restore-caption').textContent='恢复源：'+item.filename+'；目标必须为未使用的新数据库名。';
-        if(!el('snapshot-target-name').value)el('snapshot-target-name').value=item.database.replace(/\.sqlite3$/,'')+'_copy';
+        if(!el('snapshot-target-name').value)el('snapshot-target-name').value=item.database.replace(/\.db$/,'')+'_copy';
       };
       if(this.selected?.id===item.id)row.classList.add('snapshot-selected');
       actions.append(link,select);row.append(description,size,actions);table.append(row);

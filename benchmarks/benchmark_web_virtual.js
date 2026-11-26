@@ -3,7 +3,7 @@ async(page)=>{
   const origin=new URL(page.url()).origin;
   await page.goto(origin);await page.waitForFunction(()=>!state.busy&&state.databases.length);
   if(!await page.evaluate(()=>state.dataDir.includes('browser-render-lab')))throw Error('fixture only');
-  await page.locator('#database-select').selectOption('lab.sqlite3');await page.waitForFunction(()=>!state.busy&&state.records.length);
+  await page.locator('#database-select').selectOption('lab.db');await page.waitForFunction(()=>!state.busy&&state.records.length);
   await page.locator('#page-size').selectOption('500');await page.waitForFunction(()=>!state.busy&&state.records.length===500);
   const samples=await page.evaluate(async()=>{
     const samples={full:[],virtual:[]},frames=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));

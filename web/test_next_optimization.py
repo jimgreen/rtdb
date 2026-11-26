@@ -21,8 +21,8 @@ class NextOptimizationTests(unittest.TestCase):
         release, entered, second = threading.Event(), threading.Event(), threading.Event()
         registry = TaskRegistry()
         def block(*_): entered.set(); release.wait(5); return {'ok':True}
-        a = self.manager.for_database('plant_a.sqlite3')
-        b = self.manager.for_database('plant_b.sqlite3')
+        a = self.manager.for_database('plant_a.db')
+        b = self.manager.for_database('plant_b.db')
         def submit(manager, callback):
             return registry.submit(SimpleNamespace(manager=manager,dispatch=callback),'POST',['definition-preview'],{}, {})
         try:
@@ -41,7 +41,7 @@ class NextOptimizationTests(unittest.TestCase):
     def test_long_poll_wakes_when_task_finishes(self):
         registry=TaskRegistry(); release=threading.Event()
         try:
-            task=registry.submit(SimpleNamespace(manager=self.manager.for_database('plant_a.sqlite3'),
+            task=registry.submit(SimpleNamespace(manager=self.manager.for_database('plant_a.db'),
                 dispatch=lambda *_:release.wait(5) and {'ok':True}),'POST',['definition-preview'],{}, {})
             ready=threading.Event(); answer=[]
             def wait():
@@ -56,7 +56,7 @@ class NextOptimizationTests(unittest.TestCase):
         finally:release.set();registry.close()
 
     def seed(self, count):
-        api=SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+        api=SQLiteManagement(self.manager.for_database('plant_a.db'))
         with patch.object(self.manager.audit_log,'write_event',return_value=None):
             for i in range(count): api.dispatch('POST',['tables','nodes','rows'],{}, {'rows':[{'id':i,'name':'fixture'}]})
         return api.manager
@@ -96,7 +96,7 @@ class NextOptimizationTests(unittest.TestCase):
         self.assertEqual(SQLiteManagement(manager).rows('nodes',{})['total'],3)
 
     def test_cell_edit_validation_runs_once_without_preview(self):
-        api=SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+        api=SQLiteManagement(self.manager.for_database('plant_a.db'))
         with patch.object(api,'_prepare_cell_edits',wraps=api._prepare_cell_edits) as prepare:
             result=api.dispatch('PUT',['tables','nodes','cell-edits'],{}, {'inserts':[{'id':1,'name':'one'}]})
             self.assertEqual(result['inserted'],1);self.assertEqual(prepare.call_count,1)
@@ -124,7 +124,7 @@ class NextOptimizationTests(unittest.TestCase):
         configure(manager,{'days':7});self.assertEqual(archive_batch(manager)['archived'],2)
 
     def test_failed_delivery_backoff_does_not_block_other_database(self):
-        a=self.seed(1);b=self.manager.for_database('plant_b.sqlite3')
+        a=self.seed(1);b=self.manager.for_database('plant_b.db')
         with patch.object(self.manager.audit_log,'write_event',return_value=None):
             SQLiteManagement(b).dispatch('POST',['tables','nodes','rows'],{}, {'rows':[{'id':1,'name':'other'}]})
         original=write_receipts.publish;delivered=threading.Event()
@@ -148,7 +148,7 @@ class NextOptimizationTests(unittest.TestCase):
 
     def test_stale_maintenance_does_not_create_a_missing_database(self):
         from web.receipt_maintenance import statistics
-        manager=SimpleNamespace(database_file='missing.sqlite3',data_dir=self.root/'data',read_scope=self.manager.read_scope)
+        manager=SimpleNamespace(database_file='missing.db',data_dir=self.root/'data',read_scope=self.manager.read_scope)
         self.assertFalse(write_receipts.publish(manager))
         with self.assertRaises(APIError):statistics(manager)
         self.assertFalse((manager.data_dir/manager.database_file).exists())
@@ -161,7 +161,7 @@ class NextHTTPTests(unittest.TestCase):
     call=SQLiteWebTests.call
 
     def test_maintenance_routes_are_database_scoped(self):
-        path='/api/manage/receipt-maintenance?database=devices.sqlite3'
+        path='/api/manage/receipt-maintenance?database=devices.db'
         self.assertEqual(self.call('GET',path)['days'],7)
         self.assertEqual(self.call('PUT',path,{'days':30}),{'days':30})
         self.assertEqual(self.call('GET',path)['days'],30)
@@ -184,7 +184,7 @@ class NextHTTPTests(unittest.TestCase):
         finally:release.set()
 
     def test_expired_task_result_never_reexecutes_or_returns_internal_error(self):
-        ident='9'*32;path='/api/manage/tables/devices/cell-edits?database=devices.sqlite3&background=1&request_id='+ident
+        ident='9'*32;path='/api/manage/tables/devices/cell-edits?database=devices.db&background=1&request_id='+ident
         from web.test_sqlite_server import record
         payload={'inserts':[record(1)]}
         original=TaskRegistry.wait_initial
@@ -194,7 +194,7 @@ class NextHTTPTests(unittest.TestCase):
         with closing(self.server.tasks.store.connect()) as c,c:c.execute('UPDATE tasks SET result=NULL WHERE id=?',(ident,))
         response=self.call('PUT',path,payload,status=202)
         self.assertTrue(response['task']['result_expired']);self.assertEqual(response['task']['status'],'done')
-        self.assertEqual(self.call('GET','/api/manage/tables/devices/rows?database=devices.sqlite3')['total'],1)
+        self.assertEqual(self.call('GET','/api/manage/tables/devices/rows?database=devices.db')['total'],1)
 
 
 if __name__=='__main__':unittest.main()

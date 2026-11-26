@@ -29,7 +29,7 @@ def main():
         try:
             columns=[dict(eng_name=name,chn_name=name,data_type=kind,primary_key=name=='id',disp_type='文本',disp_menu='') for name,kind in [('id','int'),('name','str'),('value','float')]]
             manager.create_database_file({'name':'lab','tables':[{'head':{'eng_name':'samples','chn_name':'样本'},'columns':columns}]})
-            scoped=manager.for_database('lab.sqlite3')
+            scoped=manager.for_database('lab.db')
             with scoped.session('samples') as table:
                 table._write(lambda c:c.executemany(f'INSERT INTO {table._data_sql}(c0,c1,c2) VALUES(?,?,?)',((i,f'item-{i}',i/10) for i in range(1,args.rows+1))))
             api=SQLiteManagement(scoped);data=[];limit=100

@@ -34,12 +34,12 @@ def measure(mib, repeats):
         root=Path(temp);manager=SQLiteManager(root/'source',root/'definitions')
         manager.create_database_file({'name':'source','tables':[table_definition('nodes','节点','id'),table_definition('lines','线路','id')]})
         for name in ('nodes','lines'):
-            manager.for_database('source.sqlite3').insert(name,{'rows':[{'id':i,'name':'测点'+str(i)} for i in range(1000)]})
-        with closing(sqlite3.connect(root/'source/source.sqlite3')) as connection:
+            manager.for_database('source.db').insert(name,{'rows':[{'id':i,'name':'测点'+str(i)} for i in range(1000)]})
+        with closing(sqlite3.connect(root/'source/source.db')) as connection:
             connection.execute('CREATE TABLE attachment(content BLOB)')
             connection.execute('INSERT INTO attachment VALUES(zeroblob(?))',(mib*1024**2,));connection.commit()
-        item=snapshots.create(manager.for_database('source.sqlite3'))
-        source=snapshots.resolve(manager.for_database('source.sqlite3'),item['id'])[0]
+        item=snapshots.create(manager.for_database('source.db'))
+        source=snapshots.resolve(manager.for_database('source.db'),item['id'])[0]
         size=source.stat().st_size;manager.close()
         server=create_sqlite_server('127.0.0.1',0,data_dir=root/'target',schema_dir=root/'target-defs')
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -57,7 +57,7 @@ def measure(mib, repeats):
             serial+=1;wire=0;name=f'{method}_{serial}';started=time.perf_counter()
             if method=='base64':
                 encoded=base64.b64encode(source.read_bytes()).decode('ascii')
-                call('database-files/upload',{'files':[{'name':name+'.sqlite3','content':encoded}]})
+                call('database-files/upload',{'files':[{'name':name+'.db','content':encoded}]})
             else:
                 ident=uuid.uuid4().hex
                 call('database-uploads',{'id':ident,'filename':source.name,'size':size})
@@ -69,7 +69,7 @@ def measure(mib, repeats):
                 result=call(f'database-uploads/{ident}/finalize',{})
                 call(f'database-snapshots/{ident}/restore?database={result["database"]}',{'name':name})
             elapsed=(time.perf_counter()-started)*1000
-            with closing(sqlite3.connect(root/'target'/(name+'.sqlite3'))) as connection:
+            with closing(sqlite3.connect(root/'target'/(name+'.db'))) as connection:
                 assert connection.execute('PRAGMA quick_check').fetchone()[0]=='ok'
                 for table in ('nodes','lines'):
                     assert connection.execute(f'SELECT COUNT(*) FROM rtdb_data_{table}').fetchone()[0]==1000

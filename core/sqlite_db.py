@@ -33,9 +33,9 @@ from .file_mapped_db import (
 )
 from .table_schema import NATIVE_IDENTIFIER, SchemaError, SchemaRegistry
 from .sqlite_schema import (
-    EMBEDDED_DATABASE_TABLE, EMBEDDED_TABLES, EMBEDDED_TABLES_TABLE, ensure_embedded_schema,
-    definition_fingerprint, iter_embedded_databases, legacy_sqlite_filename, native_database, sqlite_filename,
-    validate_native_table, write_embedded_definition,
+    DB_SUFFIX, EMBEDDED_DATABASE_TABLE, EMBEDDED_TABLES, EMBEDDED_TABLES_TABLE, ensure_embedded_schema,
+    definition_fingerprint, is_rtdb_database_file, iter_embedded_databases, legacy_sqlite_filename, native_database,
+    sqlite_filename, validate_native_table, write_embedded_definition,
 )
 
 __all__ = ['SQLiteDatabase', 'SQLiteTable', 'SQLiteTableKeyValue',
@@ -94,7 +94,7 @@ class SQLiteTable(MutableSequence):
         self.name = definition.eng_name
         self.columns = definition.column_names
         self.primary_keys = definition.primary_keys
-        self.path = Path(database_path or (database.directory / (self.name + '.sqlite3'))).resolve()
+        self.path = Path(database_path or (database.directory / (self.name + DB_SUFFIX))).resolve()
         self.shared = bool(shared)
         self.database_label = database_label
         self.native = native
@@ -1534,6 +1534,9 @@ class SQLiteDatabase:
                 if not native_database(self.directory / path):
                     raise ValueError(f'{database_file!r} requires a native SQLite embedded definition')
             else:
+                full_path = self.directory / path
+                if full_path.is_file() and not is_rtdb_database_file(full_path, self.schema_directory):
+                    raise ValueError(f'{database_file!r} requires a native SQLite embedded definition')
                 schema_name = path.stem
         self.schema_registry = SchemaRegistry(self.schema_directory, database_name=schema_name)
         self.busy_timeout, self.transaction_retries = float(busy_timeout), int(transaction_retries)
@@ -1587,7 +1590,7 @@ class SQLiteDatabase:
                 self._tables[name] = SQLiteTable(
                     self,
                     definition,
-                    database_path=document.path if embedded is not None else self.directory / (database_name + '.sqlite3'),
+                    database_path=document.path if embedded is not None else self.directory / (database_name + DB_SUFFIX),
                     shared=shared,
                     database_label=database_label,
                     native=native,

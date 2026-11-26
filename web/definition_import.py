@@ -63,7 +63,7 @@ class DefinitionImporter:
         try:
             definition = self.manager.definition(name)
         except APIError:
-            if not self.manager.database_file and (self.manager.data_dir / (name + '.sqlite3')).exists():
+            if not self.manager.database_file and (self.manager.data_dir / (name + '.db')).exists():
                 raise APIError(409, f'{name} 存在缺少可用内置结构定义的数据库，请先加载 JSON 定义完成迁移')
             return None, [], None
         with self.manager._database() as db:
@@ -281,7 +281,7 @@ class DefinitionImporter:
         if any(plan['old'] is not None for plan in plans):
             raise APIError(409, '多表导入暂不覆盖已有分散数据库，请先将目标表整理到同一数据库文件')
         database_name = self._group_database_name(payload, plans)
-        target_db = self.manager.data_dir / (database_name + '.sqlite3')
+        target_db = self.manager.data_dir / (database_name + '.db')
         target_json = self.manager.schema_dir / (database_name + '.json')
         target_python = self.manager.schema_dir / (database_name + '.py')
         if any(path.exists() for path in (target_db, target_json, target_python)):
@@ -305,7 +305,7 @@ class DefinitionImporter:
             for name in (plan['summary']['name'] for plan in plans):
                 connection = database[name]._connection()
                 connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        source_db = group_data / (database_name + '.sqlite3')
+        source_db = group_data / (database_name + '.db')
         if not source_db.is_file():
             raise APIError(500, '多表 SQLite 文件未生成')
         target_db.parent.mkdir(parents=True, exist_ok=True)
@@ -331,7 +331,7 @@ class DefinitionImporter:
         return apply_plan(self.manager, plan)
 
     def _apply(self, plan):
-        path = self.manager.data_dir / (plan['summary']['name'] + '.sqlite3')
+        path = self.manager.data_dir / (plan['summary']['name'] + '.db')
         created = plan['old'] is None
         if created:
             try:
@@ -359,7 +359,7 @@ class DefinitionImporter:
     def _apply_table(self, plan):
         manager = self.manager
         name, definition = plan['summary']['name'], plan['definition']
-        path = manager.data_dir / (name + '.sqlite3')
+        path = manager.data_dir / (name + '.db')
         manager.require_writable(name=name, path=path)
         schema_path = manager.schema_dir / (name + '.json')
         # BEGIN IMMEDIATE checks the preview revision after acquiring the writer lock.
@@ -430,7 +430,7 @@ class DefinitionImporter:
             if grouped or manager.database_file:
                 database_name = Path(manager.database_file).stem if manager.database_file else self._group_database_name(payload, plans)
                 for plan in plans:
-                    plan['summary']['database_file'] = database_name + '.sqlite3'
+                    plan['summary']['database_file'] = database_name + '.db'
                     plan['summary']['json_path'] = str(manager.schema_dir / (database_name + '.json'))
                     plan['summary']['python_path'] = str(manager.schema_dir / (database_name + '.py'))
             warnings = [f'{plan["summary"]["name"]}：{warning}' for plan in plans for warning in plan['summary']['warnings']]

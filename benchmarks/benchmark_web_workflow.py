@@ -22,9 +22,9 @@ def run(rows=10000, repeats=30):
             for name, kind, key in [('id','int',True),('value','float',False),('name','str',False)]]}
         for name in ['a','b']:
             manager.create_database_file({'name':name, 'tables':[definition]})
-            manager.for_database(name+'.sqlite3').insert('samples', {'rows':[
+            manager.for_database(name+'.db').insert('samples', {'rows':[
                 {'id':i,'value':i/10,'name':f'item_{i}'} for i in range(rows)]})
-        a, b = [manager.for_database(name+'.sqlite3') for name in ['a','b']]
+        a, b = [manager.for_database(name+'.db') for name in ['a','b']]
         api = SQLiteManagement(a)
         payload = {'sql':'SELECT * FROM samples','compact':True,'limit':500}
         first = api.sql('samples',payload)

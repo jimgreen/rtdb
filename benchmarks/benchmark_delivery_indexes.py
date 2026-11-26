@@ -35,7 +35,7 @@ def definition(columns=2, indexes=None):
 def http_benchmark(root):
     server=create_sqlite_server('127.0.0.1',0,root=root)
     manager=server.sqlite_manager;manager.create_database_file({'name':'lab','tables':[definition()]})
-    manager.for_database('lab.sqlite3').insert('samples',{'rows':[{'id':i,'v01':0} for i in range(1,501)]})
+    manager.for_database('lab.db').insert('samples',{'rows':[{'id':i,'v01':0} for i in range(1,501)]})
     thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01});thread.start()
     origin=f'http://127.0.0.1:{server.server_port}';delivery=server.audit_delivery
     def call(method,path,payload=None):
@@ -49,24 +49,24 @@ def http_benchmark(root):
                 for mode in (('sync','background') if iteration%2 else ('background','sync')):
                     assert delivery.drain(10)
                     manager.audit_delivery=delivery if mode=='background' else None
-                    records=SQLiteManagement(manager.for_database('lab.sqlite3')).rows('samples',{'limit':500})['records'][:size]
+                    records=SQLiteManagement(manager.for_database('lab.db')).rows('samples',{'limit':500})['records'][:size]
                     value=10000+size*100+iteration*2+(mode=='background')
                     payload={'changes':[{'ref':r['ref'],'values':{'v01':value}} for r in records]}
                     start=time.perf_counter()
-                    validated=call('POST','/api/manage/tables/samples/validate-edits?database=lab.sqlite3',payload)
+                    validated=call('POST','/api/manage/tables/samples/validate-edits?database=lab.db',payload)
                     assert validated['ok']
-                    result=call('PUT','/api/manage/tables/samples/cell-edits?database=lab.sqlite3&background=1&request_id='+uuid.uuid4().hex,payload)
+                    result=call('PUT','/api/manage/tables/samples/cell-edits?database=lab.db&background=1&request_id='+uuid.uuid4().hex,payload)
                     while 'task' in result:
                         task=result['task']
                         if task['status']=='done':result=task['result'];break
                         assert task['status'] in ('running','queued'),task
                         time.sleep(.15)
-                        result={'task':call('GET','/api/manage/tasks/'+task['id']+'?database=lab.sqlite3')}
+                        result={'task':call('GET','/api/manage/tasks/'+task['id']+'?database=lab.db')}
                     saved=(time.perf_counter()-start)*1000
                     assert result['updated']==size
                     assert delivery.drain(10)
                     synced=(time.perf_counter()-start)*1000
-                    assert all(r['row']['v01']==value for r in SQLiteManagement(manager.for_database('lab.sqlite3')).rows('samples',{'limit':500})['records'][:size])
+                    assert all(r['row']['v01']==value for r in SQLiteManagement(manager.for_database('lab.db')).rows('samples',{'limit':500})['records'][:size])
                     if iteration>=0:samples[mode].append(dict(save_ms=saved,including_log_delivery_ms=synced))
             results.append(dict(rows=size,timings={mode:{key:summary([item[key] for item in values]) for key in values[0]} for mode,values in samples.items()},samples=samples))
         return dict(scope='HTTP validate + background task save + task ledger + JSON decode + 150 ms task polling when needed; separately includes audit delivery; excludes browser rendering',results=results)
@@ -81,7 +81,7 @@ def index_benchmark(root):
         for mode in samples:
             manager=managers[mode]=SQLiteManager(root/mode/'data',root/mode/'defs')
             manager.create_database_file({'name':'lab','tables':[definition(21,None if mode=='all_columns' else [['v01','v02']])]})
-            db=databases[mode]=SQLiteDatabase(manager.data_dir,schema_directory=manager.schema_dir,database_file='lab.sqlite3');table=tables[mode]=db['samples']
+            db=databases[mode]=SQLiteDatabase(manager.data_dir,schema_directory=manager.schema_dir,database_file='lab.db');table=tables[mode]=db['samples']
             table.insert_many(rows)
         for iteration in range(-2,15):
             query_results=[]

@@ -17,7 +17,7 @@ class TaskTests(unittest.TestCase):
     def setUp(self):
         test_database_scope.DatabaseScopeTests.setUp(self)
         self.registry = TaskRegistry()
-        self.scoped = self.manager.for_database('plant_a.sqlite3')
+        self.scoped = self.manager.for_database('plant_a.db')
         self.api = SQLiteManagement(self.scoped)
         self.release = threading.Event()
 
@@ -41,7 +41,7 @@ class TaskTests(unittest.TestCase):
         task = self.submit(api=self.fake(lambda *args: {'ok': True, 'value': 7}))
         self.assertEqual(self.finished(task)['result']['value'], 7)
         with self.assertRaises(APIError) as caught:
-            self.registry.get(task['id'], 'plant_b.sqlite3')
+            self.registry.get(task['id'], 'plant_b.db')
         self.assertEqual(caught.exception.status, 404)
 
     def test_reject_unknown_background_operation(self):
@@ -163,7 +163,7 @@ class TaskHTTPTests(unittest.TestCase):
             with patch.object(SQLiteManagement,'dispatch',slow):
                 result=self.call('GET','/api/manage/logs?background=1',status=202)
                 task=result['task'];self.assertTrue(entered.is_set())
-                self.call('GET','/api/manage/tasks/'+task['id']+'?database=wrong.sqlite3',status=404)
+                self.call('GET','/api/manage/tasks/'+task['id']+'?database=wrong.db',status=404)
                 current=self.call('GET','/api/manage/tasks/'+task['id'])
                 self.assertEqual(current['status'],'running')
                 release.set();self.server.tasks.wait_initial(task['id'],None,5)

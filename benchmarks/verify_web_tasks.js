@@ -18,7 +18,7 @@ async (page) => {
   await page.reload();await page.waitForFunction(()=>!state.busy,{},{timeout:30000});
   check(await page.evaluate(()=>!backgroundTasks.pending()),'reload resumes existing task to completion');
   check((await page.locator('#operation-message').innerText()).includes('后台任务已完成'),'resumed result visible');
-  await page.locator('#database-select').selectOption('lab.sqlite3');await page.waitForFunction(()=>!state.busy&&state.records.length);
+  await page.locator('#database-select').selectOption('lab.db');await page.waitForFunction(()=>!state.busy&&state.records.length);
   const backup=await page.evaluate(()=>request('backup','POST',{tables:['samples']}));
   check(!!backup,'background backup stays scoped to selected database');
   check(errors.length===0,'no browser errors');return {passed:checks.length,checks,errors};

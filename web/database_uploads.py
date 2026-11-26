@@ -69,7 +69,7 @@ def status(manager, ident):
 
 def _remove(manager, ident):
     folder=session_path(manager,ident)
-    for name in ('payload.sqlite3','payload.sqlite3-wal','payload.sqlite3-shm','prepared.sqlite3','prepared.sqlite3-journal','raw.sqlite3','raw.sqlite3-journal','state.json'):
+    for name in ('payload.db','payload.db-wal','payload.db-shm','prepared.db','prepared.db-journal','raw.db','raw.db-journal','state.json'):
         (folder/name).unlink(missing_ok=True)
     # Never recursively remove unrecognized files or follow directories supplied by clients.
     if folder.exists() and not any(folder.iterdir()):folder.rmdir()
@@ -81,7 +81,7 @@ def create(manager, payload):
     filename=payload.get('filename');size=payload.get('size');modified=payload.get('last_modified',0)
     kind=payload.get('kind','snapshot')
     if kind not in ('snapshot','csv','e'):raise APIError(400,'不支持的上传类型')
-    extension={'csv':'.csv','e':'.e'}.get(kind,'.sqlite3')
+    extension={'csv':'.csv','e':'.e'}.get(kind,'.db')
     if not isinstance(filename,str) or len(filename)>255 or not filename.lower().endswith(extension) or len(filename)<=len(extension) or re.search(r'[\\/\x00-\x1f]',filename):
         raise APIError(400,'请选择单个 '+extension+' 文件')
     limit=128*1024**2 if kind in ('csv','e') else MAX_BYTES
@@ -136,7 +136,7 @@ def create(manager, payload):
         if len(active)>=MAX_SESSIONS or sum(value['size'] for value in active)+size>MAX_RESERVED:
             raise APIError(429,'未完成上传数量或预留空间已满，请先放弃不需要的上传')
         folder.mkdir(exist_ok=True)
-        (folder/'payload.sqlite3').write_bytes(b'')
+        (folder/'payload.db').write_bytes(b'')
         value=dict(id=ident,**identity,received=0,chunks=[],state='receiving',updated=time.time())
         _save(manager,value)
         return _public(value,True)
@@ -156,7 +156,7 @@ def put_chunk(manager, ident, offset, block, digest):
         if offset<value['received']:
             if value['chunks'][index]!=actual:raise APIError(409,'已接收位置的内容不同，不能混合两个文件')
             return _public(value)
-        path=session_path(manager,ident)/'payload.sqlite3'
+        path=session_path(manager,ident)/'payload.db'
         if not path.is_file() or path.stat().st_size<value['received']:raise APIError(409,'服务端临时文件缺失或损坏，请放弃后重新上传')
         with path.open('r+b') as stream:
             stream.truncate(value['received']);stream.seek(offset);stream.write(block)
@@ -189,19 +189,19 @@ def finalize(manager, ident):
         if value.get('kind')=='e':
             from .efile_imports import prepare
             return prepare(manager,value)
-        target=snapshots.directory(manager)/(ident+'.sqlite3');manifest=target.with_suffix('.json')
+        target=snapshots.directory(manager)/(ident+'.db');manifest=target.with_suffix('.json')
         if manifest.is_file():
             item=json.loads(manifest.read_text(encoding='utf-8'))
             if item.get('upload_id')!=ident:raise APIError(409,'快照编号冲突')
             _,result=snapshots.resolve(snapshots.scope(manager,item['database']),ident)
             value.update(state='ready',result=result);_save(manager,value)
-            (session_path(manager,ident)/'payload.sqlite3').unlink(missing_ok=True)
+            (session_path(manager,ident)/'payload.db').unlink(missing_ok=True)
             return result
         if value['state']=='error':raise APIError(422,value.get('error','上传校验失败，请重新上传'))
         if value['received']!=value['size']:raise APIError(409,'文件尚未上传完整')
         task=current_task();value.update(state='validating',task_id=task['id'] if task else None,task_fingerprint=task['fingerprint'] if task else None)
         _save(manager,value)
-        source=session_path(manager,ident)/'payload.sqlite3'
+        source=session_path(manager,ident)/'payload.db'
         try:
             actual=verify(manager,value)
             document=snapshots._validate(source)
@@ -216,9 +216,9 @@ def finalize(manager, ident):
                     conn.commit()
                     actual=snapshots._hash(source,'计算规范化后校验值')
                     byte_size=source.stat().st_size
-            database=manager._database_filename({'filename':document.eng_name+'.sqlite3'})
+            database=manager._database_filename({'filename':document.eng_name+'.db'})
             now=datetime.now(timezone.utc)
-            item=dict(id=ident,upload_id=ident,database=database,filename=f'{Path(database).stem}_uploaded_{ident[:8]}.sqlite3',
+            item=dict(id=ident,upload_id=ident,database=database,filename=f'{Path(database).stem}_uploaded_{ident[:8]}.db',
                       created=now.isoformat(),bytes=byte_size,sha256=actual,table_count=len(document.tables),tables=list(document.table_names))
             with committing('发布已校验的上传快照'):
                 linked=False
@@ -260,7 +260,7 @@ def recover_task(manager, task, signature):
             with lock(manager,ident):
                 value.update(state='ready',result=resolved)
                 _save(manager,value)
-                (session_path(manager,ident)/'payload.sqlite3').unlink(missing_ok=True)
+                (session_path(manager,ident)/'payload.db').unlink(missing_ok=True)
         except Exception:
             pass
     return resolved
@@ -268,7 +268,7 @@ def recover_task(manager, task, signature):
 
 def verify(manager,value):
     digest=hashlib.sha256();done=0
-    with (session_path(manager,value['id'])/'payload.sqlite3').open('rb') as stream:
+    with (session_path(manager,value['id'])/'payload.db').open('rb') as stream:
         for expected in value['chunks']:
             block=stream.read(CHUNK);done+=len(block);digest.update(block)
             if hashlib.sha256(block).hexdigest()!=expected:raise APIError(422,'服务端分块内容校验失败，请重新上传')

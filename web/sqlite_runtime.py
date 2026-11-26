@@ -106,7 +106,7 @@ class QueryVersions:
         try:
             stat=path.stat()
         except FileNotFoundError:
-            # 纯 JSON 兼容定义库在首次打开前尚无物理 .sqlite3 文件，安全跳过缓存。
+            # 纯 JSON 兼容定义库在首次打开前尚无物理 .db 文件，安全跳过缓存。
             return None, None
         identity=(stat.st_dev,stat.st_ino)
         entry=self.observers.get(filename)
@@ -174,7 +174,7 @@ class SQLiteRuntime:
     def _lock_name(filename):
         """为不同后缀或同名不同扩展的数据库生成不冲突的锁文件名。"""
         target = Path(filename)
-        if target.suffix.lower() == '.sqlite3':
+        if target.suffix.lower() == '.db':
             return '.sqlite-web.' + target.stem + '.lock'
         return '.sqlite-web.' + target.name + '.lock'
 

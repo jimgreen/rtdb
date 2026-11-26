@@ -56,7 +56,7 @@ def prepare(manager,value):
     if value['received']!=value['size']:raise APIError(409,'CSV 文件尚未上传完整')
     task=current_task();value.update(state='validating',task_id=task['id'] if task else None,task_fingerprint=task['fingerprint'] if task else None)
     uploads._save(manager,value)
-    folder=uploads.session_path(manager,value['id']);prepared=folder/'prepared.sqlite3'
+    folder=uploads.session_path(manager,value['id']);prepared=folder/'prepared.db'
     try:
         actual=uploads.verify(manager,value)
         # This is our disposable staging table; a cancelled preview is rebuilt.
@@ -67,7 +67,7 @@ def prepare(manager,value):
             create_layout(staging,table.definition,'rows','metadata')
             fields=','.join(f'c{i}' for i in range(len(table.columns)));markers=','.join('?' for _ in table.columns)
             sample=[];count=0;batch_values=[]
-            with (folder/'payload.sqlite3').open('r',encoding=value['encoding'],errors='strict',newline='') as stream:
+            with (folder/'payload.db').open('r',encoding=value['encoding'],errors='strict',newline='') as stream:
                 reader=csv.DictReader(stream,strict=True)
                 names=reader.fieldnames
                 if not names or len(names)!=len(set(names)) or set(names)!=set(table.columns):
@@ -141,7 +141,7 @@ def apply(manager,name,payload):
         if value.get('kind')!='csv' or value['state']!='ready':raise APIError(409,'请先完成 CSV 校验预览')
         if value['database']!=manager.database_file or value['table']!=name:raise APIError(409,'上传文件绑定的数据库或表与当前目标不同')
         if preview.get('token')!=payload.get('token'):raise APIError(409,'CSV 预览编号不匹配，请重新预览')
-        prepared=uploads.session_path(manager,ident)/'prepared.sqlite3'
+        prepared=uploads.session_path(manager,ident)/'prepared.db'
         if not prepared.is_file() or file_hash(prepared)!=preview['prepared_sha256']:raise APIError(422,'暂存 CSV 已损坏，请重新上传')
         signature=fingerprint({'token':preview['token'],'mode':mode})
         with manager.session(name) as table, closing(sqlite3.connect(prepared.as_uri()+'?mode=ro',uri=True)) as source:

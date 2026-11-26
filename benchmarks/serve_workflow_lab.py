@@ -19,7 +19,7 @@ def main():
     manager = SQLiteManager(root / 'sqlite_dat', root / 'def/table')
     try:
         for name, initial in [('plant_a', 10), ('plant_b', 100)]:
-            if (root / 'sqlite_dat' / (name + '.sqlite3')).exists():
+            if (root / 'sqlite_dat' / (name + '.db')).exists():
                 continue
             definitions = []
             for table in ['devices', 'samples']:
@@ -33,7 +33,7 @@ def main():
                 for column in definition['columns']:
                     column.update(disp_type='文本', disp_menu='')
             manager.create_database_file({'name': name, 'chn_name': name, 'tables': definitions})
-            scoped = manager.for_database(name + '.sqlite3')
+            scoped = manager.for_database(name + '.db')
             scoped.insert('devices', {'rows': [{'id': i, 'name': name, 'value': initial+i/10,
                 'other': initial+i/5, 'enabled': True} for i in range(1, 201)]})
     finally:

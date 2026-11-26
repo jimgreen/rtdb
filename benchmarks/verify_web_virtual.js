@@ -7,7 +7,7 @@ async(page)=>{
   const cell=(row,field)=>page.locator(`#data-grid td[data-cell-row="${row}"][data-cell-field="${field}"]`);
   await page.goto(origin);await idle();
   check(await page.evaluate(()=>state.dataDir.includes('browser-render-lab')),'isolated fixture verified');
-  await page.locator('#database-select').selectOption('lab.sqlite3');await idle();
+  await page.locator('#database-select').selectOption('lab.db');await idle();
   await page.locator('#page-size').selectOption('500');await idle();
   check(await page.evaluate(()=>virtualGrid.active&&state.records.length===500),'500 x 40 page uses virtual rendering');
   check(await page.locator('#data-grid td.value').count()<2000,'mounted cells bounded by viewport');

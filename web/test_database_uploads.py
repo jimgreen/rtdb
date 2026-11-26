@@ -18,7 +18,7 @@ class UploadTests(unittest.TestCase):
     tearDown = test_database_scope.DatabaseScopeTests.tearDown
 
     def source(self):
-        scoped=self.manager.for_database('plant_a.sqlite3')
+        scoped=self.manager.for_database('plant_a.db')
         scoped.insert('nodes',{'rows':[{'id':1,'name':'上传内容'}]})
         with closing(sqlite3.connect(scoped.data_dir/scoped.database_file)) as db, db:
             db.execute('CREATE TABLE extra_blob(value BLOB)')
@@ -27,7 +27,7 @@ class UploadTests(unittest.TestCase):
         return database_snapshots.resolve(scoped,item['id'])[0].read_bytes()
 
     def init(self,data,ident='a'*32):
-        return uploads.create(self.manager,dict(id=ident,filename='uploaded.sqlite3',size=len(data),last_modified=123))
+        return uploads.create(self.manager,dict(id=ident,filename='uploaded.db',size=len(data),last_modified=123))
 
     def send(self,ident,data,start=0):
         for offset in range(start,len(data),uploads.CHUNK):
@@ -46,7 +46,7 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(uploads.finalize(other,ident)['id'],result['id'])
             scoped=database_snapshots.scope(other,result['database'])
             database_snapshots.restore(scoped,result['id'],{'name':'uploaded_copy'})
-            self.assertEqual(other.for_database('uploaded_copy.sqlite3').rows('nodes')['rows'][0]['name'],'上传内容')
+            self.assertEqual(other.for_database('uploaded_copy.db').rows('nodes')['rows'][0]['name'],'上传内容')
         finally:other.close()
 
     def test_duplicate_chunks_are_idempotent_and_mismatch_rejected(self):
@@ -68,14 +68,14 @@ class UploadTests(unittest.TestCase):
 
     def test_unacknowledged_tail_is_replaced_on_resume(self):
         data=self.source();ident=self.init(data)['id']
-        path=uploads.session_path(self.manager,ident)/'payload.sqlite3'
+        path=uploads.session_path(self.manager,ident)/'payload.db'
         path.write_bytes(b'partial crashed write')
         self.send(ident,data)
         self.assertEqual(path.read_bytes(),data)
 
     def test_disk_corruption_detected_before_snapshot_publication(self):
         data=self.source();ident=self.init(data)['id'];self.send(ident,data)
-        path=uploads.session_path(self.manager,ident)/'payload.sqlite3'
+        path=uploads.session_path(self.manager,ident)/'payload.db'
         with path.open('r+b') as f:f.seek(-1,2);f.write(b'X')
         with self.assertRaises(APIError):uploads.finalize(self.manager,ident)
         self.assertEqual(uploads.status(self.manager,ident)['state'],'error')
@@ -85,24 +85,24 @@ class UploadTests(unittest.TestCase):
         data=b'not a sqlite file';ident=self.init(data)['id'];self.send(ident,data)
         with self.assertRaises(APIError):uploads.finalize(self.manager,ident)
         data=self.source();ident='b'*32
-        uploads.create(self.manager,dict(id=ident,filename='snapshot.sqlite3',size=len(data),sha256='0'*64))
+        uploads.create(self.manager,dict(id=ident,filename='snapshot.db',size=len(data),sha256='0'*64))
         self.send(ident,data)
         with self.assertRaises(APIError):uploads.finalize(self.manager,ident)
 
     def test_identity_quota_and_path_checks(self):
         self.init(b'a')
         with self.assertRaises(APIError):self.init(b'aa')
-        for value in ('../escape','../../x.sqlite3','x-wal','x.sqlite3/other'):
+        for value in ('../escape','../../x.db','x-wal','x.db/other'):
             with self.assertRaises(APIError):uploads.create(self.manager,dict(id='b'*32,filename=value,size=1))
         with self.assertRaises(APIError):uploads.status(self.manager,'../x')
         with patch.object(uploads,'MAX_SESSIONS',1):
             with self.assertRaises(APIError):self.init(b'b','b'*32)
-        with self.assertRaises(APIError):uploads.create(self.manager,dict(id='b'*32,filename='x.sqlite3',size=uploads.MAX_BYTES+1))
+        with self.assertRaises(APIError):uploads.create(self.manager,dict(id='b'*32,filename='x.db',size=uploads.MAX_BYTES+1))
 
     def test_expiry_and_discard_only_remove_staging(self):
         data=self.source();ident=self.init(data)['id'];self.send(ident,data);result=uploads.finalize(self.manager,ident)
         uploads.discard(self.manager,ident)
-        self.assertTrue((self.manager.data_dir/'.web-snapshots'/f'{result["id"]}.sqlite3').is_file())
+        self.assertTrue((self.manager.data_dir/'.web-snapshots'/f'{result["id"]}.db').is_file())
         self.init(b'a','c'*32)
         with patch.object(uploads.time,'time',return_value=9999999999):
             with self.assertRaises(APIError) as error:uploads.status(self.manager,'c'*32)
@@ -122,8 +122,8 @@ class UploadTests(unittest.TestCase):
     def test_crash_between_hardlink_and_manifest_can_finish_publication(self):
         import os
         data=self.source();ident=self.init(data)['id'];self.send(ident,data)
-        source=uploads.session_path(self.manager,ident)/'payload.sqlite3'
-        target=database_snapshots.directory(self.manager)/(ident+'.sqlite3')
+        source=uploads.session_path(self.manager,ident)/'payload.db'
+        target=database_snapshots.directory(self.manager)/(ident+'.db')
         os.link(source,target)
         result=uploads.finalize(self.manager,ident)
         self.assertEqual(result['sha256'],hashlib.sha256(data).hexdigest())
@@ -132,7 +132,7 @@ class UploadTests(unittest.TestCase):
 
     def test_publication_does_not_replace_unrelated_snapshot(self):
         data=self.source();ident=self.init(data)['id'];self.send(ident,data)
-        target=database_snapshots.directory(self.manager)/(ident+'.sqlite3')
+        target=database_snapshots.directory(self.manager)/(ident+'.db')
         target.write_bytes(b'unrelated')
         with self.assertRaises(APIError) as error:uploads.finalize(self.manager,ident)
         self.assertEqual(error.exception.status,409)
@@ -175,7 +175,7 @@ class UploadTests(unittest.TestCase):
             with response:
                 self.assertEqual(response.status,expected);return json.load(response)
         try:
-            data=self.source();payload=dict(id='f'*32,filename='upload.sqlite3',size=len(data))
+            data=self.source();payload=dict(id='f'*32,filename='upload.db',size=len(data))
             session=call('database-uploads','POST',json.dumps(payload).encode(),{'Content-Type':'application/json'})
             block=data[:uploads.CHUNK];path='database-uploads/'+session['id']+'/chunk?offset=0'
             headers={'Content-Type':'application/octet-stream','X-Chunk-SHA256':hashlib.sha256(block).hexdigest()}

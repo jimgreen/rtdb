@@ -23,7 +23,7 @@ def hold_file_fence(path, started, release):
 
 
 def external_write(data, definitions):
-    with SQLiteDatabase(data,schema_directory=definitions,database_file='plant_a.sqlite3') as db:
+    with SQLiteDatabase(data,schema_directory=definitions,database_file='plant_a.db') as db:
         db['nodes'].kv.update(1,{'name':'external process'})
 
 
@@ -37,18 +37,18 @@ class WorkflowOptimizationTests(unittest.TestCase):
             with self.manager.for_database(filename).session('nodes'):
                 barrier.wait(timeout=2)
         with ThreadPoolExecutor(2) as pool:
-            list(pool.map(read,['plant_a.sqlite3','plant_b.sqlite3']))
+            list(pool.map(read,['plant_a.db','plant_b.db']))
 
     def test_schema_change_in_a_does_not_block_b(self):
-        a=self.manager.for_database('plant_a.sqlite3')
+        a=self.manager.for_database('plant_a.db')
         with ThreadPoolExecutor(1) as pool, a.exclusive():
-            future=pool.submit(lambda:self.manager.for_database('plant_b.sqlite3').tables())
+            future=pool.submit(lambda:self.manager.for_database('plant_b.db').tables())
             self.assertEqual(len(future.result(timeout=2)['tables']),2)
 
     def test_same_database_readers_overlap(self):
         barrier=threading.Barrier(2)
         def read(_):
-            with self.manager.for_database('plant_a.sqlite3').session('nodes'):
+            with self.manager.for_database('plant_a.db').session('nodes'):
                 barrier.wait(timeout=2)
         with ThreadPoolExecutor(2) as pool: list(pool.map(read,range(2)))
 
@@ -68,7 +68,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(process.exitcode,0)
 
     def test_unchanged_query_skips_row_decode_and_external_write_invalidates(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); api=SQLiteManagement(scoped)
+        scoped=self.manager.for_database('plant_a.db'); api=SQLiteManagement(scoped)
         scoped.insert('nodes',{'rows':[{'id':1,'name':'A'}]})
         payload={'sql':'SELECT * FROM nodes','compact':True}
         initial=api.sql('nodes',payload)
@@ -81,7 +81,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(changed['records'][0]['row']['name'],'external')
 
     def test_general_sql_never_uses_conditional_query_cache(self):
-        api=SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+        api=SQLiteManagement(self.manager.for_database('plant_a.db'))
         payload={'sql':'SELECT random() AS value','compact':True}
         first=api.sql('nodes',payload)
         second=api.sql('nodes',{**payload,'if_version':first['result_version']})
@@ -89,7 +89,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertNotEqual(first['rows'],second['rows'])
 
     def test_schema_change_closes_cache_and_invalidates_result(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); api=SQLiteManagement(scoped)
+        scoped=self.manager.for_database('plant_a.db'); api=SQLiteManagement(scoped)
         payload={'sql':'SELECT * FROM nodes','compact':True}
         first=api.sql('nodes',payload)
         old=scoped.definition('nodes').to_mapping(); desired=copy.deepcopy(old)
@@ -99,14 +99,14 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertNotEqual(first['result_version'],second['result_version'])
 
     def test_validation_returns_draft_index_and_field(self):
-        api=SQLiteManagement(self.manager.for_database('plant_a.sqlite3'))
+        api=SQLiteManagement(self.manager.for_database('plant_a.db'))
         with self.assertRaises(APIError) as caught:
             api.validate_edits('nodes',{'inserts':[{'id':None,'name':'missing key'}]})
         self.assertEqual(caught.exception.details['issues'][0]['draft_index'],0)
         self.assertEqual(caught.exception.details['issues'][0]['fields'],['id'])
 
     def test_large_integer_keys_do_not_resend_unchanged_rows(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); api=SQLiteManagement(scoped)
+        scoped=self.manager.for_database('plant_a.db'); api=SQLiteManagement(scoped)
         scoped.insert('nodes',{'rows':[{'id':2**60,'name':'A'},{'id':2**60+1,'name':'B'}]})
         payload={'sql':'SELECT * FROM nodes','compact':True}
         first=browser_value(api.sql('nodes',payload))
@@ -115,7 +115,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(len(delta['records']),1)
 
     def test_closed_observer_stamp_cannot_cache_old_results(self):
-        cache=self.manager._runtime.versions; filename='plant_a.sqlite3'
+        cache=self.manager._runtime.versions; filename='plant_a.db'
         _,before=cache.probe(filename,'test',None)
         cache.close(filename)
         cache.store(filename,'test',before,{'result_version':'old'})
@@ -123,7 +123,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_external_process_invalidates_query_cache(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); api=SQLiteManagement(scoped)
+        scoped=self.manager.for_database('plant_a.db'); api=SQLiteManagement(scoped)
         scoped.insert('nodes',{'rows':[{'id':1,'name':'A'}]})
         payload={'sql':'SELECT * FROM nodes','compact':True}
         first=api.sql('nodes',payload)
@@ -135,7 +135,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(changed['records'][0]['row']['name'],'external process')
 
     def test_conflict_contains_current_row_and_fields(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); api=SQLiteManagement(scoped)
+        scoped=self.manager.for_database('plant_a.db'); api=SQLiteManagement(scoped)
         scoped.insert('nodes',{'rows':[{'id':1,'name':'A'}]})
         old=api.rows('nodes',{})['records'][0]
         with scoped._database() as database:
@@ -148,7 +148,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(detail['fields'],['name'])
 
     def test_import_failure_rolls_back_schema_and_rows(self):
-        scoped=self.manager.for_database('plant_a.sqlite3')
+        scoped=self.manager.for_database('plant_a.db')
         scoped.insert('nodes',{'rows':[{'id':1,'name':'original'}]})
         importer=DefinitionImporter(scoped)
         payload={'format':'e','text':'<nodes>\n@ id name value\n# 1 changed 1.5\n</nodes>','mode':'merge'}
@@ -162,14 +162,14 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(len(scoped.tables()['tables']),2)
 
     def test_merge_updates_only_changed_rows_and_preserves_positions(self):
-        scoped=self.manager.for_database('plant_a.sqlite3')
+        scoped=self.manager.for_database('plant_a.db')
         scoped.insert('nodes',{'rows':[{'id':1,'name':'A'},{'id':2,'name':'B'}]})
         with scoped.session('nodes') as table:
             positions=table._connection().execute('SELECT _pos FROM rtdb_data_nodes ORDER BY _pos').fetchall()
         statements=[]; original=sqlite3.connect
         def traced(*args,**kwargs):
             connection=original(*args,**kwargs)
-            if str(args[0]) == str(self.root/'data/plant_a.sqlite3'):
+            if str(args[0]) == str(self.root/'data/plant_a.db'):
                 connection.set_trace_callback(statements.append)
             return connection
         importer=DefinitionImporter(scoped)
@@ -186,7 +186,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
             self.assertEqual(table.kv.get(2)['name'],'changed')
 
     def test_new_table_failure_leaves_no_table(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); importer=DefinitionImporter(scoped)
+        scoped=self.manager.for_database('plant_a.db'); importer=DefinitionImporter(scoped)
         payload={'format':'e','text':'<fresh>\n@ id name\n# 1 A\n</fresh>','mode':'merge'}
         preview=importer.run(payload,preview=True)
         with patch('web.atomic_import.write_embedded_definition',side_effect=OSError('injected')):
@@ -195,7 +195,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual({item['name'] for item in scoped.tables()['tables']},{'nodes','lines'})
 
     def test_committed_import_export_failure_recovers_on_startup(self):
-        scoped=self.manager.for_database('plant_a.sqlite3'); importer=DefinitionImporter(scoped)
+        scoped=self.manager.for_database('plant_a.db'); importer=DefinitionImporter(scoped)
         payload={'format':'e','text':'<nodes>\n@ id name value\n# 1 committed 1.5\n</nodes>','mode':'merge'}
         preview=importer.run(payload,preview=True)
         def fail_python_export(path, text):
@@ -208,7 +208,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         self.assertTrue(scoped._journal.exists())
         recovered=SQLiteManager(self.root/'data',self.root/'defs')
         try:
-            with recovered.for_database('plant_a.sqlite3').session('nodes') as table:
+            with recovered.for_database('plant_a.db').session('nodes') as table:
                 self.assertEqual(table.all(),[{'id':1,'name':'committed','value':1.5}])
             self.assertFalse(scoped._journal.exists())
         finally: recovered.close()
@@ -217,7 +217,7 @@ class WorkflowOptimizationTests(unittest.TestCase):
         from web.test_sqlite_multi_database import table_definition
         old=table_definition('legacy','旧表','id')
         self.manager.save_schema('legacy',{'definition':old},creating=True)
-        scoped=self.manager.for_database('legacy.sqlite3')
+        scoped=self.manager.for_database('legacy.db')
         scoped.insert('legacy',{'rows':[{'id':1,'name':'A'}]})
         importer=DefinitionImporter(scoped)
         payload={'format':'e','text':'<fresh>\n@ id name\n# 1 new\n</fresh>','mode':'merge'}

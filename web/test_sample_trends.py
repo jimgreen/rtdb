@@ -41,7 +41,7 @@ class SampleTrendsTest(unittest.TestCase):
         self.schema_dir.mkdir(parents=True, exist_ok=True)
 
         # 创建一个带数值字段和布尔字段的 RTDB 测试库（grouped .json 定义）
-        self.db_filename = 'plant_a.sqlite3'
+        self.db_filename = 'plant_a.db'
         grouped_def = {
             'head': {'eng_name': 'plant_a', 'chn_name': 'A站数据库'},
             'tables': [
@@ -202,7 +202,7 @@ class SampleTrendsTest(unittest.TestCase):
         # 5. 验证侧库隔离：.rtdb-trends 存在且不会被列出为业务数据库
         trends_dir = self.workspace / '.rtdb-trends'
         self.assertTrue(trends_dir.is_dir())
-        self.assertGreaterEqual(len(list(trends_dir.glob('*.sqlite3'))), 1)
+        self.assertGreaterEqual(len(list(trends_dir.glob('*.db'))), 1)
         status, dbs = _http_json(self.base, '/api/manage/databases')
         self.assertEqual(status, 200)
         db_names = {item['filename'] for item in dbs['databases']}

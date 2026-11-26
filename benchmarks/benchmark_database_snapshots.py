@@ -30,7 +30,7 @@ def measure(count, repeats):
     with tempfile.TemporaryDirectory(prefix='rtdb-snapshot-benchmark-') as temp:
         root=Path(temp);manager=SQLiteManager(root/'data',root/'defs')
         manager.create_database_file({'name':'lab','tables':[table_definition('nodes','节点','id'),table_definition('lines','线路','id')]})
-        scoped=manager.for_database('lab.sqlite3');api=SQLiteManagement(scoped)
+        scoped=manager.for_database('lab.db');api=SQLiteManagement(scoped)
         try:
             for name in ('nodes','lines'):
                 for start in range(0,count,2000):

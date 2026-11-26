@@ -1,5 +1,5 @@
 /* ==========================================================================
-   RTDB 管理终端 · 多视觉风格预设体系 (8 套官方 Design Tokens + 多语言防溢出)
+   RTDB 管理终端 · 多视觉风格预设体系 (14 套官方 Design Tokens + 多语言防溢出)
    遵循 60-30-10 配色原则、8px 空间基准与西里尔字符字体兼容
    ========================================================================== */
 
@@ -475,6 +475,402 @@ html[data-theme="sci-fi-matrix"] {
   --radius-lg: 8px;
 }
 
+/* 9. 极地冰蓝 (arctic-frost) */
+html[data-theme="arctic-frost"] {
+  color-scheme: light;
+  --bg-canvas: #F0F6FB;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #E6F0F8;
+  --bg-hover: #E0F2FE;
+  --bg-input: #FFFFFF;
+  --bg-option: #FFFFFF;
+  --bg-active: rgba(2, 132, 199, 0.11);
+  --bg-selected: rgba(2, 132, 199, 0.18);
+  --table-stripe: #F5FAFD;
+  --table-hover: #E0F2FE;
+
+  --text-primary: #0C2233;
+  --text-secondary: #37576F;
+  --text-muted: #4B6A82;
+  --border: #D4E4F1;
+  --border-subtle: #E3EFF8;
+  --border-strong: #B0CEE5;
+
+  --accent: #0284C7;
+  --accent-btn: #0284C7;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #0369A1;
+  --accent-soft: rgba(2, 132, 199, 0.11);
+  --accent-ring: rgba(2, 132, 199, 0.30);
+
+  --success: #0D9488;
+  --success-bg: rgba(13, 148, 136, 0.12);
+  --success-border: rgba(13, 148, 136, 0.28);
+  --warning: #D97706;
+  --warning-text: #B45309;
+  --warning-bg: rgba(217, 119, 6, 0.13);
+  --warning-border: rgba(217, 119, 6, 0.30);
+  --danger: #DC2626;
+  --danger-hover: #B91C1C;
+  --danger-bg: rgba(220, 38, 38, 0.10);
+  --danger-border: rgba(220, 38, 38, 0.28);
+
+  --key-bg: #EBF7FD;
+  --key-head-bg: #DCEFFA;
+  --key-selected-bg: #C5E4F7;
+  --key-text: #0369A1;
+  --key-border: #B5D9F0;
+
+  --modified-bg: #FEF9C3;
+  --modified-bar: #D97706;
+  --draft-bg: #E6F4FC;
+  --draft-head-bg: #FEF3C7;
+  --draft-head-text: #B45309;
+
+  --shadow-sm: 0 2px 8px rgba(12, 34, 51, 0.05);
+  --shadow-md: 0 8px 22px rgba(12, 34, 51, 0.10);
+  --shadow-lg: 0 20px 54px rgba(12, 34, 51, 0.18);
+  --backdrop: rgba(12, 34, 51, 0.42);
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+}
+
+/* 10. 护眼暖纸 (warm-paper) */
+html[data-theme="warm-paper"] {
+  color-scheme: light;
+  --bg-canvas: #F6F2E9;
+  --bg-surface: #FFFDF8;
+  --bg-subtle: #EFE9DC;
+  --bg-hover: #E9E2D2;
+  --bg-input: #FFFDF8;
+  --bg-option: #FFFDF8;
+  --bg-active: rgba(21, 128, 61, 0.10);
+  --bg-selected: rgba(21, 128, 61, 0.16);
+  --table-stripe: #F9F6EE;
+  --table-hover: #EDF6EF;
+
+  --text-primary: #231F1A;
+  --text-secondary: #534B40;
+  --text-muted: #6B6255;
+  --border: #E2DACB;
+  --border-subtle: #ECE5D8;
+  --border-strong: #CBBFA9;
+
+  --accent: #15803D;
+  --accent-btn: #15803D;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #166534;
+  --accent-soft: rgba(21, 128, 61, 0.11);
+  --accent-ring: rgba(21, 128, 61, 0.28);
+
+  --success: #15803D;
+  --success-bg: rgba(21, 128, 61, 0.12);
+  --success-border: rgba(21, 128, 61, 0.28);
+  --warning: #B45309;
+  --warning-text: #92400E;
+  --warning-bg: rgba(180, 83, 9, 0.13);
+  --warning-border: rgba(180, 83, 9, 0.30);
+  --danger: #B91C1C;
+  --danger-hover: #991B1B;
+  --danger-bg: rgba(185, 28, 28, 0.11);
+  --danger-border: rgba(185, 28, 28, 0.28);
+
+  --key-bg: #EFF5EE;
+  --key-head-bg: #E1EDE0;
+  --key-selected-bg: #CFE3CD;
+  --key-text: #166534;
+  --key-border: #C2D9C0;
+
+  --modified-bg: #FBF1C7;
+  --modified-bar: #B45309;
+  --draft-bg: #EDF5EE;
+  --draft-head-bg: #F7E8BA;
+  --draft-head-text: #92400E;
+
+  --shadow-sm: 0 1px 3px rgba(35, 31, 26, 0.05);
+  --shadow-md: 0 6px 18px rgba(35, 31, 26, 0.10);
+  --shadow-lg: 0 18px 48px rgba(35, 31, 26, 0.18);
+  --backdrop: rgba(35, 31, 26, 0.44);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 11. 冷灰工程 (slate-daylight) */
+html[data-theme="slate-daylight"] {
+  color-scheme: light;
+  --bg-canvas: #EDF1F5;
+  --bg-surface: #FAFBFD;
+  --bg-subtle: #E2E8F0;
+  --bg-hover: #DDE5F0;
+  --bg-input: #FFFFFF;
+  --bg-option: #FFFFFF;
+  --bg-active: rgba(29, 78, 216, 0.10);
+  --bg-selected: rgba(29, 78, 216, 0.16);
+  --table-stripe: #F2F5F9;
+  --table-hover: #E6EFFC;
+
+  --text-primary: #111827;
+  --text-secondary: #334155;
+  --text-muted: #475569;
+  --border: #CBD5E1;
+  --border-subtle: #DCE3EC;
+  --border-strong: #94A3B8;
+
+  --accent: #1D4ED8;
+  --accent-btn: #1D4ED8;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #1E40AF;
+  --accent-soft: rgba(29, 78, 216, 0.10);
+  --accent-ring: rgba(29, 78, 216, 0.28);
+
+  --success: #047857;
+  --success-bg: rgba(4, 120, 87, 0.12);
+  --success-border: rgba(4, 120, 87, 0.28);
+  --warning: #B45309;
+  --warning-text: #92400E;
+  --warning-bg: rgba(180, 83, 9, 0.13);
+  --warning-border: rgba(180, 83, 9, 0.30);
+  --danger: #DC2626;
+  --danger-hover: #B91C1C;
+  --danger-bg: rgba(220, 38, 38, 0.11);
+  --danger-border: rgba(220, 38, 38, 0.28);
+
+  --key-bg: #EBF1FB;
+  --key-head-bg: #DDE7F7;
+  --key-selected-bg: #CADBF3;
+  --key-text: #1E40AF;
+  --key-border: #B6CBEB;
+
+  --modified-bg: #FEF3C7;
+  --modified-bar: #B45309;
+  --draft-bg: #E8F0FC;
+  --draft-head-bg: #FDE68A;
+  --draft-head-text: #92400E;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 6px 18px rgba(15, 23, 42, 0.10);
+  --shadow-lg: 0 18px 48px rgba(15, 23, 42, 0.18);
+  --backdrop: rgba(15, 23, 42, 0.45);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* 12. 深海工业蓝 (ocean-slate) */
+html[data-theme="ocean-slate"] {
+  color-scheme: dark;
+  --bg-canvas: #071422;
+  --bg-surface: #0D2036;
+  --bg-subtle: #142C48;
+  --bg-hover: #183657;
+  --bg-input: #0A192B;
+  --bg-option: #0D2036;
+  --bg-active: rgba(56, 189, 248, 0.14);
+  --bg-selected: rgba(56, 189, 248, 0.24);
+  --table-stripe: #10263F;
+  --table-hover: #183657;
+
+  --text-primary: #EAF4FC;
+  --text-secondary: #B4CFE4;
+  --text-muted: #8EB2CE;
+  --border: rgba(56, 189, 248, 0.16);
+  --border-subtle: rgba(56, 189, 248, 0.09);
+  --border-strong: rgba(56, 189, 248, 0.30);
+
+  --accent: #38BDF8;
+  --accent-btn: #0284C7;
+  --accent-btn-text: #FFFFFF;
+  --accent-hover: #0EA5E9;
+  --accent-soft: rgba(56, 189, 248, 0.15);
+  --accent-ring: rgba(56, 189, 248, 0.36);
+
+  --success: #34D399;
+  --success-bg: rgba(52, 211, 153, 0.15);
+  --success-border: rgba(52, 211, 153, 0.32);
+  --warning: #FBBF24;
+  --warning-text: #FCD34D;
+  --warning-bg: rgba(251, 191, 36, 0.16);
+  --warning-border: rgba(251, 191, 36, 0.34);
+  --danger: #FB7185;
+  --danger-hover: #F43F5E;
+  --danger-bg: rgba(251, 113, 133, 0.16);
+  --danger-border: rgba(251, 113, 133, 0.36);
+
+  --key-bg: #0B253B;
+  --key-head-bg: #10324E;
+  --key-selected-bg: #17456B;
+  --key-text: #7DD3FC;
+  --key-border: rgba(125, 211, 252, 0.26);
+
+  --modified-bg: rgba(251, 191, 36, 0.18);
+  --modified-bar: #FBBF24;
+  --draft-bg: rgba(56, 189, 248, 0.12);
+  --draft-head-bg: rgba(251, 191, 36, 0.20);
+  --draft-head-text: #FCD34D;
+
+  --shadow-sm: 0 4px 18px rgba(2, 10, 20, 0.36);
+  --shadow-md: 0 10px 28px rgba(2, 10, 20, 0.52);
+  --shadow-lg: 0 24px 64px rgba(1, 6, 14, 0.72);
+  --backdrop: rgba(3, 10, 20, 0.70);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 13. 北欧极夜 (nord-dark) */
+html[data-theme="nord-dark"] {
+  color-scheme: dark;
+  --bg-canvas: #242933;
+  --bg-surface: #2E3440;
+  --bg-subtle: #3B4252;
+  --bg-hover: #434C5E;
+  --bg-input: #272D38;
+  --bg-option: #2E3440;
+  --bg-active: rgba(136, 192, 208, 0.16);
+  --bg-selected: rgba(136, 192, 208, 0.26);
+  --table-stripe: #333A47;
+  --table-hover: #434C5E;
+
+  --text-primary: #ECEFF4;
+  --text-secondary: #D8DEE9;
+  --text-muted: #A5B1C6;
+  --border: rgba(216, 222, 233, 0.12);
+  --border-subtle: rgba(216, 222, 233, 0.07);
+  --border-strong: rgba(216, 222, 233, 0.24);
+
+  --accent: #88C0D0;
+  --accent-btn: #5E81AC;
+  --accent-btn-text: #ECEFF4;
+  --accent-hover: #8FBCBB;
+  --accent-soft: rgba(136, 192, 208, 0.16);
+  --accent-ring: rgba(136, 192, 208, 0.36);
+
+  --success: #A3BE8C;
+  --success-bg: rgba(163, 190, 140, 0.16);
+  --success-border: rgba(163, 190, 140, 0.34);
+  --warning: #EBCB8B;
+  --warning-text: #F2D8A3;
+  --warning-bg: rgba(235, 203, 139, 0.16);
+  --warning-border: rgba(235, 203, 139, 0.34);
+  --danger: #BF616A;
+  --danger-hover: #D06F79;
+  --danger-bg: rgba(191, 97, 106, 0.20);
+  --danger-border: rgba(191, 97, 106, 0.40);
+
+  --key-bg: #2A3642;
+  --key-head-bg: #32404E;
+  --key-selected-bg: #3D5061;
+  --key-text: #8FBCBB;
+  --key-border: rgba(143, 188, 187, 0.28);
+
+  --modified-bg: rgba(235, 203, 139, 0.18);
+  --modified-bar: #EBCB8B;
+  --draft-bg: rgba(136, 192, 208, 0.13);
+  --draft-head-bg: rgba(235, 203, 139, 0.20);
+  --draft-head-text: #F2D8A3;
+
+  --shadow-sm: 0 4px 16px rgba(15, 19, 26, 0.28);
+  --shadow-md: 0 10px 26px rgba(15, 19, 26, 0.44);
+  --shadow-lg: 0 22px 58px rgba(10, 14, 20, 0.62);
+  --backdrop: rgba(15, 19, 26, 0.65);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+/* 14. 碳黑琥珀 (industrial-amber) */
+html[data-theme="industrial-amber"] {
+  color-scheme: dark;
+  --bg-canvas: #121110;
+  --bg-surface: #1C1A18;
+  --bg-subtle: #272420;
+  --bg-hover: #2E2922;
+  --bg-input: #161412;
+  --bg-option: #1C1A18;
+  --bg-active: rgba(245, 158, 11, 0.15);
+  --bg-selected: rgba(245, 158, 11, 0.25);
+  --table-stripe: #211E1B;
+  --table-hover: #2E2922;
+
+  --text-primary: #FAF5ED;
+  --text-secondary: #D4C8B8;
+  --text-muted: #B5AA9A;
+  --border: rgba(245, 158, 11, 0.18);
+  --border-subtle: rgba(245, 158, 11, 0.10);
+  --border-strong: rgba(245, 158, 11, 0.34);
+
+  --accent: #F59E0B;
+  --accent-btn: #D97706;
+  --accent-btn-text: #121110;
+  --accent-hover: #FBBF24;
+  --accent-soft: rgba(245, 158, 11, 0.16);
+  --accent-ring: rgba(245, 158, 11, 0.38);
+
+  --success: #34D399;
+  --success-bg: rgba(52, 211, 153, 0.15);
+  --success-border: rgba(52, 211, 153, 0.32);
+  --warning: #FBBF24;
+  --warning-text: #FDE68A;
+  --warning-bg: rgba(251, 191, 36, 0.18);
+  --warning-border: rgba(251, 191, 36, 0.36);
+  --danger: #F87171;
+  --danger-hover: #EF4444;
+  --danger-bg: rgba(248, 113, 113, 0.18);
+  --danger-border: rgba(248, 113, 113, 0.38);
+
+  --key-bg: #252017;
+  --key-head-bg: #30281B;
+  --key-selected-bg: #403421;
+  --key-text: #FBBF24;
+  --key-border: rgba(245, 158, 11, 0.30);
+
+  --modified-bg: rgba(251, 191, 36, 0.20);
+  --modified-bar: #FBBF24;
+  --draft-bg: rgba(245, 158, 11, 0.13);
+  --draft-head-bg: rgba(251, 191, 36, 0.22);
+  --draft-head-text: #FDE68A;
+
+  --shadow-sm: 0 4px 18px rgba(0, 0, 0, 0.38);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.54);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.72);
+  --backdrop: rgba(8, 7, 6, 0.74);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* 原生控件主题防亮白穿帮：全主题 accent-color 与细滚动条 */
+html {
+  accent-color: var(--accent);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -554,6 +950,9 @@ button.danger {
 html[data-theme="precision-dark"] button.danger,
 html[data-theme="dark"] button.danger,
 html[data-theme="glassmorphism"] button.danger,
+html[data-theme="ocean-slate"] button.danger,
+html[data-theme="nord-dark"] button.danger,
+html[data-theme="industrial-amber"] button.danger,
 html[data-theme="sci-fi-cyan"] button.danger,
 html[data-theme="sci-fi-purple"] button.danger,
 html[data-theme="sci-fi-matrix"] button.danger,
@@ -2063,7 +2462,7 @@ html.chart-collapsed .bottom-panel { flex-basis: 0; padding: 0; border: 0; visib
 
 /* 3. 便当盒网格（Bento Grid）：宽圆角卡片 + 胶囊主按钮 */
 html[data-theme="bento-grid"] .topbar { border-bottom-width: 1px; }
-html[data-theme="bento-grid"] button:not(.tab):not(.table-item):not(.icon):not(.link):not(.ghost):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.current-database-file) {
+html[data-theme="bento-grid"] button:not(.tab):not(.table-item):not(.icon):not(.link):not(.ghost):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link) {
   border-radius: 9999px;
   padding-left: 14px;
   padding-right: 14px;
@@ -2093,6 +2492,7 @@ html[data-theme="glassmorphism"] dialog,
 html[data-theme="glassmorphism"] .row-context-menu,
 html[data-theme="glassmorphism"] .submenu,
 html[data-theme="glassmorphism"] .sql-history-list,
+html[data-theme="glassmorphism"] #db-quick-menu,
 html[data-theme="glassmorphism"] #workspace-picker {
   background: rgba(15, 23, 42, 0.94);
   backdrop-filter: blur(18px) saturate(145%);

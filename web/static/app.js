@@ -12,10 +12,16 @@ const uiThemeAliases = {
 };
 const uiThemes = new Set([
   "minimalist-light",
-  "precision-dark",
+  "arctic-frost",
+  "warm-paper",
+  "slate-daylight",
   "bento-grid",
-  "glassmorphism",
   "editorial",
+  "precision-dark",
+  "ocean-slate",
+  "nord-dark",
+  "industrial-amber",
+  "glassmorphism",
   "sci-fi-cyan",
   "sci-fi-purple",
   "sci-fi-matrix"

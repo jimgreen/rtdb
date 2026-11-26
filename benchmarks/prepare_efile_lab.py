@@ -18,5 +18,5 @@ with path.open('w',encoding='utf-8',newline='') as stream:
             value=str(i) if i<5999 else '1.5'
             stream.write(f"# K{i} {i} {value} '测点{'x'*320}'\n")
         stream.write(f'</{table}>\n')
-info=dict(database=name+'.sqlite3',file=str(path.resolve()),rows_per_table=6000,bytes=path.stat().st_size)
+info=dict(database=name+'.db',file=str(path.resolve()),rows_per_table=6000,bytes=path.stat().st_size)
 Path('output/playwright/efile-lab.json').write_text(json.dumps(info),encoding='utf-8');print(json.dumps(info))

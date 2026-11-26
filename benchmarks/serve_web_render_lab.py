@@ -18,11 +18,11 @@ def main():
     root=repo/'output/browser-render-lab'
     manager=SQLiteManager(root/'sqlite_dat',root/'def/table')
     try:
-        if not (root/'sqlite_dat/lab.sqlite3').exists():
+        if not (root/'sqlite_dat/lab.db').exists():
             columns=[dict(eng_name='id',chn_name='编号',data_type='int',primary_key=True,disp_type='整数',disp_menu='')]
             columns += [dict(eng_name=f'v{i:02}',chn_name=f'测量值{i:02}',data_type='float',primary_key=False,disp_type='浮点数',disp_menu='') for i in range(1,40)]
             manager.create_database_file({'name':'lab','tables':[{'head':{'eng_name':'samples','chn_name':'宽表'},'columns':columns}]})
-            manager.for_database('lab.sqlite3').insert('samples',{'rows':[
+            manager.for_database('lab.db').insert('samples',{'rows':[
                 {'id':i,**{f'v{j:02}':i+j/100 for j in range(1,40)}} for i in range(1,601)]})
         if args.task_logs:
             path=manager.audit_log.log_dir/'2026-11-13.jsonl'

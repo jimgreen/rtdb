@@ -158,7 +158,7 @@ class SQLiteWebTests(unittest.TestCase):
         self.call('DELETE', '/api/sqlite/tables/devices/table', drop, status=409)
         self.call('POST', '/api/sqlite/tables/devices/clear', {'confirm': 'devices', 'expected_count': 1})
         result = self.call('DELETE', '/api/sqlite/tables/devices/table', drop)
-        self.assertTrue((Path(result['archive']) / 'devices.sqlite3').is_file())
+        self.assertTrue((Path(result['archive']) / 'devices.db').is_file())
         self.assertEqual(self.call('GET', '/api/sqlite/tables')['tables'], [])
 
     def test_hot_sync_and_optimistic_external_writer(self):

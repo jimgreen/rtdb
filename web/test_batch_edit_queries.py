@@ -14,7 +14,7 @@ class BatchEditQueryTests(unittest.TestCase):
     tearDown = test_database_scope.DatabaseScopeTests.tearDown
 
     def prepare(self):
-        scoped = self.manager.for_database('plant_a.sqlite3')
+        scoped = self.manager.for_database('plant_a.db')
         scoped.save_schema('devices', {'definition': definition()}, creating=True)
         scoped.insert('devices', {'rows': [record(i) for i in range(500)]})
         return scoped, SQLiteManagement(scoped)
