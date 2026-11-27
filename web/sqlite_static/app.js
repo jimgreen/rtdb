@@ -226,22 +226,60 @@ const themePicker = {
   },
   syncButton(mode) {
     const item = themeCatalog.find((entry) => entry.id === mode) || themeCatalog[0];
+    const themeName = t(`theme.${item.id}`) || item.id;
+    const langLabels = { "zh-CN": "中文", "en-US": "English", "ru-RU": "Русский" };
+    const langName = langLabels[i18n.getLang?.() || "zh-CN"] || "中文";
+    const btn = el("theme-picker-btn");
+    if (btn) {
+      btn.title = `${themeName} · ${langName}`;
+      btn.setAttribute("aria-label", `${themeName} · ${langName}`);
+    }
     const label = el("theme-picker-label");
-    if (label) label.textContent = t(`theme.${item.id}`) || item.id;
+    if (label) label.textContent = themeName;
     const sw = el("theme-picker-swatches");
     if (sw) {
       const dots = sw.querySelectorAll("i");
-      item.swatches.forEach((color, idx) => { if (dots[idx]) dots[idx].style.background = color; });
+      if (dots.length === 1) {
+        dots[0].style.background = item.swatches[2] || item.swatches[0];
+      } else {
+        item.swatches.forEach((color, idx) => { if (dots[idx]) dots[idx].style.background = color; });
+      }
     }
   },
   render() {
     const menu = el("theme-picker-menu");
     if (!menu) return;
     menu.replaceChildren();
+
+    // 顶部紧凑三语分段切换条（与外观主题整合在同一浮层）
+    const langBar = node("div", null, "theme-lang-bar");
+    const globe = node("span", null, "icon-label-glyph");
+    globe.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
+    const langSeg = node("div", null, "theme-lang-seg");
+    const activeLang = i18n.getLang?.() || "zh-CN";
+    for (const [code, text] of [["zh-CN", "中文"], ["en-US", "English"], ["ru-RU", "Русский"]]) {
+      const lbtn = node("button", text, `theme-lang-btn${code === activeLang ? " is-active" : ""}`);
+      lbtn.type = "button";
+      lbtn.setAttribute("role", "menuitemradio");
+      lbtn.setAttribute("aria-checked", String(code === activeLang));
+      lbtn.onclick = (event) => {
+        event.stopPropagation();
+        if (code === activeLang) return;
+        const select = el("lang-select");
+        if (select) select.value = code;
+        i18n.setLang?.(code);
+        this.syncButton(currentTheme());
+        this.render();
+      };
+      langSeg.append(lbtn);
+    }
+    langBar.append(globe, langSeg);
+    menu.append(langBar);
+
     const activeId = currentTheme();
     const groups = [
-      { key: "light", title: t("theme.groupLight") || "日间 / 浅色" },
-      { key: "dark", title: t("theme.groupDark") || "夜间 / 暗色与科幻" }
+      { key: "light", title: t("theme.groupLight") || "清雅 · 浅色仙境" },
+      { key: "dark", title: t("theme.groupDark") || "星穹 · 柔光科幻" }
     ];
     for (const grp of groups) {
       const sec = node("div", null, "theme-picker-section");
