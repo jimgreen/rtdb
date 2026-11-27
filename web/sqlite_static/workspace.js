@@ -2,6 +2,10 @@
 const workspacePath = new URLSearchParams(location.search).get('workspace') || '';
 let workspaceScope = null;
 let selectionKey = null, selectionDirectory = null;
+let activeEfileSessionId = null;
+function setActiveEfileSession(id) {
+  activeEfileSessionId = id ? String(id) : null;
+}
 function readWorkspaceSelection() {
   try {
     const saved = JSON.parse(localStorage.getItem(selectionKey) || '{}');
@@ -9,7 +13,7 @@ function readWorkspaceSelection() {
   } catch { return {}; }
 }
 function rememberWorkspaceSelection(filename) {
-  if (!selectionKey) return;
+  if (!selectionKey || activeEfileSessionId) return;
   const saved = readWorkspaceSelection();
   saved.workspace = selectionDirectory;
   if (filename !== undefined) {
@@ -60,8 +64,14 @@ async function restoreWorkspaceSelection(info) {
 }
 function workspaceUrl(value) {
   const url = new URL(value, location.href);
-  if (url.origin === location.origin && url.pathname.startsWith('/api/') && workspacePath && !url.searchParams.has('workspace')) {
-    url.searchParams.set('workspace', workspacePath);
+  if (url.origin === location.origin && url.pathname.startsWith('/api/')) {
+    if (workspacePath && !url.searchParams.has('workspace')) {
+      url.searchParams.set('workspace', workspacePath);
+    }
+    const bypassSession = /^\/api\/manage\/(efile-sessions|workspaces|database-files|databases|info)(?:\/|$)/.test(url.pathname);
+    if (activeEfileSessionId && !bypassSession && !url.searchParams.has('efile_session')) {
+      url.searchParams.set('efile_session', activeEfileSessionId);
+    }
   }
   return url.href;
 }

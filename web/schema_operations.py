@@ -122,12 +122,13 @@ def create(manager, desired):
 
 def drop(manager, name, payload):
     from .sqlite_service import atomic_json, fingerprint
+    allow_nonempty = bool(getattr(manager, '_allow_drop_nonempty', False) and payload.get('force'))
     with manager.exclusive():
         manager._recover()
         with manager._database() as database:
             table=database[name]
             if payload.get('version')!=fingerprint(table.definition.to_mapping()):raise APIError(409,'表结构已变化，请刷新')
-            if len(table):
+            if not allow_nonempty and len(table):
                 raise APIError(409,'表有数据，请先导出并清空后删除表结构')
             safe_name=re.sub(r'[^A-Za-z0-9_-]','_',name)[:48] or 'table'
             archive=manager.data_dir/'.web-archive'/f'{safe_name}-{uuid.uuid4().hex}'
@@ -135,7 +136,7 @@ def drop(manager, name, payload):
             try:
                 with closing(sqlite3.connect(archive/table.path.name)) as backup:table._connection().backup(backup)
                 def remove(connection):
-                    if connection.execute(f'SELECT 1 FROM {table._data_sql} LIMIT 1').fetchone():raise APIError(409,'表有数据，请先导出并清空后删除表结构')
+                    if not allow_nonempty and connection.execute(f'SELECT 1 FROM {table._data_sql} LIMIT 1').fetchone():raise APIError(409,'表有数据，请先导出并清空后删除表结构')
                     document=_read_embedded_database(connection,table.path)
                     if document is None:raise APIError(409,'数据库缺少内置定义，无法删除表结构')
                     atomic_json(manager._journal,dict(kind='definition-import',database_path=str(table.path),schema_path=str(manager.schema_dir/(table.path.stem+'.json'))))

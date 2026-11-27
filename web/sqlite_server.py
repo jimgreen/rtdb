@@ -8,6 +8,7 @@ integrity checks through one browser-oriented API.
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import mimetypes
@@ -23,6 +24,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .errors import APIError
 from .audit import status_for_exception
+from .efile_workspace import EFileSessionStore
 from .sqlite_service import SQLiteManager, browser_value
 from .management import SQLiteManagement
 from .sample_points import SampleTrendRegistry, read_sample_points
@@ -107,6 +109,8 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         if ctx is not None:
             self._request_context = None
             self._request_manager = None
+            if getattr(ctx, '_is_efile_session', False):
+                return
             workspaces = getattr(self.server, 'workspaces', None)
             if workspaces is not None and hasattr(workspaces, 'release'):
                 workspaces.release(ctx)
@@ -122,9 +126,14 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
     @property
     def context(self):
         if self._request_context is None:
-            relative = parse_qs(urlsplit(self.path).query).get('workspace', [''])[0]
-            workspaces = self.server.workspaces
-            self._request_context = workspaces.acquire(relative) if hasattr(workspaces, 'acquire') else workspaces.get(relative)
+            qs = parse_qs(urlsplit(self.path).query)
+            efile_session = qs.get('efile_session', [''])[0]
+            if efile_session and hasattr(self.server, 'efile_sessions'):
+                self._request_context = self.server.efile_sessions.get(efile_session)
+            else:
+                relative = qs.get('workspace', [''])[0]
+                workspaces = self.server.workspaces
+                self._request_context = workspaces.acquire(relative) if hasattr(workspaces, 'acquire') else workspaces.get(relative)
         return self._request_context
 
     @property
@@ -434,6 +443,56 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         if parts == ['api', 'manage', 'workspaces'] and method == 'GET':
             self._send_json(200, self.server.workspaces.listing())
             return True
+        if len(parts) >= 3 and parts[2] == 'efile-sessions':
+            sessions = getattr(self.server, 'efile_sessions', None)
+            if sessions is None:
+                raise APIError(500, '本地文件会话服务未初始化')
+            if len(parts) == 3 and method == 'GET':
+                self._send_json(200, {'sessions': sessions.list()})
+                return True
+            if len(parts) == 3 and method == 'POST':
+                started = time.perf_counter()
+                result = sessions.create(payload or {})
+                self._server_ms = (time.perf_counter() - started) * 1000
+                self._send_json(201, result)
+                return True
+            if len(parts) == 4 and method == 'DELETE':
+                closed = sessions.close_session(parts[3])
+                self._send_json(200, {'closed': closed, 'id': parts[3]})
+                return True
+            if len(parts) == 5 and parts[4] == 'export' and method == 'GET':
+                started = time.perf_counter()
+                q = query or {}
+                exported = sessions.export_file(
+                    parts[3],
+                    target_encoding=q.get('encoding', [None])[0],
+                    target_kind=q.get('kind', [None])[0],
+                    target_table=q.get('table', [None])[0],
+                )
+                self._server_ms = (time.perf_counter() - started) * 1000
+                if q.get('format', [''])[0] == 'json':
+                    self._send_json(200, {
+                        'filename': exported['filename'],
+                        'kind': exported['kind'],
+                        'encoding': exported['encoding'],
+                        'content_base64': base64.b64encode(exported['bytes']).decode('ascii'),
+                        'text': exported['text'],
+                    })
+                    return True
+                content = exported['bytes']
+                filename = exported['filename']
+                disposition = (f'attachment; filename="{filename}"' if filename.isascii()
+                               else "attachment; filename*=UTF-8''" + quote(filename))
+                self.send_response(200)
+                self.send_header('Content-Type', exported['media_type'])
+                self.send_header('Content-Disposition', disposition)
+                self.send_header('Content-Length', str(len(content)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                self.wfile.write(content)
+                return True
+            raise APIError(405, '不支持的本地文件会话请求')
         if parts == ['api', 'manage', 'workspaces', 'directories'] and method == 'POST':
             started = time.perf_counter()
             default_manager = self.server.workspaces.default.sqlite_manager
@@ -533,7 +592,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         management = SQLiteManagement(manager) if manager is not self.context.sqlite_manager else self.context.management
         if (query or {}).get('background') == ['1']:
             started=time.perf_counter()
-            parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id','workspace')}
+            parameters = {key: values[0] for key, values in (query or {}).items() if key not in ('background','request_id','workspace','efile_session')}
             result = self.context.tasks.submit(management, method, parts[2:], parameters, payload,
                 request_id=(query or {}).get('request_id',[None])[0])
             result = self.context.tasks.wait_initial(result['id'], result['database'])
@@ -677,6 +736,8 @@ class SQLiteHTTPServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if hasattr(self, 'efile_sessions'):
+            self.efile_sessions.close_all()
         if hasattr(self, 'sample_trends'):
             self.sample_trends.close()
         if hasattr(self, 'workspaces'):
@@ -713,6 +774,7 @@ def create_sqlite_server(host='127.0.0.1', port=8878, *, root=None, data_dir=Non
         from .write_receipts import AuditDelivery
         server.audit_delivery = manager.audit_delivery = AuditDelivery(manager)
         server.sample_trends = SampleTrendRegistry(manager.data_dir)
+        server.efile_sessions = EFileSessionStore(manager.data_dir / '.web-efiles')
     except BaseException:
         server.server_close()
         raise

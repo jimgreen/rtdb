@@ -13,7 +13,7 @@ const state = { table: null, tables: [], definition: null, version: null, record
     x: { title: "", labelStep: 1 }
   }, chartSettingsDialog: null, historyScope: "", dataDir: "", schemaContextRow: null, databaseRepairFile: null, sidebarContextTrigger: null, sidebarContextScope: null };
 let sqlHistoryItems = [], sqlHistoryActive = -1;
-state.database = null; state.databases = []; state.queryVersion = null; state.writeSeq = 0;
+state.database = null; state.databases = []; state.queryVersion = null; state.writeSeq = 0; state.efileSession = null;
 let gridCells = new WeakMap(), gridCellEntries = [], gridRowEntries = [], gridColumnEntries = [];
 let selectionFrame = null, chartDrawFrame = null, chartOverlayFrame = null, legendSignature = null, renderedQueryStamp = null, noticeTimer;
 let chartStaticCanvas = null, chartStaticKey = null, chartStaticHits = [];
@@ -753,7 +753,8 @@ async function selectDatabaseFile(filename, directory = workspaceTree.currentPat
   await activateDatabase(result.filename || filename, target);
   notice(`已选择服务端数据库文件：${filename}${names.length > 1 ? `，包含 ${names.length} 张表` : ""}`);
 }
-async function activateDatabase(filename, preferredTable) {
+async function activateDatabase(filename, preferredTable, { keepEfileSession = false } = {}) {
+  if (!keepEfileSession && state.efileSession) await localEfile.detach();
   state.database = filename || null;
   state.checkedTables.clear(); state.copiedRows = null; resetSelection();
   await refreshTables();
@@ -806,6 +807,7 @@ async function uploadDatabaseFile() {
   for (const file of files) encoded.push({ name: file.name, content: await fileToBase64(file) });
   const result = await request("database-files/upload", "POST", { files: encoded, ...(existing ? { confirm: name } : {}) });
   el("database-file-dialog").close(); el("database-file-upload-input").value = ""; renderDatabaseUploadSelection();
+  if (state.efileSession) await localEfile.detach();
   state.database = result.filename; state.checkedTables.clear(); resetSelection();
   await refreshTables();
   const target = result.tables?.[0]?.name || result.name;
@@ -832,6 +834,7 @@ async function createDatabaseFile() {
     navigateWorkspace(directory, { database: result.filename });
     return;
   }
+  if (state.efileSession) await localEfile.detach();
   state.database = result.filename; state.checkedTables.clear(); resetSelection();
   await refreshTables(); if (firstTable) await selectTable(firstTable); else tab("data"); el("database-file-dialog").close();
   if (state.database) rememberWorkspaceSelection(state.database);
@@ -1541,14 +1544,19 @@ function renderTables() {
 }
 async function refreshTables() {
   state.databases = (await request("databases")).databases;
-  if (state.database && !state.databases.some((item) => item.filename === state.database)) { state.database = null; resetSelection(); }
+  if (state.efileSession) {
+    state.database = state.efileSession.database;
+  } else if (state.database && !state.databases.some((item) => item.filename === state.database)) {
+    state.database = null; resetSelection();
+  }
   el("query").disabled = !state.database;
   updateSchemaLocks();
   state.tables = state.database ? (await request("tables")).tables : [];
   state.checkedTables = new Set([...state.checkedTables].filter((name) => state.tables.some((item) => item.name === name)));
   renderCurrentDatabaseFile();
+  localEfile.syncToolbar();
   renderTables();
-  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setContext(workspacePath, state.database);
+  if (window.rtdbSampleTrends) window.rtdbSampleTrends.setContext(workspacePath, state.efileSession ? null : state.database);
 }
 const RECENT_DATABASES_STORAGE_KEY = "rtdb.recent.databases.v1";
 const dbQuickSwitcher = {
@@ -1594,7 +1602,7 @@ const dbQuickSwitcher = {
       menu.append(node("div", t("dbQuick.empty") || "当前目录无数据库", "db-quick-empty"));
     } else {
       for (const item of state.databases) {
-        const isCur = item.filename === state.database;
+        const isCur = !state.efileSession && item.filename === state.database;
         const btn = node("button", null, `db-quick-item${isCur ? " is-active" : ""}`);
         btn.type = "button";
         btn.setAttribute("role", "menuitem");
@@ -1639,8 +1647,16 @@ const dbQuickSwitcher = {
       }
     }
 
-    // 3. 完整管理入口
+    // 3. 本地文件与完整管理入口
     menu.append(node("hr", null, "db-quick-sep"));
+    const openLocalBtn = node("button", t("localFile.quickOpen") || "打开本地 E / Excel / CSV 文件…", "db-quick-item db-quick-manage");
+    openLocalBtn.type = "button";
+    openLocalBtn.setAttribute("role", "menuitem");
+    openLocalBtn.onclick = () => {
+      this.close();
+      void localEfile.open();
+    };
+    menu.append(openLocalBtn);
     const manageBtn = node("button", t("dbQuick.manage") || "浏览目录 / 上传 / 新建…", "db-quick-item db-quick-manage");
     manageBtn.type = "button";
     manageBtn.setAttribute("role", "menuitem");
@@ -1662,6 +1678,180 @@ const dbQuickSwitcher = {
     menu.style.minWidth = `${Math.min(Math.max(rect.width, 260), 460)}px`;
     menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
     menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 120)}px`;
+  }
+};
+function base64ToUint8Array(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+function downloadBytes(bytes, filename, mime = "application/octet-stream") {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const anchor = node("a"); anchor.href = url; anchor.download = filename; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+const localEfile = {
+  maxBytes: 24 * 1024 * 1024,
+  isActive() { return Boolean(state.efileSession); },
+  isExcel() { return Boolean(state.efileSession && (state.efileSession.kind === "xlsx" || state.efileSession.kind === "xls")); },
+  kindBadge(kind) {
+    return { e: "E", xlsx: "XLSX", xls: "XLS", csv: "CSV" }[kind] || "FILE";
+  },
+  mimeFor(kind) {
+    return {
+      e: "text/plain;charset=utf-8",
+      csv: "text/csv;charset=utf-8",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      xls: "application/vnd.ms-excel"
+    }[kind] || "application/octet-stream";
+  },
+  syncToolbar() {
+    const active = this.isActive();
+    const saveBtn = el("save-local-efile");
+    const closeBtn = el("close-local-efile");
+    if (saveBtn) saveBtn.hidden = !active;
+    if (closeBtn) closeBtn.hidden = !active;
+    const newTableBtn = el("new-table");
+    if (newTableBtn) {
+      newTableBtn.textContent = this.isExcel() ? (t("localFile.newSheet") || "＋ 新建 Sheet") : (t("localFile.newTable") || "＋ 新建表");
+    }
+    const delSchemaBtn = el("delete-schema");
+    if (delSchemaBtn) {
+      delSchemaBtn.textContent = this.isExcel()
+        ? (t("localFile.deleteSheet") || "删除 Sheet")
+        : active
+          ? (t("localFile.deleteTable") || "删除表")
+          : (t("localFile.deleteEmptySchema") || "删除空表结构");
+    }
+  },
+  async open() {
+    if (state.busy) { notice("正在处理，请稍候再操作"); return; }
+    if (!await discardSchema() || !await discardCellEdits()) return;
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [
+            {
+              description: "E / Excel / CSV",
+              accept: {
+                "text/plain": [".e", ".qs", ".dt", ".txt", ".dat"],
+                "text/csv": [".csv", ".tsv"],
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx", ".xlsm"],
+                "application/vnd.ms-excel": [".xls"]
+              }
+            }
+          ]
+        });
+        if (!handle) return;
+        const file = await handle.getFile();
+        await run(() => this.loadFile(file, handle));
+        return;
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        // 不支持或策略拒绝时优雅回落到标准文件输入框
+      }
+    }
+    const input = el("local-efile-input");
+    if (!input) return;
+    input.value = "";
+    input.click();
+  },
+  async loadFile(file, handle = null) {
+    if (!file) return;
+    if (file.size <= 0) throw new Error("所选本地文件为空");
+    if (file.size > this.maxBytes) throw new Error("本地文件大小不能超过 24 MiB");
+    const content = await fileToBase64(file);
+    const previousDatabase = state.efileSession ? state.efileSession.previousDatabase : state.database;
+    const previousTable = state.efileSession ? state.efileSession.previousTable : state.table;
+    const oldSessionId = state.efileSession?.id || null;
+
+    const result = await request("efile-sessions", "POST", {
+      filename: file.name,
+      content,
+      encoding: "auto"
+    }, null, { allowBackground: false });
+
+    if (oldSessionId && oldSessionId !== result.id) {
+      void request(`efile-sessions/${encodeURIComponent(oldSessionId)}`, "DELETE", undefined, null, { allowBackground: false }).catch(() => {});
+    }
+    state.efileSession = {
+      id: result.id,
+      filename: result.filename || file.name,
+      kind: result.kind || "e",
+      encoding: result.encoding || "",
+      database: result.database || "efile_session.db",
+      handle: handle || null,
+      previousDatabase,
+      previousTable
+    };
+    setActiveEfileSession(result.id);
+    const firstTable = result.tables?.[0]?.name || null;
+    await activateDatabase(state.efileSession.database, firstTable, { keepEfileSession: true });
+    const kindLabel = this.kindBadge(state.efileSession.kind);
+    const unit = this.isExcel() ? "Sheet" : "张表";
+    const msg = `已加载本地 [${kindLabel}] ${state.efileSession.filename}（${result.table_count} ${unit}）`;
+    notice(msg); log(msg);
+  },
+  async save() {
+    const sess = state.efileSession;
+    if (!sess) return;
+    if (state.schemaDirty) {
+      throw new Error("当前表结构有未保存修改，请先点击「保存结构」再保存本地文件");
+    }
+    if (hasPendingData()) {
+      await saveCellEdits();
+      if (hasPendingData()) return;
+    }
+    const params = new URLSearchParams({ format: "json" });
+    if (sess.kind === "csv" && state.table) params.set("table", state.table);
+    const exported = await request(
+      `efile-sessions/${encodeURIComponent(sess.id)}/export?${params.toString()}`,
+      "GET", undefined, null, { allowBackground: false }
+    );
+    const bytes = base64ToUint8Array(exported.content_base64 || "");
+    const outName = exported.filename || sess.filename;
+    const mime = this.mimeFor(exported.kind || sess.kind);
+    if (sess.handle && typeof sess.handle.createWritable === "function") {
+      try {
+        const writable = await sess.handle.createWritable();
+        await writable.write(bytes);
+        await writable.close();
+        const msg = `已原地保存回本地文件：${outName}`;
+        notice(msg); log(msg);
+        return;
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        // 无本地写权限时自动降级为下载更新后的文件
+      }
+    }
+    downloadBytes(bytes, outName, mime);
+    const msg = `已导出保存本地文件：${outName}`;
+    notice(msg); log(msg);
+  },
+  async detach() {
+    const sess = state.efileSession;
+    if (!sess) return;
+    state.efileSession = null;
+    setActiveEfileSession(null);
+    this.syncToolbar();
+    void request(`efile-sessions/${encodeURIComponent(sess.id)}`, "DELETE", undefined, null, { allowBackground: false }).catch(() => {});
+  },
+  async close() {
+    const sess = state.efileSession;
+    if (!sess) return;
+    if (!await discardSchema() || !await discardCellEdits()) return;
+    const { previousDatabase, previousTable, filename } = sess;
+    await this.detach();
+    if (previousDatabase) {
+      await activateDatabase(previousDatabase, previousTable);
+    } else {
+      state.database = null;
+      resetSelection();
+      await refreshTables();
+    }
+    notice(`已退出本地文件：${filename}`);
   }
 };
 function toggleBottomFullscreen(forceOff = false) {
@@ -1870,6 +2060,17 @@ function renderCurrentDatabaseFile() {
   const target = el("current-database-file");
   if (!target) return;
   const labelTarget = el("current-database-label") || target;
+  if (state.efileSession) {
+    const sess = state.efileSession;
+    const badge = localEfile.kindBadge(sess.kind);
+    const countLabel = localEfile.isExcel() ? `${state.tables.length} Sheet` : `${state.tables.length} 表`;
+    labelTarget.textContent = `[${badge}] ${sess.filename}`;
+    target.classList.add("is-local-file");
+    target.title = `本地 ${badge} 文件：${sess.filename} · ${countLabel}${sess.encoding ? ` · ${sess.encoding}` : ""}`;
+    target.setAttribute("aria-label", `当前本地文件：${sess.filename}`);
+    return;
+  }
+  target.classList.remove("is-local-file");
   const item = state.tables.find((entry) => entry.name === state.table);
   const filename = state.database || (state.table ? item?.database_file || `${state.table}.db` : "");
   const relDir = dbQuickSwitcher.normalizeDir(workspacePath);
@@ -3669,11 +3870,12 @@ function updateSchemaLocks() {
     btn.disabled = readOnly;
   }
   const deleteSchemaButton = el("delete-schema");
-  if (!deleteSchemaButton.disabled && (!state.table || state.tableTotal > 0)) {
+  const allowNonemptyDrop = localEfile.isActive();
+  if (!deleteSchemaButton.disabled && (!state.table || (!allowNonemptyDrop && state.tableTotal > 0))) {
     deleteSchemaButton.disabled = true;
     deleteSchemaButton.title = !state.table ? "请先选择已有表" : "仅允许删除空表结构，当前表有数据";
   } else {
-    deleteSchemaButton.title = "";
+    deleteSchemaButton.title = allowNonemptyDrop && state.tableTotal > 0 ? "删除当前表 / Sheet（含全部数据）" : "";
   }
   const hint = el("schema-hint");
   hint.textContent = readOnly ? "当前数据库只读" : "";
@@ -5881,6 +6083,16 @@ el("table-filter").addEventListener("keydown", (event) => {
 });
 for (const id of ["exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
 if (el("current-database-file")) el("current-database-file").onclick = (event) => { event.stopPropagation(); themePicker.close(); dbQuickSwitcher.toggle(); };
+if (el("open-local-efile")) el("open-local-efile").onclick = () => { void localEfile.open(); };
+if (el("save-local-efile")) el("save-local-efile").onclick = () => run(() => localEfile.save());
+if (el("close-local-efile")) el("close-local-efile").onclick = () => run(() => localEfile.close());
+if (el("local-efile-input")) {
+  el("local-efile-input").onchange = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void run(() => localEfile.loadFile(file, null));
+  };
+}
 if (el("theme-picker-btn")) el("theme-picker-btn").onclick = (event) => { event.stopPropagation(); dbQuickSwitcher.close(); themePicker.toggle(); };
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".db-switcher-wrap")) dbQuickSwitcher.close();
@@ -6110,8 +6322,22 @@ el("check-table").onclick = () => run(async () => {
 });
 el("delete-schema").onclick = () => run(async () => {
   requireTable(); const name = state.table;
-  if (!await confirmAction("删除空表", `仅允许删除空表 ${name}，数据库与定义将归档保存。`, name)) return;
-  await request(tablePath("schema"), "DELETE", { confirm: name, version: state.version }); state.schemaDirty = false; state.table = null; await refresh(); notice(`已归档删除空表：${name}`); log(`删除空表 ${name}`);
+  const isLocal = localEfile.isActive();
+  const label = localEfile.isExcel() ? "Sheet" : "表";
+  const title = isLocal ? `删除${label}` : "删除空表";
+  const msg = isLocal
+    ? `将从当前本地文件中删除${label} ${name}${state.tableTotal > 0 ? `（含 ${state.tableTotal} 条记录）` : ""}，点击“保存文件”后写回磁盘。`
+    : `仅允许删除空表 ${name}，数据库与定义将归档保存。`;
+  if (!await confirmAction(title, msg, name)) return;
+  await request(tablePath("schema"), "DELETE", {
+    confirm: name,
+    version: state.version,
+    ...(isLocal ? { force: true } : {})
+  });
+  state.schemaDirty = false; state.table = null;
+  await refresh();
+  notice(isLocal ? `已删除${label}：${name}（记得点击“保存文件”写回）` : `已归档删除空表：${name}`);
+  log(`删除${label} ${name}`);
 });
 el("sql-history-toggle").onpointerdown = (event) => event.preventDefault();
 el("sql-history-toggle").onclick = () => { if (!el("sql-history-list").hidden) closeSqlHistory(); else { el("sql-editor").focus(); openSqlHistory(); } };
