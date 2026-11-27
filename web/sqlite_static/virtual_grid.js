@@ -1,21 +1,49 @@
-// The model keeps the full page; only the visible cells are mounted in the DOM.
+// 仅挂载视口内可见行列；按真实列宽前缀和精确对齐拖拽后的列宽。
 const virtualGrid={
   active:false,rowHeight:32,columnWidth:160,headerHeight:44,signature:'',columnSignature:'',frame:null,
+  columnWidths(columns){
+    const saved = typeof loadColumnWidths === 'function' ? loadColumnWidths() : {};
+    const tableName = typeof state !== 'undefined' ? (state.table || '') : '';
+    const widths = new Array(columns.length);
+    const offsets = new Array(columns.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < columns.length; i++) {
+      const col = columns[i];
+      const key = `${tableName}::${col.eng_name}`;
+      const w = Number(saved[key]) || this.columnWidth;
+      widths[i] = w;
+      offsets[i + 1] = offsets[i] + w;
+    }
+    return { widths, offsets };
+  },
   plan(columns){
     this.active=!new URLSearchParams(location.search).has('full_grid')&&state.records.length*columns.length>2500;
     const host=el('data-grid'),count=state.records.length,keys=columns.filter(c=>c.primary_key).length;
+    const { widths, offsets } = this.columnWidths(columns);
     let first=0,last=count,start=keys,end=columns.length;
     if(this.active){
       first=Math.max(0,Math.min(count-1,Math.floor((host.scrollTop-this.headerHeight)/this.rowHeight))-6);
       last=Math.min(count,first+Math.ceil(Math.max(host.clientHeight,100)/this.rowHeight)+14);
-      start=Math.max(keys,Math.min(columns.length-1,keys+Math.floor(host.scrollLeft/this.columnWidth)-2));
-      end=Math.min(columns.length,start+Math.ceil(Math.max(host.clientWidth-36-keys*this.columnWidth,160)/this.columnWidth)+5);
+      const frozenW = 36 + offsets[keys];
+      const viewLeft = host.scrollLeft + offsets[keys];
+      const viewRight = viewLeft + Math.max(host.clientWidth - frozenW, 160);
+      let s = keys;
+      while (s < columns.length - 1 && offsets[s + 1] < viewLeft) s++;
+      start = Math.max(keys, s - 2);
+      let e = start;
+      while (e < columns.length && offsets[e] < viewRight) e++;
+      end = Math.min(columns.length, e + 3);
     }
     const segments=[];
-    columns.forEach((column,index)=>{if(index<keys||index>=start&&index<end)segments.push({column,index,width:this.columnWidth});else if(!segments.length||!segments[segments.length-1].gap)segments.push({gap:true,width:this.columnWidth});else segments[segments.length-1].width+=this.columnWidth;});
+    columns.forEach((column,index)=>{
+      const w = widths[index];
+      if(index<keys||index>=start&&index<end)segments.push({column,index,width:w});
+      else if(!segments.length||!segments[segments.length-1].gap)segments.push({gap:true,width:w});
+      else segments[segments.length-1].width+=w;
+    });
     this.columnSignature=[this.active,start,end,keys,columns.length].join(':');
-    this.signature=[this.active,first,last,start,end,host.clientWidth,host.clientHeight].join(':');
-    return {first,last,segments,keys,columnSignature:this.columnSignature};
+    this.signature=[this.active,first,last,start,end,host.clientWidth,host.clientHeight,offsets[columns.length]].join(':');
+    return {first,last,segments,keys,totalWidth:offsets[columns.length],keyOffsets:offsets.slice(0,keys),columnSignature:this.columnSignature};
   },
   schedule(){
     if(!this.active||this.frame!==null)return;
@@ -24,13 +52,14 @@ const virtualGrid={
   ensure(row,column){
     if(!this.active)return gridCells.get(state.records[row])?.get(visibleGridColumns()[column]?.eng_name);
     const host=el('data-grid'),columns=visibleGridColumns(),keys=columns.filter(c=>c.primary_key).length;
+    const { widths, offsets } = this.columnWidths(columns);
     const top=this.headerHeight+row*this.rowHeight;
     if(top<host.scrollTop+this.headerHeight)host.scrollTop=row*this.rowHeight;
     else if(top+this.rowHeight>host.scrollTop+host.clientHeight)host.scrollTop=top+this.rowHeight-host.clientHeight;
     if(column>=keys){
-      const left=36+column*this.columnWidth,frozen=36+keys*this.columnWidth;
-      if(left<host.scrollLeft+frozen)host.scrollLeft=left-frozen;
-      else if(left+this.columnWidth>host.scrollLeft+host.clientWidth)host.scrollLeft=left+this.columnWidth-host.clientWidth;
+      const left=36+offsets[column],frozen=36+offsets[keys],colW=widths[column]||this.columnWidth;
+      if(left<host.scrollLeft+frozen)host.scrollLeft=Math.max(0,left-frozen);
+      else if(left+colW>host.scrollLeft+host.clientWidth)host.scrollLeft=left+colW-host.clientWidth;
     }
     const before=this.signature;this.plan(columns);if(before!==this.signature)renderGrid(true);
     return gridCells.get(state.records[row])?.get(columns[column]?.eng_name);

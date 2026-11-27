@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
@@ -31,6 +32,9 @@ from core.sqlite_db import SQLiteBusyError
 
 STATIC_ROOT = Path(__file__).resolve().parent / 'sqlite_static'
 MAX_BODY = 32 * 1024 * 1024
+_STATIC_CACHE = {}
+_STATIC_CACHE_LOCK = threading.Lock()
+_STATIC_CACHE_MAX = 64
 
 _FILE_PATH_FIELDS = {
     'workspace_root', 'default_data_dir', 'data_dir', 'schema_dir',
@@ -618,6 +622,7 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
         if STATIC_ROOT.resolve() not in target.parents or not target.is_file():
             raise APIError(404, '文件不存在')
         stat_info = target.stat()
+        fingerprint = (stat_info.st_mtime_ns, stat_info.st_size)
         etag = f'"{stat_info.st_mtime_ns:x}-{stat_info.st_size:x}"'
         if_none_match = self.headers.get('If-None-Match', '')
         if etag in [part.strip() for part in if_none_match.split(',')]:
@@ -627,15 +632,30 @@ class SQLiteRequestHandler(BaseHTTPRequestHandler):
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.end_headers()
             return
-        media = {
-            '.html': 'text/html; charset=utf-8',
-            '.css': 'text/css; charset=utf-8',
-            '.js': 'text/javascript; charset=utf-8',
-            '.json': 'application/json; charset=utf-8',
-            '.svg': 'image/svg+xml; charset=utf-8',
-        }.get(target.suffix.lower()) or (mimetypes.guess_type(target.name)[0] or 'application/octet-stream')
-        raw_body = target.read_bytes()
-        body, compressed = self._maybe_gzip(raw_body)
+        cache_key = str(target)
+        with _STATIC_CACHE_LOCK:
+            cached = _STATIC_CACHE.get(cache_key)
+        if cached and cached[0] == fingerprint:
+            _, media, raw_body, gzip_body = cached
+        else:
+            media = {
+                '.html': 'text/html; charset=utf-8',
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'text/javascript; charset=utf-8',
+                '.json': 'application/json; charset=utf-8',
+                '.svg': 'image/svg+xml; charset=utf-8',
+            }.get(target.suffix.lower()) or (mimetypes.guess_type(target.name)[0] or 'application/octet-stream')
+            raw_body = target.read_bytes()
+            gzip_body = gzip.compress(raw_body, compresslevel=5) if len(raw_body) >= 1024 else None
+            with _STATIC_CACHE_LOCK:
+                if len(_STATIC_CACHE) >= _STATIC_CACHE_MAX:
+                    _STATIC_CACHE.clear()
+                _STATIC_CACHE[cache_key] = (fingerprint, media, raw_body, gzip_body)
+        accepts_gzip = 'gzip' in self.headers.get('Accept-Encoding', '').lower()
+        if gzip_body is not None and accepts_gzip:
+            body, compressed = gzip_body, True
+        else:
+            body, compressed = raw_body, False
         self.send_response(200)
         self.send_header('Content-Type', media)
         if compressed:

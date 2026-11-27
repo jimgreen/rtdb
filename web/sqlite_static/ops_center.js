@@ -149,10 +149,38 @@ window.rtdbOpsCenter = (function () {
       });
     }
 
-    for (const item of rows) {
+    const segColors = ["#38BDF8", "#34D399", "#FBBF24", "#A78BFA", "#FB7185"];
+    const totalBytes = rows.reduce((sum, item) => sum + Math.max(0, Number(item.bytes) || 0), 0);
+    const totalEl = el("ops-storage-total");
+    if (totalEl) totalEl.textContent = totalBytes > 0 ? fmtBytes(totalBytes) : "";
+    const barEl = el("ops-storage-bar");
+    if (barEl) {
+      barEl.textContent = "";
+      if (totalBytes > 0) {
+        barEl.hidden = false;
+        rows.forEach((item, idx) => {
+          const b = Math.max(0, Number(item.bytes) || 0);
+          if (!b) return;
+          const pct = (b / totalBytes) * 100;
+          const seg = document.createElement("span");
+          seg.className = "ops-storage-seg";
+          seg.style.width = `${Math.max(pct, 1.5)}%`;
+          seg.style.background = segColors[idx % segColors.length];
+          seg.title = `${item.name}: ${fmtBytes(b)} (${pct.toFixed(1)}%)`;
+          barEl.appendChild(seg);
+        });
+      } else {
+        barEl.hidden = true;
+      }
+    }
+
+    rows.forEach((item, idx) => {
       const trEl = document.createElement("tr");
       const tdName = document.createElement("td");
-      tdName.textContent = item.name;
+      const dot = document.createElement("span");
+      dot.className = "ops-cat-dot";
+      dot.style.background = segColors[idx % segColors.length];
+      tdName.append(dot, document.createTextNode(item.name));
       const tdCount = document.createElement("td");
       tdCount.className = "st-num";
       tdCount.textContent = item.count == null ? "—" : String(item.count);
@@ -164,7 +192,7 @@ window.rtdbOpsCenter = (function () {
       tdPol.textContent = item.policy;
       trEl.append(tdName, tdCount, tdSize, tdPol);
       tbody.appendChild(trEl);
-    }
+    });
   }
 
   function renderTasks(tasksPayload) {

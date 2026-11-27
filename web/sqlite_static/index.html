@@ -21,7 +21,11 @@
     <div class="button-row topbar-actions">
       <button id="toggle-bottom" type="button" class="ghost topbar-icon-btn" title="折叠 / 展开底部曲线与日志" aria-label="折叠或展开底部面板" data-i18n-title="topbar.toggleBottom" data-i18n-aria-label="topbar.toggleBottom" aria-pressed="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="14" x2="21" y2="14"/></svg></button>
       <label class="lang-label" title="切换界面语言" data-i18n-title="topbar.langTitle"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><select id="lang-select" aria-label="界面语言" data-i18n-aria-label="topbar.langAria"><option value="zh-CN">中文</option><option value="en-US">English</option><option value="ru-RU">Русский</option></select></label>
-      <label class="theme-label" title="切换界面视觉风格" data-i18n-title="topbar.themeTitle"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".8"/><circle cx="17.5" cy="10.5" r=".8"/><circle cx="8.5" cy="7.5" r=".8"/><circle cx="6.5" cy="12.5" r=".8"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16c3.3 0 6-2.7 6-6 0-5-4.5-8.6-10-8.6z"/></svg><select id="theme-select" aria-label="界面风格" data-i18n-aria-label="topbar.themeAria"><optgroup label="日间 / 浅色" data-i18n-label="theme.groupLight"><option value="minimalist-light" data-i18n="theme.minimalist-light">极简明亮</option><option value="arctic-frost" data-i18n="theme.arctic-frost">极地冰蓝</option><option value="warm-paper" data-i18n="theme.warm-paper">护眼暖纸</option><option value="slate-daylight" data-i18n="theme.slate-daylight">冷灰工程</option><option value="bento-grid" data-i18n="theme.bento-grid">便当盒网格</option><option value="editorial" data-i18n="theme.editorial">编辑杂志</option></optgroup><optgroup label="夜间 / 暗色与科幻" data-i18n-label="theme.groupDark"><option value="precision-dark" data-i18n="theme.precision-dark">精密暗黑</option><option value="ocean-slate" data-i18n="theme.ocean-slate">深海工业蓝</option><option value="nord-dark" data-i18n="theme.nord-dark">北欧极夜</option><option value="industrial-amber" data-i18n="theme.industrial-amber">碳黑琥珀</option><option value="glassmorphism" data-i18n="theme.glassmorphism">毛玻璃拟态</option><option value="sci-fi-cyan" data-i18n="theme.sci-fi-cyan">科幻 · 电光青</option><option value="sci-fi-purple" data-i18n="theme.sci-fi-purple">科幻 · 赛博紫</option><option value="sci-fi-matrix" data-i18n="theme.sci-fi-matrix">科幻 · 矩阵绿</option></optgroup></select></label>
+      <div class="theme-picker-wrap">
+        <button id="theme-picker-btn" type="button" class="secondary theme-picker-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="theme-picker-menu" title="切换界面视觉风格" data-i18n-title="topbar.themeTitle"><span id="theme-picker-swatches" class="theme-swatches" aria-hidden="true"><i></i><i></i><i></i></span><span id="theme-picker-label" class="theme-picker-label">极简明亮</span><span class="db-switcher-caret" aria-hidden="true">▾</span></button>
+        <div id="theme-picker-menu" class="theme-picker-menu" role="menu" hidden></div>
+        <select id="theme-select" hidden aria-label="界面风格" data-i18n-aria-label="topbar.themeAria"><optgroup label="日间 / 浅色" data-i18n-label="theme.groupLight"><option value="minimalist-light" data-i18n="theme.minimalist-light">极简明亮</option><option value="arctic-frost" data-i18n="theme.arctic-frost">极地冰蓝</option><option value="warm-paper" data-i18n="theme.warm-paper">护眼暖纸</option><option value="slate-daylight" data-i18n="theme.slate-daylight">冷灰工程</option><option value="bento-grid" data-i18n="theme.bento-grid">便当盒网格</option><option value="editorial" data-i18n="theme.editorial">编辑杂志</option></optgroup><optgroup label="夜间 / 暗色与科幻" data-i18n-label="theme.groupDark"><option value="precision-dark" data-i18n="theme.precision-dark">精密暗黑</option><option value="ocean-slate" data-i18n="theme.ocean-slate">深海工业蓝</option><option value="nord-dark" data-i18n="theme.nord-dark">北欧极夜</option><option value="industrial-amber" data-i18n="theme.industrial-amber">碳黑琥珀</option><option value="glassmorphism" data-i18n="theme.glassmorphism">毛玻璃拟态</option><option value="sci-fi-cyan" data-i18n="theme.sci-fi-cyan">科幻 · 电光青</option><option value="sci-fi-purple" data-i18n="theme.sci-fi-purple">科幻 · 赛博紫</option><option value="sci-fi-matrix" data-i18n="theme.sci-fi-matrix">科幻 · 矩阵绿</option></optgroup></select>
+      </div>
       <button id="open-tools-menu" type="button" class="ghost topbar-icon-btn" title="数据库维护与工具" aria-label="数据库维护与工具" data-i18n-title="topbar.tools" data-i18n-aria-label="topbar.tools"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg></button>
       <button id="open-shortcuts" type="button" class="ghost topbar-icon-btn" title="快捷键速查 (?)" aria-label="快捷键速查" data-i18n-title="topbar.shortcuts" data-i18n-aria-label="topbar.shortcuts"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .8c0 1.7-2.5 2-2.5 3.4"/><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></button>
       <button id="refresh" type="button" class="secondary topbar-icon-btn" title="刷新 (F5)" aria-label="刷新" data-i18n-title="topbar.refresh" data-i18n-aria-label="topbar.refresh"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg></button>
@@ -35,13 +39,13 @@
       </div>
       <div id="table-list" class="table-list" tabindex="0" aria-label="表索引，方向键切表，右键打开菜单"><p class="empty">正在加载…</p></div>
       <div id="table-list-splitter" class="splitter splitter-horizontal sidebar-list-splitter" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="table-list" aria-label="调整表列表高度"></div>
-      <details class="field-tree" open><summary><span data-i18n="sidebar.showFields">显示字段</span><span class="field-summary-right"><span id="field-count" class="muted"></span><button id="field-quick-all" type="button" class="ghost field-mini-btn" data-i18n="fields.showAll" title="显示全部列">全显</button><button id="field-quick-num" type="button" class="ghost field-mini-btn" data-i18n="fields.onlyNumeric" title="仅显示主键与数值列">仅数值</button></span></summary><div class="field-filter-wrap"><input id="field-filter" type="search" placeholder="过滤字段，点击定位列…" aria-label="过滤显示字段" data-i18n-placeholder="sidebar.fieldFilter"></div><div id="field-list" tabindex="0" aria-label="字段列表，右键打开菜单"><p class="muted">选择表后查看字段</p></div></details>
+      <details class="field-tree" open><summary><span data-i18n="sidebar.showFields">显示字段</span><span class="field-summary-right"><span id="field-count" class="muted"></span><button id="field-quick-all" type="button" class="ghost field-mini-btn" data-i18n="fields.showAll" title="显示全部列">全显</button><button id="field-quick-num" type="button" class="ghost field-mini-btn" data-i18n="fields.onlyNumeric" title="仅显示主键与数值列">仅数值</button><button id="field-quick-reset" type="button" class="ghost field-mini-btn" data-i18n="fields.resetLayoutShort" title="重置列显隐与列宽">重置</button></span></summary><div class="field-filter-wrap"><input id="field-filter" type="search" placeholder="过滤字段，点击定位列…" aria-label="过滤显示字段" data-i18n-placeholder="sidebar.fieldFilter"></div><div id="field-list" tabindex="0" aria-label="字段列表，右键打开菜单"><p class="muted">选择表后查看字段</p></div></details>
     </aside>
     <div id="sidebar-splitter" class="splitter splitter-vertical" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="table-sidebar" aria-label="调整侧边栏宽度"></div>
     <section class="workspace">
       <div class="context-bar"><h2 id="current-table">请选择或新建一张表</h2><span id="table-meta" class="muted">—</span></div>
       <nav class="tabs" role="tablist" aria-label="管理功能">
-        <button id="nav-data" class="tab active" role="tab" aria-selected="true" aria-controls="tab-data" data-tab="data">结果展示</button>
+        <button id="nav-data" class="tab active" role="tab" aria-selected="true" aria-controls="tab-data" data-tab="data">结果展示<span id="data-dirty-dot" class="dirty-dot" hidden title="数据表有未保存修改"></span></button>
         <button id="nav-schema" class="tab" role="tab" aria-selected="false" aria-controls="tab-schema" data-tab="schema">表结构<span id="schema-dirty-dot" class="dirty-dot" hidden title="表结构有未保存修改"></span></button>
         <button id="nav-sample-trends" class="tab" role="tab" aria-selected="false" aria-controls="tab-sample-trends" data-tab="sample-trends"><span data-i18n="st.listTitle">采样点定义</span></button>
         <button id="nav-ops" class="tab" role="tab" aria-selected="false" aria-controls="tab-ops" data-tab="ops"><span data-i18n="ops.tabTitle">运维诊断</span></button>
@@ -167,7 +171,8 @@
             </div>
           </div>
           <div class="panel ops-card">
-            <div class="ops-card-head"><strong data-i18n="ops.cardStorage">存储占用与留存策略</strong></div>
+            <div class="ops-card-head"><strong data-i18n="ops.cardStorage">存储占用与留存策略</strong><span id="ops-storage-total" class="muted st-num"></span></div>
+            <div id="ops-storage-bar" class="ops-storage-bar" aria-label="存储占比分布" hidden></div>
             <div class="grid-wrap ops-table-wrap">
               <table class="st-table">
                 <thead><tr><th data-i18n="ops.colCat">类别</th><th data-i18n="ops.colCount">项数</th><th data-i18n="ops.colSize">占用</th><th data-i18n="ops.colPolicy">策略</th></tr></thead>
@@ -240,6 +245,7 @@
               <span id="st-error-text" class="error-text" role="alert" hidden></span>
             </div>
           </div>
+          <div id="st-stats-bar" class="st-stats-bar" hidden></div>
           <div id="st-chart-wrap" class="st-chart-wrap">
             <canvas id="st-canvas" aria-label="采样点实时趋势曲线"></canvas>
             <div id="st-chart-empty" class="st-chart-empty" hidden></div>
@@ -379,7 +385,18 @@
   <div id="row-context-menu" class="row-context-menu" role="menu" tabindex="-1" aria-label="表格操作" hidden>
     <button type="button" role="menuitem" data-action="copy-cells">复制(CTRL+C)</button>
     <button type="button" role="menuitem" data-action="paste-cells">粘贴(CTRL+V)</button>
+    <button type="button" role="menuitem" data-action="inspect-cell" data-i18n="inspect.menuItem">查看详情 (Space)</button>
     <hr>
+    <div class="menu-group">
+      <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span data-i18n="filter.menuGroup">快捷筛选</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
+      <div class="submenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="filter-eq" data-i18n="filter.byValueEq">按此值筛选 (=)</button>
+        <button type="button" role="menuitem" data-action="filter-neq" data-i18n="filter.byValueNeq">排除此值 (!=)</button>
+        <button type="button" role="menuitem" data-action="filter-and-eq" data-i18n="filter.andValueEq">叠加筛选 (AND =)</button>
+        <hr>
+        <button type="button" role="menuitem" data-action="filter-clear" data-i18n="filter.clearAll">清除筛选</button>
+      </div>
+    </div>
     <div class="menu-group">
       <button type="button" role="menuitem" class="menu-trigger" aria-haspopup="menu" aria-expanded="false"><span>行操作</span><span class="menu-arrow" aria-hidden="true">▸</span></button>
       <div class="submenu" role="menu" hidden>
@@ -431,6 +448,8 @@
         <button type="button" role="menuitem" data-action="col-hide-current" data-i18n="fields.hideCurrent">隐藏当前列</button>
         <button type="button" role="menuitem" data-action="col-only-numeric" data-i18n="fields.onlyNumericLong">仅看主键与数值列</button>
         <button type="button" role="menuitem" data-action="col-show-all" data-i18n="fields.showAllLong">显示全部列</button>
+        <hr>
+        <button type="button" role="menuitem" data-action="col-reset-layout" data-i18n="fields.resetLayout">重置列显隐与列宽</button>
       </div>
     </div>
     <hr>
@@ -606,6 +625,25 @@
   <dialog id="csv-dialog" aria-labelledby="csv-title"><div class="panel-title"><h2 id="csv-title">CSV 流式导入</h2><button id="csv-close-x" type="button" class="icon" aria-label="关闭 CSV 导入">×</button></div><p id="csv-target" class="muted"></p><div class="schema-head"><label>CSV 文件（≤128 MiB / 10 万条）<input id="csv-file" type="file" accept=".csv"></label><label>编码<select id="csv-encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option></select></label></div><p id="csv-detail" class="muted"></p><progress id="csv-progress" aria-label="CSV 上传进度" max="1" value="0"></progress><div class="button-row"><button id="csv-start" type="button">上传并预览</button><button id="csv-pause" type="button" class="secondary">暂停</button><button id="csv-discard" type="button" class="secondary">清除临时上传</button></div><div id="csv-preview" class="grid-wrap" aria-label="CSV 样本预览"></div><div class="schema-head"><label>导入方式<select id="csv-mode"><option value="append">追加</option><option value="merge">按主键合并</option><option value="replace">替换整表</option></select></label><button id="csv-apply" type="button">确认导入</button></div><p id="csv-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button id="csv-close" type="button" class="secondary">关闭</button></div></dialog>
 
   <dialog id="draft-recovery-dialog"><form method="dialog"><div class="panel-title"><h2>发现未保存草稿</h2><button value="later" class="icon" aria-label="稍后处理">×</button></div><select id="draft-choice" aria-label="选择草稿"></select><p id="draft-recovery-caption"></p><p id="draft-recovery-warning" class="muted"></p><div class="dialog-actions"><button id="export-local-draft" type="button" class="secondary">导出草稿</button><button id="delete-local-draft" type="button" class="secondary">删除草稿</button><button value="later" class="secondary">稍后处理</button><button id="restore-local-draft" type="button">恢复草稿</button></div></form></dialog>
+
+  <dialog id="cell-inspector-dialog" aria-labelledby="cell-inspector-title">
+    <form method="dialog">
+      <div class="panel-title"><h2 id="cell-inspector-title" data-i18n="inspect.title">单元格与行详情</h2><button value="close" class="icon" aria-label="关闭详情">×</button></div>
+      <div id="cell-inspector-meta" class="inspector-meta"></div>
+      <div class="inspector-section">
+        <div class="inspector-head"><strong data-i18n="inspect.cellValue">当前单元格</strong><div class="button-row"><button id="inspect-copy-raw" type="button" class="secondary small" data-i18n="inspect.copyRaw">复制原值</button><button id="inspect-copy-display" type="button" class="secondary small" data-i18n="inspect.copyDisplay">复制显示值</button></div></div>
+        <div class="inspector-pair">
+          <div><span class="muted" data-i18n="inspect.displayVal">显示值</span><pre id="inspect-display-val"></pre></div>
+          <div><span class="muted" data-i18n="inspect.rawVal">原值 / JSON</span><pre id="inspect-raw-val"></pre></div>
+        </div>
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-head"><strong data-i18n="inspect.rowSnapshot">整行字段对照</strong><button id="inspect-copy-row" type="button" class="secondary small" data-i18n="inspect.copyRowJson">复制整行 JSON</button></div>
+        <div class="grid-wrap inspector-row-grid"><table class="st-table"><thead><tr><th data-i18n="inspect.colField">字段</th><th data-i18n="inspect.colType">类型</th><th data-i18n="inspect.displayVal">显示值</th><th data-i18n="inspect.rawVal">原值</th></tr></thead><tbody id="inspect-row-body"></tbody></table></div>
+      </div>
+      <div class="dialog-actions"><button value="close" class="secondary" data-i18n="common.close">关闭</button></div>
+    </form>
+  </dialog>
 
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
     <form method="dialog">

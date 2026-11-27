@@ -219,8 +219,11 @@ window.rtdbSampleTrends = (function () {
     }
   };
 
+  function isChartPanelDisplayed() {
+    return state.chartVisible && !document.documentElement.classList.contains("chart-collapsed");
+  }
   function isAnyVisible() {
-    return state.listVisible || state.chartVisible;
+    return state.listVisible || isChartPanelDisplayed();
   }
 
   function apiUrl(path, extraParams) {
@@ -907,7 +910,78 @@ window.rtdbSampleTrends = (function () {
     return units.size === 1 ? [...units][0] : "";
   }
 
+  let lastStatsBarSig = "";
+  function renderStatsBar(visibleSeries, perSeriesPoints) {
+    const bar = el("st-stats-bar");
+    if (!bar) return;
+    if (!visibleSeries || !visibleSeries.length) {
+      if (!bar.hidden) { bar.hidden = true; bar.textContent = ""; lastStatsBarSig = ""; }
+      return;
+    }
+    const entries = [];
+    for (const s of visibleSeries) {
+      const info = perSeriesPoints?.get(s.key);
+      const pts = info?.validPts || [];
+      if (!pts.length) continue;
+      let min = Infinity, max = -Infinity, sum = 0;
+      for (const p of pts) {
+        if (p.v < min) min = p.v;
+        if (p.v > max) max = p.v;
+        sum += p.v;
+      }
+      const last = pts[pts.length - 1].v;
+      const prev = pts.length >= 2 ? pts[pts.length - 2].v : last;
+      const delta = last - prev;
+      const avg = sum / pts.length;
+      const fmt = (v) => Number.isFinite(v) ? (Math.abs(v) >= 10000 ? v.toFixed(1) : Number(v.toPrecision(5)).toString()) : "—";
+      const deltaStr = delta === 0 ? "0" : `${delta > 0 ? "+" : ""}${fmt(delta)}`;
+      entries.push({
+        key: s.key,
+        name: s.name || s.field,
+        color: s.color,
+        unit: s.unit || "",
+        last: fmt(last),
+        min: fmt(min),
+        max: fmt(max),
+        avg: fmt(avg),
+        delta: deltaStr,
+        deltaSign: delta > 0 ? 1 : delta < 0 ? -1 : 0
+      });
+    }
+    if (!entries.length) {
+      if (!bar.hidden) { bar.hidden = true; bar.textContent = ""; lastStatsBarSig = ""; }
+      return;
+    }
+    const sig = entries.map((e) => `${e.key}:${e.last}:${e.min}:${e.max}:${e.avg}:${e.delta}`).join("|");
+    if (sig === lastStatsBarSig && !bar.hidden) return;
+    lastStatsBarSig = sig;
+    bar.hidden = false;
+    bar.textContent = "";
+    for (const e of entries) {
+      const chip = document.createElement("span");
+      chip.className = "st-stat-chip";
+      chip.title = `${e.name} | ${tr("st.statLatest", null, "最新")}: ${e.last}${e.unit} · ${tr("st.statMin", null, "最小")}: ${e.min} · ${tr("st.statMax", null, "最大")}: ${e.max} · ${tr("st.statAvg", null, "均值")}: ${e.avg} · Δ: ${e.delta}`;
+      const dot = document.createElement("i");
+      dot.className = "st-stat-dot";
+      dot.style.background = e.color;
+      const nm = document.createElement("b");
+      nm.textContent = e.name;
+      const val = document.createElement("span");
+      val.className = "st-stat-val";
+      val.textContent = `${e.last}${e.unit}`;
+      const d = document.createElement("span");
+      d.className = `st-stat-delta${e.deltaSign > 0 ? " is-up" : e.deltaSign < 0 ? " is-down" : ""}`;
+      d.textContent = `Δ${e.delta}`;
+      const rng = document.createElement("span");
+      rng.className = "st-stat-rng";
+      rng.textContent = `[${e.min} / ${e.avg} / ${e.max}]`;
+      chip.append(dot, nm, val, d, rng);
+      bar.appendChild(chip);
+    }
+  }
+
   function drawChart() {
+    if (!isChartPanelDisplayed()) return;
     const canvas = el("st-canvas");
     const wrap = el("st-chart-wrap");
     const emptyEl = el("st-chart-empty");
@@ -928,12 +1002,14 @@ window.rtdbSampleTrends = (function () {
         emptyEl.hidden = false;
       }
       hideTooltip();
+      renderStatsBar([], null);
     } else if (!boardSeries.length) {
       if (emptyEl) {
         emptyEl.textContent = tr("st.chartNoneVisible", null, "当前暂无显示的采样曲线，请在表格右键或“采样点定义”中选择“左轴显示”或“右轴显示”。");
         emptyEl.hidden = false;
       }
       hideTooltip();
+      renderStatsBar([], null);
     }
 
     const rect = wrap.getBoundingClientRect();
@@ -1263,6 +1339,7 @@ window.rtdbSampleTrends = (function () {
       }
       ctx.shadowBlur = 0;
     }
+    renderStatsBar(visibleSeries, perSeriesPoints);
 
     // 3.5 绘制拖拽框选缩放遮罩
     if (state.brush && Math.abs(state.brush.curX - state.brush.startX) >= 4) {

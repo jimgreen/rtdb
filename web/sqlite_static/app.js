@@ -198,11 +198,96 @@ function chartThemeTokens() {
     tooltipTitle: "#0F172A", tooltipLabel: "#475569", tooltipValue: "#0F172A"
   };
 }
+const themeCatalog = [
+  { id: "minimalist-light", group: "light", swatches: ["#F8FAFC", "#FFFFFF", "#2563EB"] },
+  { id: "arctic-frost", group: "light", swatches: ["#F0F6FB", "#FFFFFF", "#0284C7"] },
+  { id: "warm-paper", group: "light", swatches: ["#F6F2E9", "#FFFDF8", "#15803D"] },
+  { id: "slate-daylight", group: "light", swatches: ["#EDF1F5", "#FAFBFD", "#1D4ED8"] },
+  { id: "bento-grid", group: "light", swatches: ["#F5F5F7", "#FFFFFF", "#0071E3"] },
+  { id: "editorial", group: "light", swatches: ["#FAF9F6", "#FFFFFF", "#9F1239"] },
+  { id: "precision-dark", group: "dark", swatches: ["#0B0F19", "#111827", "#38BDF8"] },
+  { id: "ocean-slate", group: "dark", swatches: ["#071422", "#0D2036", "#38BDF8"] },
+  { id: "nord-dark", group: "dark", swatches: ["#242933", "#2E3440", "#88C0D0"] },
+  { id: "industrial-amber", group: "dark", swatches: ["#121110", "#1C1A18", "#F59E0B"] },
+  { id: "glassmorphism", group: "dark", swatches: ["#0F172A", "#1E293B", "#60A5FA"] },
+  { id: "sci-fi-cyan", group: "dark", swatches: ["#040812", "#081121", "#00E5FF"] },
+  { id: "sci-fi-purple", group: "dark", swatches: ["#090614", "#120C24", "#C084FC"] },
+  { id: "sci-fi-matrix", group: "dark", swatches: ["#040D08", "#081810", "#00E676"] }
+];
+const themePicker = {
+  isOpen() {
+    const menu = el("theme-picker-menu");
+    return Boolean(menu && !menu.hidden);
+  },
+  close() {
+    const menu = el("theme-picker-menu"), btn = el("theme-picker-btn");
+    if (menu) menu.hidden = true;
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  },
+  syncButton(mode) {
+    const item = themeCatalog.find((entry) => entry.id === mode) || themeCatalog[0];
+    const label = el("theme-picker-label");
+    if (label) label.textContent = t(`theme.${item.id}`) || item.id;
+    const sw = el("theme-picker-swatches");
+    if (sw) {
+      const dots = sw.querySelectorAll("i");
+      item.swatches.forEach((color, idx) => { if (dots[idx]) dots[idx].style.background = color; });
+    }
+  },
+  render() {
+    const menu = el("theme-picker-menu");
+    if (!menu) return;
+    menu.replaceChildren();
+    const activeId = currentTheme();
+    const groups = [
+      { key: "light", title: t("theme.groupLight") || "日间 / 浅色" },
+      { key: "dark", title: t("theme.groupDark") || "夜间 / 暗色与科幻" }
+    ];
+    for (const grp of groups) {
+      const sec = node("div", null, "theme-picker-section");
+      sec.append(node("div", grp.title, "theme-picker-heading"));
+      const grid = node("div", null, "theme-picker-grid");
+      for (const item of themeCatalog.filter((entry) => entry.group === grp.key)) {
+        const btn = node("button", null, `theme-picker-item${item.id === activeId ? " is-active" : ""}`);
+        btn.type = "button";
+        btn.setAttribute("role", "menuitemradio");
+        btn.setAttribute("aria-checked", String(item.id === activeId));
+        const sw = node("span", null, "theme-swatches");
+        for (const color of item.swatches) {
+          const dot = document.createElement("i");
+          dot.style.background = color;
+          sw.append(dot);
+        }
+        btn.append(sw, node("span", t(`theme.${item.id}`) || item.id, "theme-picker-name"));
+        btn.onclick = () => {
+          applyTheme(item.id);
+          this.close();
+        };
+        grid.append(btn);
+      }
+      sec.append(grid);
+      menu.append(sec);
+    }
+  },
+  toggle() {
+    if (this.isOpen()) { this.close(); return; }
+    this.render();
+    const menu = el("theme-picker-menu"), btn = el("theme-picker-btn");
+    if (!menu || !btn) return;
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const rect = btn.getBoundingClientRect();
+    const width = menu.offsetWidth || 360;
+    menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 160)}px`;
+  }
+};
 function applyTheme(theme, persist = true) {
   const mode = normalizeTheme(theme);
   document.documentElement.dataset.theme = mode;
   const select = el("theme-select");
   if (select && select.value !== mode) select.value = mode;
+  themePicker.syncButton(mode);
   if (persist) { try { localStorage.setItem(themeStorageKey, mode); } catch { /* 主题持久化失败不影响使用 */ } }
   chartStaticKey = null;
   legendSignature = null;
@@ -812,6 +897,11 @@ function updateEditActions() {
   localDrafts.schedule();
   const count = state.pendingEdits.size, drafts = draftRecords().length;
   const hasAny = Boolean(count || drafts);
+  const dataDot = el("data-dirty-dot");
+  if (dataDot) {
+    dataDot.hidden = !hasAny;
+    dataDot.title = hasAny ? [drafts ? `${drafts} 条待新增` : "", count ? `${count} 格待保存` : ""].filter(Boolean).join(" · ") : "";
+  }
   if (el("preview-cell-edits")) el("preview-cell-edits").hidden = !hasAny;
   el("save-cell-edits").hidden = !hasAny;
   el("discard-cell-edits").hidden = !hasAny;
@@ -1589,9 +1679,172 @@ function toggleBottomFullscreen(forceOff = false) {
     if (window.rtdbSampleTrends) window.rtdbSampleTrends.redraw();
   });
 }
+const VISIBLE_FIELDS_STORAGE_KEY = "rtdb.grid.visibleFields.v1";
+function tableLayoutScopeKey(tableName = state.table) {
+  return `${state.historyScope || "default"}::${state.database || ""}::${tableName || ""}`;
+}
+function loadSavedVisibleFields(columns) {
+  if (!state.table || !columns?.length) return null;
+  try {
+    const map = JSON.parse(localStorage.getItem(VISIBLE_FIELDS_STORAGE_KEY) || "{}");
+    const saved = map?.[tableLayoutScopeKey()];
+    if (!Array.isArray(saved) || !saved.length) return null;
+    const validNames = new Set(columns.map((c) => c.eng_name));
+    const filtered = saved.filter((name) => validNames.has(name));
+    for (const c of columns) { if (c.primary_key && !filtered.includes(c.eng_name)) filtered.unshift(c.eng_name); }
+    return filtered.length ? new Set(filtered) : null;
+  } catch { return null; }
+}
+function saveTableVisibleFields() {
+  if (!state.table || !state.resultColumns.length) return;
+  try {
+    const map = JSON.parse(localStorage.getItem(VISIBLE_FIELDS_STORAGE_KEY) || "{}");
+    const key = tableLayoutScopeKey();
+    if (state.fields.size >= state.resultColumns.length) {
+      delete map[key];
+    } else {
+      map[key] = [...state.fields];
+      const keys = Object.keys(map);
+      if (keys.length > 120) delete map[keys[0]];
+    }
+    localStorage.setItem(VISIBLE_FIELDS_STORAGE_KEY, JSON.stringify(map));
+  } catch { /* 忽略本地存储异常 */ }
+}
+function resetTableGridLayout() {
+  if (!state.table) return;
+  try {
+    const vMap = JSON.parse(localStorage.getItem(VISIBLE_FIELDS_STORAGE_KEY) || "{}");
+    delete vMap[tableLayoutScopeKey()];
+    localStorage.setItem(VISIBLE_FIELDS_STORAGE_KEY, JSON.stringify(vMap));
+  } catch { /* 忽略 */ }
+  const wMap = loadColumnWidths();
+  const prefix = `${state.table}::`;
+  let clearedWidth = false;
+  for (const k of Object.keys(wMap)) {
+    if (k.startsWith(prefix)) { delete wMap[k]; clearedWidth = true; }
+  }
+  if (clearedWidth) {
+    try { localStorage.setItem(COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(wMap)); } catch { /* 忽略 */ }
+  }
+  if (state.resultColumns.length) state.fields = new Set(state.resultColumns.map((c) => c.eng_name));
+  renderFields(); renderGrid();
+  notice(t("fields.layoutResetDone") || "已重置当前表列显隐与列宽");
+}
+function columnsSignature(cols) {
+  if (!Array.isArray(cols) || !cols.length) return "";
+  let out = "";
+  for (let i = 0; i < cols.length; i++) {
+    const c = cols[i];
+    out += `${c.eng_name}\u0001${c.chn_name || ""}\u0001${c.data_type || ""}\u0001${c.primary_key ? 1 : 0}\u0001${c.disp_type || ""}\u0001${c.disp_menu || ""}\u0002`;
+  }
+  return out;
+}
+function sqlLiteralForColumn(column, value) {
+  if (value === null || value === undefined) return null;
+  const kind = columnKind(column);
+  if (integerTypes.has(kind) || floatTypes.has(kind)) {
+    const num = Number(value);
+    if (Number.isFinite(num)) return String(value);
+  }
+  if (boolTypes.has(kind)) {
+    if (typeof value === "boolean") return value ? "1" : "0";
+    if (value === 0 || value === 1) return String(value);
+  }
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return `'${text.replace(/'/g, "''")}'`;
+}
+function applyValueFilterFromCell(record, column, operator = "=", appendAnd = false) {
+  if (!state.table || !record || !column) return;
+  const rawVal = record.row?.[column.eng_name];
+  const colIdent = `"${String(column.eng_name).replace(/"/g, '""')}"`;
+  let clause;
+  if (rawVal === null || rawVal === undefined) {
+    clause = operator === "!=" ? `${colIdent} IS NOT NULL` : `${colIdent} IS NULL`;
+  } else {
+    clause = `${colIdent} ${operator} ${sqlLiteralForColumn(column, rawVal)}`;
+  }
+  const tableIdent = `"${String(state.table).replace(/"/g, '""')}"`;
+  const currentSql = String(el("sql-editor")?.value || "").trim();
+  let nextSql = `SELECT * FROM ${tableIdent} WHERE ${clause}`;
+  if (appendAnd) {
+    const match = currentSql.match(/^(SELECT\s+[\s\S]+?\s+WHERE\s+)([\s\S]+?)(?:\s+(ORDER\s+BY|GROUP\s+BY|LIMIT)\b[\s\S]*)?$/i);
+    if (match) {
+      const tail = currentSql.slice(match[1].length + match[2].length);
+      nextSql = `${match[1]}(${match[2].trim()}) AND ${clause}${tail}`;
+    }
+  }
+  el("sql-editor").value = nextSql;
+  sqlDrawer.syncFromEditor();
+  void run(() => queryRows({ sql: nextSql, order: null, reset: true }));
+}
+function clearGridFilter() {
+  if (!state.table) return;
+  const sql = defaultSql();
+  el("sql-editor").value = sql;
+  sqlDrawer.syncFromEditor();
+  if (el("filter-field")) el("filter-field").value = "";
+  if (el("filter-value")) el("filter-value").value = "";
+  syncQuickFilterValueControl();
+  void run(() => queryRows({ sql, order: null, reset: true }));
+}
+function formatInspectorRaw(val) {
+  if (val === null || val === undefined) return "NULL";
+  if (typeof val === "object") {
+    try { return JSON.stringify(val, null, 2); } catch { return String(val); }
+  }
+  const str = String(val);
+  const trimmed = str.trim();
+  if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch { /* 保持原串 */ }
+  }
+  return str;
+}
+function openCellInspector(record, column) {
+  const dialog = el("cell-inspector-dialog");
+  if (!dialog || !record) return;
+  const activeCol = column || state.resultColumns[0];
+  const rawVal = activeCol ? record.row?.[activeCol.eng_name] : null;
+  const dispVal = activeCol ? formatCellDisplay(activeCol, rawVal) : "";
+  const formattedRaw = formatInspectorRaw(rawVal);
+  const pkSummary = record.ref?.key ? record.ref.key.join(" / ") : "—";
+  const meta = el("cell-inspector-meta");
+  if (meta) {
+    meta.replaceChildren(
+      node("span", `${state.table || "—"}`),
+      node("span", `KEY: ${pkSummary}`, "st-mono"),
+      activeCol ? node("span", `${chineseName(activeCol)} (${activeCol.eng_name}) · ${displayColumnType(activeCol)}`, "st-mono") : node("span", "")
+    );
+  }
+  const dispEl = el("inspect-display-val"), rawEl = el("inspect-raw-val");
+  if (dispEl) dispEl.textContent = dispVal === "" ? "—" : dispVal;
+  if (rawEl) rawEl.textContent = formattedRaw;
+  const copyText = (text, okMsg) => {
+    navigator.clipboard?.writeText(text).then(() => notice(okMsg)).catch(() => notice(okMsg));
+  };
+  if (el("inspect-copy-raw")) el("inspect-copy-raw").onclick = () => copyText(formattedRaw, t("logs.copied") || "已复制");
+  if (el("inspect-copy-display")) el("inspect-copy-display").onclick = () => copyText(dispVal, t("logs.copied") || "已复制");
+  if (el("inspect-copy-row")) el("inspect-copy-row").onclick = () => copyText(JSON.stringify(record.row || {}, null, 2), t("logs.copied") || "已复制");
+  const tbody = el("inspect-row-body");
+  if (tbody) {
+    tbody.textContent = "";
+    for (const col of state.resultColumns) {
+      const tr = document.createElement("tr");
+      if (activeCol && col.eng_name === activeCol.eng_name) tr.classList.add("is-focused");
+      const v = record.row?.[col.eng_name];
+      const tdName = node("td", `${chineseName(col)} (${col.eng_name})`, "st-mono");
+      const tdType = node("td", displayColumnType(col), "muted");
+      const tdDisp = node("td", formatCellDisplay(col, v));
+      const tdRaw = node("td", display(v), "st-mono");
+      tr.append(tdName, tdType, tdDisp, tdRaw);
+      tbody.append(tr);
+    }
+  }
+  dialog.showModal();
+}
 function showAllGridColumns() {
   if (!state.resultColumns.length) return;
   state.fields = new Set(state.resultColumns.map((column) => column.eng_name));
+  saveTableVisibleFields();
   renderFields(); renderGrid();
 }
 function showOnlyNumericColumns() {
@@ -1601,6 +1854,7 @@ function showOnlyNumericColumns() {
     .filter((column) => column.primary_key || numericSet.has(column.eng_name))
     .map((column) => column.eng_name);
   state.fields = new Set(next.length ? next : state.resultColumns.map((column) => column.eng_name));
+  saveTableVisibleFields();
   renderFields(); renderGrid();
 }
 function hideGridColumn(fieldName) {
@@ -1609,6 +1863,7 @@ function hideGridColumn(fieldName) {
   if (!column || column.primary_key) return;
   if (state.fields.size <= 1) return;
   state.fields.delete(fieldName);
+  saveTableVisibleFields();
   renderFields(); renderGrid();
 }
 function renderCurrentDatabaseFile() {
@@ -1799,7 +2054,7 @@ async function selectTable(name, { forceSchema = false } = {}) {
   if (el("log-current-table")?.checked && el("tab-logs")?.classList.contains("active")) { resetLogPage(); void run(loadAuditLogs); }
   renderCurrentDatabaseFile();
   loadSqlHistory();
-  state.offset = 0; state.fields = new Set(state.definition.columns.map((column) => column.eng_name));
+  state.offset = 0; state.fields = loadSavedVisibleFields(state.definition.columns) || new Set(state.definition.columns.map((column) => column.eng_name));
   state.selected.clear(); state.selectedColumns.clear(); state.selectedCells.clear(); state.rowAnchor = state.columnAnchor = state.cellAnchor = null;
   state.records = []; state.resultColumns = []; state.lastQuery = null; state.pendingEdits.clear(); updateEditActions();
   el("data-grid").scrollTop = 0; el("data-grid").scrollLeft = 0;
@@ -1917,7 +2172,7 @@ function renderFields() {
     item.title = column.primary_key
       ? "KEY 主键列：单击定位列，双击插入字段名到 SQL"
       : `${column.eng_name}（${column.data_type || "str"}）；单击定位列，双击插入到 SQL`;
-    checkbox.onchange = () => { if (checkbox.checked) state.fields.add(column.eng_name); else state.fields.delete(column.eng_name); renderGrid(); updateFieldCount(); };
+    checkbox.onchange = () => { if (checkbox.checked) state.fields.add(column.eng_name); else state.fields.delete(column.eng_name); saveTableVisibleFields(); renderGrid(); updateFieldCount(); };
     item.onclick = (event) => {
       if (event.target === checkbox) return;
       scrollToGridColumn(column.eng_name);
@@ -1985,15 +2240,20 @@ async function queryRowsData({ reset = false, silent = false, sql = state.lastQu
   const sameQuery = state.chartQueryKey === chartQueryKey;
   if (!sameQuery || !result.editable) clearAddedChartSeries();
   state.chartQueryKey = chartQueryKey;
-  const changedColumns = JSON.stringify(previousColumns.map((column) => column.eng_name)) !== JSON.stringify(result.columns);
+  const prevColNamesSig = previousColumns.map((column) => column.eng_name).join("\u0001");
+  const nextColNamesSig = (result.columns || []).join("\u0001");
+  const changedColumns = prevColNamesSig !== nextColNamesSig;
+  const prevColsSig = columnsSignature(previousColumns);
   state.resultColumns = result.columns.map((name) => {
     const defined = state.definition.columns.find((column) => column.eng_name === name);
     return defined || { eng_name: name, chn_name: name, data_type: (result.rows || []).some((row) => typeof row[name] === "number") ? "float" : "str", primary_key: false };
   });
+  const nextColsSig = columnsSignature(state.resultColumns);
+  const sameColumns = prevColsSig === nextColsSig;
   const patched = sameQuery && !changedPage && state.editable && result.editable &&
-    JSON.stringify(previousColumns) === JSON.stringify(state.resultColumns) &&
+    sameColumns &&
     uiPerformance.measure(timing,"grid_ms",()=>patchGridRecords(result.records));
-  if (changedColumns) state.fields = new Set(result.columns);
+  if (changedColumns) state.fields = loadSavedVisibleFields(state.resultColumns) || new Set(result.columns);
   state.total = result.total; state.tableTotal = result.table_total; state.editable = result.editable; updateSchemaLocks();
   state.lastQuery = { sql, order };
   if (!patched) state.records = result.editable ? result.records : result.rows.map((row) => ({ row }));
@@ -2008,7 +2268,7 @@ async function queryRowsData({ reset = false, silent = false, sql = state.lastQu
     resetChartCursor();
     uiPerformance.measure(timing,"grid_ms",()=>{renderFields();renderGrid();});
   } else { timing.mode = "patch"; updateGridPager(); }
-  if (JSON.stringify(previousColumns) !== JSON.stringify(state.resultColumns)) { configureChart(); configureQuickFilter(); }
+  if (!sameColumns) { configureChart(); configureQuickFilter(); }
   else syncQuickFilterValueControl();
   updateQueryFeedback(result, sql);
   updateRecordsToolbar();
@@ -2233,6 +2493,14 @@ function openRowContextMenu(event, record, index) {
   setDisabled("col-hide-current", !canHideCurrentCol);
   setDisabled("col-only-numeric", !state.resultColumns.length);
   setDisabled("col-show-all", !state.resultColumns.length || state.fields.size >= state.resultColumns.length);
+  setDisabled("col-reset-layout", !hasTable);
+  setDisabled("inspect-cell", !record);
+  const canFilterCell = Boolean(hasTable && record && sampleColumn && !pending);
+  setDisabled("filter-eq", !canFilterCell);
+  setDisabled("filter-neq", !canFilterCell);
+  setDisabled("filter-and-eq", !canFilterCell);
+  const hasActiveFilter = Boolean(hasTable && state.lastQuery?.sql && normalizeSqlText(state.lastQuery.sql) !== normalizeSqlText(defaultSql()));
+  setDisabled("filter-clear", !hasActiveFilter || pending);
 
   const addBtn = menu.querySelector('[data-action="sample-add"]');
   const removeBtn = menu.querySelector('[data-action="sample-remove"]');
@@ -2416,6 +2684,24 @@ function handleRowContextAction(actionName) {
   }
   else if (actionName === "col-show-all") {
     showAllGridColumns();
+  }
+  else if (actionName === "col-reset-layout") {
+    resetTableGridLayout();
+  }
+  else if (actionName === "inspect-cell") {
+    openCellInspector(context.record, context.sampleColumn);
+  }
+  else if (actionName === "filter-eq") {
+    applyValueFilterFromCell(context.record, context.sampleColumn, "=", false);
+  }
+  else if (actionName === "filter-neq") {
+    applyValueFilterFromCell(context.record, context.sampleColumn, "!=", false);
+  }
+  else if (actionName === "filter-and-eq") {
+    applyValueFilterFromCell(context.record, context.sampleColumn, "=", true);
+  }
+  else if (actionName === "filter-clear") {
+    clearGridFilter();
   }
 }
 function cellSelectionKey(index, field) { return `${index}\u0000${field}`; }
@@ -2735,7 +3021,7 @@ function renderGrid(windowOnly=false) {
       grid.dataset.columnSignature = viewport.columnSignature;
       grid.setAttribute('aria-rowcount',String(state.records.length+1));grid.setAttribute('aria-colcount',String(columns.length+1));
       if(virtualGrid.active){
-        grid.style.width=(36+columns.length*virtualGrid.columnWidth)+'px';
+        grid.style.width=(36+(viewport.totalWidth ?? columns.length*virtualGrid.columnWidth))+'px';
         const group=node('colgroup'),corner=node('col');corner.style.width='36px';group.append(corner);
         for(const segment of viewport.segments){const col=node('col');col.style.width=segment.width+'px';group.append(col);}
         grid.append(group);
@@ -2840,10 +3126,19 @@ function renderGrid(windowOnly=false) {
       body.append(row);
     });
     spacerRow((state.records.length-viewport.last)*virtualGrid.rowHeight);
-    if (!state.records.length) { const row = node("tr"), cell = node("td", "当前 SQL 查询没有记录。", "empty"); cell.colSpan = columns.length + 1; row.append(cell); body.append(row); }
+    if (!state.records.length) {
+      const row = node("tr"), cell = node("td", null, "empty");
+      cell.colSpan = columns.length + 1;
+      cell.append(node("span", t("grid.emptyResult") || "当前 SQL 查询没有记录。"));
+      const isFiltered = Boolean(state.table && state.lastQuery?.sql && normalizeSqlText(state.lastQuery.sql) !== normalizeSqlText(defaultSql()));
+      if (isFiltered) {
+        cell.append(document.createTextNode(" "), action(t("filter.clearAll") || "清除筛选", () => clearGridFilter(), "secondary small"));
+      }
+      row.append(cell); body.append(row);
+    }
     if (!reuseTable) {
       grid.append(body); target.replaceChildren(grid);
-      if(virtualGrid.active){for(let i=0;i<viewport.keys;i++)grid.style.setProperty(`--key-left-${i}`,`${36+i*virtualGrid.columnWidth}px`);}
+      if(virtualGrid.active){for(let i=0;i<viewport.keys;i++)grid.style.setProperty(`--key-left-${i}`,`${36+(viewport.keyOffsets?.[i] ?? i*virtualGrid.columnWidth)}px`);}
       else{frozenKeyObserver.observe(grid);grid.querySelectorAll("thead .key-column, .row-corner").forEach((header) => frozenKeyObserver.observe(header));updateFrozenKeyOffsets();}
     }
   }
@@ -5471,6 +5766,10 @@ el("data-grid").addEventListener("keydown", (event) => {
   const cell = event.target.closest("[data-cell-row][data-cell-column]");
   const row = cell ? Number(cell.dataset.cellRow) : state.cellAnchor?.row || 0;
   const column = cell ? Number(cell.dataset.cellColumn) : state.cellAnchor?.column || 0;
+  if (event.key === " " && !control && cell) {
+    const record = state.records[row], col = visibleGridColumns()[column];
+    if (record) { event.preventDefault(); openCellInspector(record, col); return; }
+  }
   if (event.key === "F2" && cell && state.editable && !isReadOnlyDatabase()) {
     const record = state.records[row], col = visibleGridColumns()[column];
     if (record && col && !isReadOnlyKey(record, col)) {
@@ -5581,9 +5880,11 @@ el("table-filter").addEventListener("keydown", (event) => {
   }
 });
 for (const id of ["exact-match", "nonempty"]) el(id).addEventListener("input", renderTables);
-if (el("current-database-file")) el("current-database-file").onclick = (event) => { event.stopPropagation(); dbQuickSwitcher.toggle(); };
+if (el("current-database-file")) el("current-database-file").onclick = (event) => { event.stopPropagation(); themePicker.close(); dbQuickSwitcher.toggle(); };
+if (el("theme-picker-btn")) el("theme-picker-btn").onclick = (event) => { event.stopPropagation(); dbQuickSwitcher.close(); themePicker.toggle(); };
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".db-switcher-wrap")) dbQuickSwitcher.close();
+  if (!event.target.closest(".theme-picker-wrap")) themePicker.close();
 });
 el("bottom-toggle-fullscreen")?.addEventListener("click", () => toggleBottomFullscreen());
 document.querySelector(".bottom-bar")?.addEventListener("dblclick", (event) => {
@@ -5596,8 +5897,12 @@ el("field-quick-all")?.addEventListener("click", (event) => {
 el("field-quick-num")?.addEventListener("click", (event) => {
   event.preventDefault(); event.stopPropagation(); showOnlyNumericColumns();
 });
+el("field-quick-reset")?.addEventListener("click", (event) => {
+  event.preventDefault(); event.stopPropagation(); resetTableGridLayout();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (themePicker.isOpen()) { event.preventDefault(); themePicker.close(); return; }
   if (dbQuickSwitcher.isOpen()) { event.preventDefault(); dbQuickSwitcher.close(); return; }
   if (document.documentElement.classList.contains("bottom-fullscreen") && !document.querySelector("dialog[open]")) {
     event.preventDefault(); toggleBottomFullscreen(true);
@@ -5989,6 +6294,7 @@ schemaTools.init();
 sqlDrawer.init();
 i18n.onChange(() => {
   sqlDrawer.renderFavorites();
+  themePicker.syncButton(currentTheme());
   const fsBtn = el("bottom-toggle-fullscreen");
   if (fsBtn) {
     const isFs = document.documentElement.classList.contains("bottom-fullscreen");

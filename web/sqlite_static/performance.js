@@ -41,6 +41,20 @@ const uiPerformance = {
   export() { download(JSON.stringify({unit:'ms',scope:'browser request through DOM update; frame_ms is a second animation-frame estimate, not display latency',samples:this.samples.map(({started,...sample})=>sample)},null,2),'rtdb-ui-performance.json','application/json'); }
 };
 
+function flashGridCellChange(cell, prevVal, nextVal) {
+  if (!cell) return;
+  cell.classList.remove("cell-flash-up", "cell-flash-down", "cell-flash-chg");
+  const prevNum = typeof prevVal === "number" ? prevVal : (typeof prevVal === "string" && prevVal.trim() !== "" && Number.isFinite(Number(prevVal)) ? Number(prevVal) : null);
+  const nextNum = typeof nextVal === "number" ? nextVal : (typeof nextVal === "string" && nextVal.trim() !== "" && Number.isFinite(Number(nextVal)) ? Number(nextVal) : null);
+  const cls = (prevNum !== null && nextNum !== null && prevNum !== nextNum)
+    ? (nextNum > prevNum ? "cell-flash-up" : "cell-flash-down")
+    : "cell-flash-chg";
+  void cell.offsetWidth;
+  cell.classList.add(cls);
+  clearTimeout(cell._flashTimer);
+  cell._flashTimer = setTimeout(() => { cell.classList.remove(cls); }, 1250);
+}
+
 function patchGridRecords(incoming) {
   if(incoming.length!==state.records.length || document.querySelector('#data-grid .cell-editor') || state.records.some(r=>r.draftId)) return false;
   for(let i=0;i<incoming.length;i++) {
@@ -50,9 +64,23 @@ function patchGridRecords(incoming) {
   for(let i=0;i<incoming.length;i++) {
     const existing=state.records[i], next=incoming[i];
     if(existing.ref.version===next.ref.version)continue;
-    const changed=columns.filter(c=>gridCells.get(existing)?.has(c.eng_name)&&(!valuesEqual(existing.row[c.eng_name],next.row[c.eng_name]) || gridCells.get(existing).get(c.eng_name).classList.contains('cell-modified')));
+    const cellMap = gridCells.get(existing);
+    const changes = [];
+    for (const c of columns) {
+      const cell = cellMap?.get(c.eng_name);
+      if (!cell) continue;
+      const prevVal = existing.row[c.eng_name];
+      const nextVal = next.row[c.eng_name];
+      const valChanged = !valuesEqual(prevVal, nextVal);
+      if (valChanged || cell.classList.contains('cell-modified')) {
+        changes.push({ column: c, cell, prevVal, nextVal, valChanged });
+      }
+    }
     existing.row=next.row; existing.ref=next.ref; existing.baseline=structuredClone(next.row);
-    for(const column of changed)renderGridCellValue(existing,column,gridCells.get(existing).get(column.eng_name));
+    for(const item of changes) {
+      renderGridCellValue(existing, item.column, item.cell);
+      if (item.valChanged) flashGridCellChange(item.cell, item.prevVal, item.nextVal);
+    }
   }
   return true;
 }
