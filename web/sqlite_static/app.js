@@ -97,72 +97,72 @@ function chartThemeTokens() {
   const theme = currentTheme();
   if (theme === "sci-fi-cyan") {
     return {
-      canvasBg: "#081121", gridLine: "rgba(0, 229, 255, 0.14)", axisLine: "rgba(0, 229, 255, 0.34)",
-      axisText: "#7DA2C4", titleColor: "#E6F7FF", cursorLine: "#00E5FF",
-      tooltipBg: "rgba(4, 8, 18, 0.94)", tooltipBorder: "rgba(0, 229, 255, 0.42)",
-      tooltipTitle: "#00E5FF", tooltipLabel: "#7DA2C4", tooltipValue: "#E6F7FF"
+      canvasBg: "#0C1A33", gridLine: "rgba(103, 232, 249, 0.13)", axisLine: "rgba(103, 232, 249, 0.30)",
+      axisText: "#8BB5D6", titleColor: "#E6F7FF", cursorLine: "#67E8F9",
+      tooltipBg: "rgba(6, 16, 33, 0.94)", tooltipBorder: "rgba(103, 232, 249, 0.38)",
+      tooltipTitle: "#67E8F9", tooltipLabel: "#8BB5D6", tooltipValue: "#E6F7FF"
     };
   }
   if (theme === "sci-fi-purple") {
     return {
-      canvasBg: "#120C24", gridLine: "rgba(192, 132, 252, 0.16)", axisLine: "rgba(192, 132, 252, 0.36)",
-      axisText: "#A695C9", titleColor: "#F3EEFF", cursorLine: "#C084FC",
-      tooltipBg: "rgba(9, 6, 20, 0.95)", tooltipBorder: "rgba(192, 132, 252, 0.44)",
-      tooltipTitle: "#C084FC", tooltipLabel: "#A695C9", tooltipValue: "#F3EEFF"
+      canvasBg: "#1A1336", gridLine: "rgba(216, 180, 254, 0.14)", axisLine: "rgba(216, 180, 254, 0.32)",
+      axisText: "#B5A3D8", titleColor: "#F3EEFF", cursorLine: "#D8B4FE",
+      tooltipBg: "rgba(16, 11, 34, 0.95)", tooltipBorder: "rgba(216, 180, 254, 0.40)",
+      tooltipTitle: "#D8B4FE", tooltipLabel: "#B5A3D8", tooltipValue: "#F3EEFF"
     };
   }
   if (theme === "sci-fi-matrix") {
     return {
-      canvasBg: "#081810", gridLine: "rgba(0, 230, 118, 0.14)", axisLine: "rgba(0, 230, 118, 0.34)",
-      axisText: "#7EB396", titleColor: "#E2FBE9", cursorLine: "#00E676",
-      tooltipBg: "rgba(4, 13, 8, 0.94)", tooltipBorder: "rgba(0, 230, 118, 0.42)",
-      tooltipTitle: "#00E676", tooltipLabel: "#7EB396", tooltipValue: "#E2FBE9"
+      canvasBg: "#0D2420", gridLine: "rgba(110, 231, 183, 0.13)", axisLine: "rgba(110, 231, 183, 0.30)",
+      axisText: "#88BFA9", titleColor: "#E2FBE9", cursorLine: "#6EE7B7",
+      tooltipBg: "rgba(7, 22, 20, 0.94)", tooltipBorder: "rgba(110, 231, 183, 0.38)",
+      tooltipTitle: "#6EE7B7", tooltipLabel: "#88BFA9", tooltipValue: "#E2FBE9"
     };
   }
   if (theme === "ocean-slate") {
     return {
-      canvasBg: "#0D2036", gridLine: "rgba(56, 189, 248, 0.12)", axisLine: "rgba(56, 189, 248, 0.28)",
-      axisText: "#8EB2CE", titleColor: "#EAF4FC", cursorLine: "#38BDF8",
-      tooltipBg: "rgba(7, 20, 34, 0.95)", tooltipBorder: "rgba(56, 189, 248, 0.36)",
-      tooltipTitle: "#38BDF8", tooltipLabel: "#8EB2CE", tooltipValue: "#EAF4FC"
+      canvasBg: "#0F223B", gridLine: "rgba(94, 234, 212, 0.12)", axisLine: "rgba(94, 234, 212, 0.28)",
+      axisText: "#8EB2CE", titleColor: "#EAF4FC", cursorLine: "#5EEAD4",
+      tooltipBg: "rgba(8, 21, 38, 0.95)", tooltipBorder: "rgba(94, 234, 212, 0.36)",
+      tooltipTitle: "#5EEAD4", tooltipLabel: "#8EB2CE", tooltipValue: "#EAF4FC"
     };
   }
   if (theme === "nord-dark") {
     return {
-      canvasBg: "#2E3440", gridLine: "rgba(216, 222, 233, 0.10)", axisLine: "rgba(216, 222, 233, 0.24)",
+      canvasBg: "#283042", gridLine: "rgba(216, 222, 233, 0.10)", axisLine: "rgba(216, 222, 233, 0.24)",
       axisText: "#A5B1C6", titleColor: "#ECEFF4", cursorLine: "#88C0D0",
-      tooltipBg: "rgba(36, 41, 51, 0.96)", tooltipBorder: "rgba(136, 192, 208, 0.38)",
+      tooltipBg: "rgba(31, 37, 51, 0.96)", tooltipBorder: "rgba(136, 192, 208, 0.38)",
       tooltipTitle: "#88C0D0", tooltipLabel: "#D8DEE9", tooltipValue: "#ECEFF4"
     };
   }
   if (theme === "industrial-amber") {
     return {
-      canvasBg: "#1C1A18", gridLine: "rgba(245, 158, 11, 0.13)", axisLine: "rgba(245, 158, 11, 0.30)",
-      axisText: "#B5AA9A", titleColor: "#FAF5ED", cursorLine: "#F59E0B",
-      tooltipBg: "rgba(18, 17, 16, 0.95)", tooltipBorder: "rgba(245, 158, 11, 0.42)",
-      tooltipTitle: "#F59E0B", tooltipLabel: "#D4C8B8", tooltipValue: "#FAF5ED"
+      canvasBg: "#201B26", gridLine: "rgba(252, 211, 77, 0.13)", axisLine: "rgba(252, 211, 77, 0.28)",
+      axisText: "#B9AEC4", titleColor: "#FAF5ED", cursorLine: "#FCD34D",
+      tooltipBg: "rgba(22, 19, 26, 0.95)", tooltipBorder: "rgba(252, 211, 77, 0.38)",
+      tooltipTitle: "#FCD34D", tooltipLabel: "#D4C8B8", tooltipValue: "#FAF5ED"
     };
   }
   if (theme === "glassmorphism") {
     return {
-      canvasBg: "#0F172A", gridLine: "rgba(255, 255, 255, 0.10)", axisLine: "rgba(255, 255, 255, 0.24)",
-      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#60A5FA",
-      tooltipBg: "rgba(15, 23, 42, 0.95)", tooltipBorder: "rgba(96, 165, 250, 0.38)",
-      tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+      canvasBg: "#131D36", gridLine: "rgba(148, 197, 255, 0.11)", axisLine: "rgba(148, 197, 255, 0.24)",
+      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#7DD3FC",
+      tooltipBg: "rgba(13, 21, 41, 0.95)", tooltipBorder: "rgba(125, 211, 252, 0.38)",
+      tooltipTitle: "#7DD3FC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
     };
   }
   if (theme === "precision-dark") {
     return {
-      canvasBg: "#111827", gridLine: "rgba(255, 255, 255, 0.08)", axisLine: "rgba(255, 255, 255, 0.20)",
-      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#94A3B8",
-      tooltipBg: "rgba(15, 23, 42, 0.94)", tooltipBorder: "rgba(148, 163, 184, 0.32)",
-      tooltipTitle: "#F8FAFC", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
+      canvasBg: "#121A2F", gridLine: "rgba(148, 197, 255, 0.10)", axisLine: "rgba(148, 197, 255, 0.22)",
+      axisText: "#94A3B8", titleColor: "#F8FAFC", cursorLine: "#67D4FA",
+      tooltipBg: "rgba(11, 16, 32, 0.95)", tooltipBorder: "rgba(103, 212, 250, 0.34)",
+      tooltipTitle: "#67D4FA", tooltipLabel: "#CBD5E1", tooltipValue: "#F8FAFC"
     };
   }
   if (theme === "arctic-frost") {
     return {
       canvasBg: "#FFFFFF", gridLine: "#E3EFF8", axisLine: "#B0CEE5",
-      axisText: "#4B6A82", titleColor: "#0C2233", cursorLine: "#0284C7",
+      axisText: "#4B6A82", titleColor: "#0C2233", cursorLine: "#28A9E0",
       tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#B0CEE5",
       tooltipTitle: "#0C2233", tooltipLabel: "#4B6A82", tooltipValue: "#0C2233"
     };
@@ -170,7 +170,7 @@ function chartThemeTokens() {
   if (theme === "warm-paper") {
     return {
       canvasBg: "#FFFDF8", gridLine: "#ECE5D8", axisLine: "#CBBFA9",
-      axisText: "#6B6255", titleColor: "#231F1A", cursorLine: "#15803D",
+      axisText: "#6B6255", titleColor: "#231F1A", cursorLine: "#2B9367",
       tooltipBg: "rgba(255, 253, 248, 0.97)", tooltipBorder: "#CBBFA9",
       tooltipTitle: "#231F1A", tooltipLabel: "#6B6255", tooltipValue: "#231F1A"
     };
@@ -178,41 +178,41 @@ function chartThemeTokens() {
   if (theme === "slate-daylight") {
     return {
       canvasBg: "#FAFBFD", gridLine: "#DCE3EC", axisLine: "#94A3B8",
-      axisText: "#475569", titleColor: "#111827", cursorLine: "#1D4ED8",
+      axisText: "#475569", titleColor: "#111827", cursorLine: "#4B74E8",
       tooltipBg: "rgba(250, 251, 253, 0.97)", tooltipBorder: "#94A3B8",
       tooltipTitle: "#111827", tooltipLabel: "#475569", tooltipValue: "#111827"
     };
   }
   if (theme === "editorial") {
     return {
-      canvasBg: "#FAF9F6", gridLine: "#E4E4E7", axisLine: "#C9C7BE",
-      axisText: "#52525B", titleColor: "#18181B", cursorLine: "#9F1239",
+      canvasBg: "#FAF7F5", gridLine: "#E4E4E7", axisLine: "#C9C7BE",
+      axisText: "#52525B", titleColor: "#18181B", cursorLine: "#BE3455",
       tooltipBg: "rgba(255, 255, 255, 0.97)", tooltipBorder: "#C9C7BE",
       tooltipTitle: "#18181B", tooltipLabel: "#52525B", tooltipValue: "#18181B"
     };
   }
   return {
-    canvasBg: "#FFFFFF", gridLine: "#E2E8F0", axisLine: "#CBD5E1",
-    axisText: "#64748B", titleColor: "#0F172A", cursorLine: "#475569",
+    canvasBg: "#FFFFFF", gridLine: "#E4EBF5", axisLine: "#CBD5E1",
+    axisText: "#64748B", titleColor: "#0F172A", cursorLine: "#4F7DF3",
     tooltipBg: "rgba(255, 255, 255, 0.96)", tooltipBorder: "#CBD5E1",
     tooltipTitle: "#0F172A", tooltipLabel: "#475569", tooltipValue: "#0F172A"
   };
 }
 const themeCatalog = [
-  { id: "minimalist-light", group: "light", swatches: ["#F8FAFC", "#FFFFFF", "#2563EB"] },
-  { id: "arctic-frost", group: "light", swatches: ["#F0F6FB", "#FFFFFF", "#0284C7"] },
-  { id: "warm-paper", group: "light", swatches: ["#F6F2E9", "#FFFDF8", "#15803D"] },
-  { id: "slate-daylight", group: "light", swatches: ["#EDF1F5", "#FAFBFD", "#1D4ED8"] },
-  { id: "bento-grid", group: "light", swatches: ["#F5F5F7", "#FFFFFF", "#0071E3"] },
-  { id: "editorial", group: "light", swatches: ["#FAF9F6", "#FFFFFF", "#9F1239"] },
-  { id: "precision-dark", group: "dark", swatches: ["#0B0F19", "#111827", "#38BDF8"] },
-  { id: "ocean-slate", group: "dark", swatches: ["#071422", "#0D2036", "#38BDF8"] },
-  { id: "nord-dark", group: "dark", swatches: ["#242933", "#2E3440", "#88C0D0"] },
-  { id: "industrial-amber", group: "dark", swatches: ["#121110", "#1C1A18", "#F59E0B"] },
-  { id: "glassmorphism", group: "dark", swatches: ["#0F172A", "#1E293B", "#60A5FA"] },
-  { id: "sci-fi-cyan", group: "dark", swatches: ["#040812", "#081121", "#00E5FF"] },
-  { id: "sci-fi-purple", group: "dark", swatches: ["#090614", "#120C24", "#C084FC"] },
-  { id: "sci-fi-matrix", group: "dark", swatches: ["#040D08", "#081810", "#00E676"] }
+  { id: "minimalist-light", group: "light", swatches: ["#F4F7FC", "#A78BFA", "#4F7DF3"] },
+  { id: "arctic-frost", group: "light", swatches: ["#EEF6FC", "#6384F7", "#28A9E0"] },
+  { id: "warm-paper", group: "light", swatches: ["#F8F4EC", "#38A89D", "#2B9367"] },
+  { id: "slate-daylight", group: "light", swatches: ["#EEF2F9", "#6E76F0", "#4B74E8"] },
+  { id: "bento-grid", group: "light", swatches: ["#F4F5FA", "#6C78F7", "#2B86F5"] },
+  { id: "editorial", group: "light", swatches: ["#FAF7F5", "#9D4EDD", "#BE3455"] },
+  { id: "precision-dark", group: "dark", swatches: ["#0B1020", "#121A2F", "#67D4FA"] },
+  { id: "ocean-slate", group: "dark", swatches: ["#081526", "#0F223B", "#5EEAD4"] },
+  { id: "nord-dark", group: "dark", swatches: ["#1F2533", "#283042", "#88C0D0"] },
+  { id: "industrial-amber", group: "dark", swatches: ["#16131A", "#201B26", "#FCD34D"] },
+  { id: "glassmorphism", group: "dark", swatches: ["#0D1529", "#1E293B", "#7DD3FC"] },
+  { id: "sci-fi-cyan", group: "dark", swatches: ["#061021", "#0C1A33", "#67E8F9"] },
+  { id: "sci-fi-purple", group: "dark", swatches: ["#100B22", "#1A1336", "#D8B4FE"] },
+  { id: "sci-fi-matrix", group: "dark", swatches: ["#071614", "#0D2420", "#6EE7B7"] }
 ];
 const themePicker = {
   isOpen() {

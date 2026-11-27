@@ -1016,9 +1016,9 @@ label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-w
 /* 标题与排版 */
 h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3 { font-family: var(--font-heading); }
-h1 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0; }
-h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0; }
-h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+h1 { font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 0; }
+h2 { font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0; }
+h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 4px; }
 .muted { color: var(--text-muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
 .eyebrow {
   font-size: 10px;
@@ -1064,7 +1064,7 @@ th.row-header, td.is-numeric, #storage-statistics .kpi-value, #receipt-statistic
 .topbar > .brand { flex-shrink: 1; }
 .brand > :not(.db-switcher-wrap) { flex-shrink: 0; }
 .brand > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.brand h1 { margin: 0; font-size: 15px; font-weight: 650; white-space: nowrap; color: var(--text-primary); }
+.brand h1 { margin: 0; font-size: 15.5px; font-weight: 650; white-space: nowrap; color: var(--text-primary); }
 .brand-mark {
   width: 28px;
   height: 28px;
@@ -1284,7 +1284,7 @@ html.resizing-y, html.resizing-y * { cursor: row-resize !important; user-select:
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
   color: var(--text-muted);
 }
@@ -1427,19 +1427,21 @@ summary { cursor: pointer; font-weight: 600; }
   min-width: 0;
   height: 30px;
   padding: 4px 28px 4px 9px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
   font: 12px/20px var(--font-mono);
 }
 .query-controls #sql-history-toggle {
   position: absolute;
-  right: 1px;
+  right: 31px;
   top: 1px;
-  width: 26px;
+  width: 24px;
   height: 28px;
   padding: 0;
   background: transparent;
   color: var(--text-muted);
   border: 0;
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  border-radius: 4px;
 }
 .query-controls #sql-history-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
 .sql-history-list {
@@ -1538,6 +1540,7 @@ table { border-collapse: collapse; width: 100%; font-size: 12px; }
 th, td {
   padding: 6px 10px;
   text-align: left;
+  vertical-align: middle;
   white-space: nowrap;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -1551,7 +1554,7 @@ th {
   border-bottom: 1px solid var(--border);
 }
 th button { background: transparent; color: inherit; padding: 0; font-weight: 600; }
-th small { display: block; font-size: 10px; font-weight: 400; font-family: var(--font-mono); color: var(--text-muted); margin-top: 2px; }
+th small { display: block; font-size: 10.5px; font-weight: 400; font-family: var(--font-mono); color: var(--text-muted); margin-top: 2px; }
 tbody tr { transition: background-color 100ms ease; }
 tbody tr:nth-child(even) { background: var(--table-stripe); }
 tbody tr:hover { background: var(--table-hover); }
@@ -3308,11 +3311,12 @@ html.bottom-fullscreen #bottom-panel {
 /* 多行 SQL 抽屉编辑器与收藏栏 */
 .sql-drawer-toggle {
   flex: 0 0 auto;
-  height: 100%;
-  padding: 0 7px;
-  border: 0;
-  border-left: 1px solid var(--border);
-  border-radius: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-left: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   background: var(--bg-subtle);
   color: var(--text-secondary);
   font-size: 11px;
@@ -3866,8 +3870,8 @@ html.bottom-fullscreen #bottom-panel {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 9px;
   font-size: 12px;
   white-space: nowrap;
 }
@@ -3914,7 +3918,7 @@ html[data-theme="minimalist-light"] {
   --accent: #4F7DF3;
   --accent-btn: #557FF2;
   --accent-hover: #3D69E0;
-  --accent-grad: linear-gradient(135deg, #5B8AF5 0%, #7C6FF6 100%);
+  --accent-grad: linear-gradient(135deg, #3F6CE8 0%, #6355EB 100%);
   --accent-soft: rgba(79, 125, 243, 0.11);
   --accent-ring: rgba(124, 111, 246, 0.24);
   --glow-soft: 0 4px 16px rgba(91, 138, 245, 0.24);
@@ -3937,7 +3941,7 @@ html[data-theme="arctic-frost"] {
   --aura-1: rgba(56, 189, 248, 0.24);
   --aura-2: rgba(129, 140, 248, 0.16);
   --aura-3: rgba(45, 212, 191, 0.15);
-  --accent-grad: linear-gradient(135deg, #28A9E0 0%, #6384F7 100%);
+  --accent-grad: linear-gradient(135deg, #0384C7 0%, #4A6CF0 100%);
   --glow-soft: 0 4px 18px rgba(40, 169, 224, 0.24);
   --radius-sm: 10px;
   --radius-md: 15px;
@@ -3952,7 +3956,7 @@ html[data-theme="warm-paper"] {
   --aura-1: rgba(244, 184, 134, 0.20);
   --aura-2: rgba(110, 206, 178, 0.16);
   --aura-3: rgba(196, 181, 253, 0.12);
-  --accent-grad: linear-gradient(135deg, #2B9367 0%, #38A89D 100%);
+  --accent-grad: linear-gradient(135deg, #1F7F57 0%, #198278 100%);
   --glow-soft: 0 4px 16px rgba(43, 147, 103, 0.20);
   --radius-sm: 10px;
   --radius-md: 14px;
@@ -4018,7 +4022,8 @@ html[data-theme="dark"] {
   --aura-2: rgba(167, 139, 250, 0.15);
   --aura-3: rgba(45, 212, 191, 0.10);
   --accent: #67D4FA;
-  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%);
+  --accent-btn-text: #FFFFFF;
+  --accent-grad: linear-gradient(135deg, #2589E8 0%, #6D6AF6 100%);
   --glow-soft: 0 4px 20px rgba(56, 189, 248, 0.28);
   --border: rgba(148, 197, 255, 0.13);
   --border-subtle: rgba(148, 197, 255, 0.07);
@@ -4038,6 +4043,7 @@ html[data-theme="ocean-slate"] {
   --aura-2: rgba(45, 212, 191, 0.14);
   --aura-3: rgba(129, 140, 248, 0.14);
   --accent: #5EEAD4;
+  --accent-btn-text: #051B2B;
   --accent-grad: linear-gradient(135deg, #38BDF8 0%, #2DD4BF 100%);
   --glow-soft: 0 4px 20px rgba(45, 212, 191, 0.26);
   --radius-sm: 10px;
@@ -4054,6 +4060,7 @@ html[data-theme="nord-dark"] {
   --aura-1: rgba(136, 192, 208, 0.18);
   --aura-2: rgba(180, 142, 173, 0.16);
   --aura-3: rgba(143, 188, 187, 0.12);
+  --accent-btn-text: #17202C;
   --accent-grad: linear-gradient(135deg, #88C0D0 0%, #81A1C1 100%);
   --glow-soft: 0 4px 18px rgba(136, 192, 208, 0.24);
   --radius-sm: 10px;
@@ -4098,7 +4105,8 @@ html[data-theme="glassmorphism"] {
   --aura-2: rgba(192, 132, 252, 0.22);
   --aura-3: rgba(94, 234, 212, 0.16);
   --accent: #7DD3FC;
-  --accent-grad: linear-gradient(135deg, #60A5FA 0%, #C084FC 100%);
+  --accent-btn-text: #FFFFFF;
+  --accent-grad: linear-gradient(135deg, #3B82F6 0%, #9333EA 100%);
   --glow-soft: 0 6px 22px rgba(139, 92, 246, 0.30);
   --radius-sm: 11px;
   --radius-md: 16px;
@@ -4139,7 +4147,7 @@ html[data-theme="sci-fi-purple"] {
   --aura-3: rgba(244, 114, 182, 0.14);
   --accent: #D8B4FE;
   --accent-btn: #A855F7;
-  --accent-grad: linear-gradient(135deg, #A855F7 0%, #60A5FA 100%);
+  --accent-grad: linear-gradient(135deg, #8B3EE8 0%, #3B76E8 100%);
   --glow-soft: 0 4px 22px rgba(168, 85, 247, 0.32);
   --border: rgba(216, 180, 254, 0.19);
   --border-subtle: rgba(216, 180, 254, 0.09);
@@ -4214,13 +4222,36 @@ dialog {
   border-radius: 10px;
 }
 
-button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.current-database-file):not(.db-quick-item):not(.theme-picker-item):not(.ops-metric-link):not(.menu-trigger) {
+button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn) {
   background: var(--accent-grad, var(--accent-btn));
   box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
-button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.current-database-file):not(.db-quick-item):not(.theme-picker-item):not(.ops-metric-link):not(.menu-trigger):hover:not(:disabled) {
+button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn):hover:not(:disabled) {
   filter: brightness(1.06);
   box-shadow: var(--glow-soft), 0 0 0 1px var(--accent-ring);
+}
+/* 显式豁免表头排序按钮、右键菜单项与 SQL 历史下拉项，杜绝被主按钮流光底误伤 */
+th button,
+.row-context-menu button,
+.submenu button,
+.sql-history-list [role=option] {
+  background: transparent;
+  box-shadow: none;
+}
+.row-context-menu button:hover:not(:disabled),
+.submenu button:hover:not(:disabled) {
+  filter: none;
+  box-shadow: none;
+}
+.query-controls .icon-pill-btn {
+  width: 30px;
+  height: 30px;
+}
+.key-column-badge {
+  font-size: 10.5px;
+}
+#data-grid td.cell-sample-point[data-sample-axis]::after {
+  font-size: 10px;
 }
 
 button.secondary {
