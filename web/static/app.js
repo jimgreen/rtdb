@@ -427,4 +427,39 @@ $("delete-rows").onclick = async () => {
     notice(t("notice.rowsDeleted", { count: indexes.length }));
   } catch (error) { notice(error.message, true); }
 };
+const pageFullscreen = {
+  isActive() { return Boolean(document.fullscreenElement || document.webkitFullscreenElement); },
+  sync() {
+    const btn = $("toggle-page-fullscreen");
+    if (!btn) return;
+    const active = this.isActive();
+    const label = active ? (t("topbar.exitFullscreen") || "退出全屏") : (t("topbar.fullscreen") || "全屏显示");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("aria-pressed", String(active));
+    btn.classList.toggle("is-active", active);
+    btn.innerHTML = active
+      ? '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>'
+      : '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+  },
+  async toggle() {
+    try {
+      if (this.isActive()) {
+        await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
+      } else {
+        const root = document.documentElement;
+        await (root.requestFullscreen?.() || root.webkitRequestFullscreen?.());
+      }
+    } catch {
+      notice("当前浏览器环境不支持全屏切换", true);
+    }
+    this.sync();
+  }
+};
+if ($("toggle-page-fullscreen")) $("toggle-page-fullscreen").onclick = () => { void pageFullscreen.toggle(); };
+for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) {
+  document.addEventListener(ev, () => pageFullscreen.sync());
+}
+i18n.onChange(() => pageFullscreen.sync());
+pageFullscreen.sync();
 loadTables().catch((error) => notice(error.message, true));
