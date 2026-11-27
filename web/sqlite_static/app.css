@@ -2476,28 +2476,20 @@ html[data-theme="bento-grid"] .submenu button {
   border-radius: var(--radius-sm);
 }
 
-/* 4. 毛玻璃拟态（Glassmorphism）：深海弥散渐变底 + 半透明磨砂面板 + 高对比实底弹窗 */
-html[data-theme="glassmorphism"] body {
-  background: radial-gradient(circle at 15% 20%, #1E293B 0%, #0F172A 60%, #090D16 100%);
-}
-html[data-theme="glassmorphism"] .topbar,
-html[data-theme="glassmorphism"] .sidebar,
-html[data-theme="glassmorphism"] .panel,
-html[data-theme="glassmorphism"] .bottom-panel,
-html[data-theme="glassmorphism"] .operation-notice {
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-}
-html[data-theme="glassmorphism"] dialog,
-html[data-theme="glassmorphism"] .row-context-menu,
+/* 4. 星雾琉璃（Glassmorphism）：深空弥散星云 + 轻透磨砂浮层（避开含 fixed 子元素的父容器防裁切） */
+html[data-theme="glassmorphism"] .operation-notice,
 html[data-theme="glassmorphism"] .submenu,
 html[data-theme="glassmorphism"] .sql-history-list,
 html[data-theme="glassmorphism"] #db-quick-menu,
 html[data-theme="glassmorphism"] #theme-picker-menu,
 html[data-theme="glassmorphism"] #workspace-picker {
-  background: rgba(15, 23, 42, 0.94);
+  background: rgba(15, 23, 42, 0.92);
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+html[data-theme="glassmorphism"] dialog,
+html[data-theme="glassmorphism"] .row-context-menu {
+  background: rgba(15, 23, 42, 0.94);
 }
 html[data-theme="glassmorphism"] .grid-wrap,
 html[data-theme="glassmorphism"] .chart-area {
@@ -2525,62 +2517,30 @@ html[data-theme="editorial"] .topbar {
   box-shadow: none;
 }
 
-/* 6. 科幻 · 电光青（Sci-Fi Cyan）：深空全息青微栅格 + 焦点/激活态克制辉光 */
-html[data-theme="sci-fi-cyan"] body,
-html[data-theme="sci-fi"] body {
-  background-color: #040812;
-  background-image:
-    linear-gradient(rgba(0, 229, 255, 0.038) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 229, 255, 0.038) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
+/* 6. 沧溟仙光（Sci-Fi Cyan）：柔美星云光晕与清透微光 */
 html[data-theme="sci-fi-cyan"] .tab.active,
 html[data-theme="sci-fi"] .tab.active {
-  text-shadow: 0 0 10px rgba(0, 229, 255, 0.45);
+  text-shadow: 0 0 12px rgba(103, 232, 249, 0.38);
 }
 html[data-theme="sci-fi-cyan"] .badge,
 html[data-theme="sci-fi"] .badge {
-  box-shadow: 0 0 10px rgba(0, 230, 168, 0.22);
-}
-html[data-theme="sci-fi-cyan"] .brand-mark,
-html[data-theme="sci-fi"] .brand-mark {
-  box-shadow: 0 0 14px rgba(0, 229, 255, 0.35);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.22);
 }
 
-/* 7. 科幻 · 赛博紫（Sci-Fi Purple）：星云紫微栅格 + 紫晶微光 */
-html[data-theme="sci-fi-purple"] body {
-  background-color: #090614;
-  background-image:
-    linear-gradient(rgba(192, 132, 252, 0.042) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(192, 132, 252, 0.042) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
+/* 7. 紫微星穹（Sci-Fi Purple）：星雾紫晶柔光 */
 html[data-theme="sci-fi-purple"] .tab.active {
-  text-shadow: 0 0 10px rgba(192, 132, 252, 0.48);
+  text-shadow: 0 0 12px rgba(216, 180, 254, 0.42);
 }
 html[data-theme="sci-fi-purple"] .badge {
-  box-shadow: 0 0 10px rgba(45, 212, 191, 0.22);
-}
-html[data-theme="sci-fi-purple"] .brand-mark {
-  box-shadow: 0 0 14px rgba(192, 132, 252, 0.36);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.22);
 }
 
-/* 8. 科幻 · 矩阵绿（Sci-Fi Matrix）：矩阵终端微栅格 + 翡翠微光 */
-html[data-theme="sci-fi-matrix"] body {
-  background-color: #040D08;
-  background-image:
-    linear-gradient(rgba(0, 230, 118, 0.038) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 230, 118, 0.038) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
+/* 8. 青莲灵枢（Sci-Fi Matrix）：青玉灵光柔晕 */
 html[data-theme="sci-fi-matrix"] .tab.active {
-  text-shadow: 0 0 10px rgba(0, 230, 118, 0.45);
+  text-shadow: 0 0 12px rgba(110, 231, 183, 0.38);
 }
 html[data-theme="sci-fi-matrix"] .badge {
-  box-shadow: 0 0 10px rgba(0, 230, 118, 0.24);
-}
-html[data-theme="sci-fi-matrix"] .brand-mark {
-  box-shadow: 0 0 14px rgba(0, 230, 118, 0.34);
+  box-shadow: 0 0 12px rgba(110, 231, 183, 0.24);
 }
 
 
@@ -3876,4 +3836,485 @@ html.bottom-fullscreen #bottom-panel {
 @media (max-width: 960px) {
   .local-file-btn span { display: none; }
   .local-file-btn { padding: 0 6px; }
+}
+
+/* ==========================================================================
+   仙气 · 柔科幻美学升华层（Ethereal Soft Sci-Fi Atmosphere）
+   全 14 套主题统一去工业化：弥散星云底光、轻透琉璃玻璃、柔润圆角与流光微交互
+   ========================================================================== */
+
+:root,
+html[data-theme="minimalist-light"] {
+  --bg-canvas: #F4F7FC;
+  --bg-glass: rgba(255, 255, 255, 0.78);
+  --bg-glass-strong: rgba(255, 255, 255, 0.90);
+  --surface-sheen: rgba(255, 255, 255, 0.92);
+  --aura-1: rgba(99, 179, 255, 0.22);
+  --aura-2: rgba(167, 139, 250, 0.16);
+  --aura-3: rgba(94, 234, 212, 0.14);
+  --accent: #4F7DF3;
+  --accent-btn: #557FF2;
+  --accent-hover: #3D69E0;
+  --accent-grad: linear-gradient(135deg, #5B8AF5 0%, #7C6FF6 100%);
+  --accent-soft: rgba(79, 125, 243, 0.11);
+  --accent-ring: rgba(124, 111, 246, 0.24);
+  --glow-soft: 0 4px 16px rgba(91, 138, 245, 0.24);
+  --border: rgba(148, 163, 184, 0.22);
+  --border-subtle: rgba(148, 163, 184, 0.13);
+  --border-strong: rgba(148, 163, 184, 0.34);
+  --shadow-sm: 0 4px 18px rgba(71, 95, 148, 0.06), 0 1px 3px rgba(71, 95, 148, 0.03);
+  --shadow-md: 0 10px 30px rgba(71, 95, 148, 0.10), 0 2px 8px rgba(71, 95, 148, 0.04);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --transition: 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html[data-theme="arctic-frost"] {
+  --bg-canvas: #EEF6FC;
+  --bg-glass: rgba(255, 255, 255, 0.76);
+  --bg-glass-strong: rgba(255, 255, 255, 0.90);
+  --surface-sheen: rgba(255, 255, 255, 0.95);
+  --aura-1: rgba(56, 189, 248, 0.24);
+  --aura-2: rgba(129, 140, 248, 0.16);
+  --aura-3: rgba(45, 212, 191, 0.15);
+  --accent-grad: linear-gradient(135deg, #28A9E0 0%, #6384F7 100%);
+  --glow-soft: 0 4px 18px rgba(40, 169, 224, 0.24);
+  --radius-sm: 10px;
+  --radius-md: 15px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="warm-paper"] {
+  --bg-canvas: #F8F4EC;
+  --bg-glass: rgba(255, 253, 248, 0.80);
+  --bg-glass-strong: rgba(255, 253, 248, 0.92);
+  --surface-sheen: rgba(255, 255, 255, 0.90);
+  --aura-1: rgba(244, 184, 134, 0.20);
+  --aura-2: rgba(110, 206, 178, 0.16);
+  --aura-3: rgba(196, 181, 253, 0.12);
+  --accent-grad: linear-gradient(135deg, #2B9367 0%, #38A89D 100%);
+  --glow-soft: 0 4px 16px rgba(43, 147, 103, 0.20);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="slate-daylight"] {
+  --bg-canvas: #EEF2F9;
+  --bg-glass: rgba(250, 252, 255, 0.78);
+  --bg-glass-strong: rgba(252, 253, 255, 0.92);
+  --surface-sheen: rgba(255, 255, 255, 0.92);
+  --aura-1: rgba(125, 165, 245, 0.20);
+  --aura-2: rgba(167, 139, 250, 0.15);
+  --aura-3: rgba(103, 232, 249, 0.14);
+  --accent: #446CE0;
+  --accent-btn: #446CE0;
+  --accent-grad: linear-gradient(135deg, #4B74E8 0%, #6E76F0 100%);
+  --glow-soft: 0 4px 16px rgba(75, 116, 232, 0.22);
+  --border: rgba(148, 163, 184, 0.24);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="bento-grid"] {
+  --bg-canvas: #F4F5FA;
+  --bg-glass: rgba(255, 255, 255, 0.80);
+  --bg-glass-strong: rgba(255, 255, 255, 0.93);
+  --surface-sheen: rgba(255, 255, 255, 0.96);
+  --aura-1: rgba(96, 165, 250, 0.18);
+  --aura-2: rgba(192, 132, 252, 0.14);
+  --aura-3: rgba(94, 234, 212, 0.12);
+  --accent-grad: linear-gradient(135deg, #2B86F5 0%, #6C78F7 100%);
+  --glow-soft: 0 4px 18px rgba(43, 134, 245, 0.22);
+  --radius-sm: 11px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+}
+
+html[data-theme="editorial"] {
+  --bg-canvas: #FAF7F5;
+  --bg-glass: rgba(255, 255, 255, 0.82);
+  --bg-glass-strong: rgba(255, 255, 255, 0.94);
+  --surface-sheen: rgba(255, 255, 255, 0.94);
+  --aura-1: rgba(244, 114, 182, 0.13);
+  --aura-2: rgba(167, 139, 250, 0.12);
+  --aura-3: rgba(251, 191, 36, 0.09);
+  --accent-grad: linear-gradient(135deg, #BE3455 0%, #9D4EDD 100%);
+  --glow-soft: 0 4px 16px rgba(190, 52, 85, 0.20);
+  --radius-sm: 9px;
+  --radius-md: 13px;
+  --radius-lg: 16px;
+}
+
+html[data-theme="precision-dark"],
+html[data-theme="dark"] {
+  --bg-canvas: #0B1020;
+  --bg-surface: #121A2F;
+  --bg-glass: rgba(18, 26, 47, 0.72);
+  --bg-glass-strong: rgba(18, 26, 47, 0.90);
+  --surface-sheen: rgba(224, 242, 254, 0.12);
+  --aura-1: rgba(56, 189, 248, 0.16);
+  --aura-2: rgba(167, 139, 250, 0.15);
+  --aura-3: rgba(45, 212, 191, 0.10);
+  --accent: #67D4FA;
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%);
+  --glow-soft: 0 4px 20px rgba(56, 189, 248, 0.28);
+  --border: rgba(148, 197, 255, 0.13);
+  --border-subtle: rgba(148, 197, 255, 0.07);
+  --border-strong: rgba(148, 197, 255, 0.22);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="ocean-slate"] {
+  --bg-canvas: #081526;
+  --bg-surface: #0F223B;
+  --bg-glass: rgba(15, 34, 59, 0.72);
+  --bg-glass-strong: rgba(15, 34, 59, 0.90);
+  --surface-sheen: rgba(186, 230, 253, 0.13);
+  --aura-1: rgba(56, 189, 248, 0.20);
+  --aura-2: rgba(45, 212, 191, 0.14);
+  --aura-3: rgba(129, 140, 248, 0.14);
+  --accent: #5EEAD4;
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #2DD4BF 100%);
+  --glow-soft: 0 4px 20px rgba(45, 212, 191, 0.26);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="nord-dark"] {
+  --bg-canvas: #1F2533;
+  --bg-surface: #283042;
+  --bg-glass: rgba(40, 48, 66, 0.74);
+  --bg-glass-strong: rgba(40, 48, 66, 0.92);
+  --surface-sheen: rgba(236, 239, 244, 0.12);
+  --aura-1: rgba(136, 192, 208, 0.18);
+  --aura-2: rgba(180, 142, 173, 0.16);
+  --aura-3: rgba(143, 188, 187, 0.12);
+  --accent-grad: linear-gradient(135deg, #88C0D0 0%, #81A1C1 100%);
+  --glow-soft: 0 4px 18px rgba(136, 192, 208, 0.24);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="industrial-amber"] {
+  --bg-canvas: #16131A;
+  --bg-surface: #201B26;
+  --bg-subtle: #2A2332;
+  --bg-hover: #342B3E;
+  --bg-input: #1A1620;
+  --bg-option: #201B26;
+  --table-stripe: #241E2B;
+  --table-hover: #32293C;
+  --bg-glass: rgba(32, 27, 38, 0.76);
+  --bg-glass-strong: rgba(32, 27, 38, 0.92);
+  --surface-sheen: rgba(254, 243, 199, 0.13);
+  --aura-1: rgba(251, 191, 36, 0.15);
+  --aura-2: rgba(244, 114, 182, 0.12);
+  --aura-3: rgba(167, 139, 250, 0.10);
+  --accent: #FCD34D;
+  --accent-btn: #F59E0B;
+  --accent-btn-text: #1B1520;
+  --accent-grad: linear-gradient(135deg, #FBBF24 0%, #F472B6 100%);
+  --glow-soft: 0 4px 18px rgba(251, 191, 36, 0.25);
+  --border: rgba(251, 191, 36, 0.16);
+  --border-subtle: rgba(251, 191, 36, 0.08);
+  --border-strong: rgba(251, 191, 36, 0.28);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="glassmorphism"] {
+  --bg-canvas: #0D1529;
+  --bg-glass: rgba(255, 255, 255, 0.08);
+  --bg-glass-strong: rgba(19, 29, 54, 0.88);
+  --surface-sheen: rgba(255, 255, 255, 0.18);
+  --aura-1: rgba(96, 165, 250, 0.24);
+  --aura-2: rgba(192, 132, 252, 0.22);
+  --aura-3: rgba(94, 234, 212, 0.16);
+  --accent: #7DD3FC;
+  --accent-grad: linear-gradient(135deg, #60A5FA 0%, #C084FC 100%);
+  --glow-soft: 0 6px 22px rgba(139, 92, 246, 0.30);
+  --radius-sm: 11px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+}
+
+html[data-theme="sci-fi-cyan"],
+html[data-theme="sci-fi"] {
+  --bg-canvas: #061021;
+  --bg-surface: #0C1A33;
+  --bg-glass: rgba(12, 26, 51, 0.70);
+  --bg-glass-strong: rgba(12, 26, 51, 0.90);
+  --surface-sheen: rgba(165, 243, 252, 0.16);
+  --aura-1: rgba(34, 211, 238, 0.22);
+  --aura-2: rgba(129, 140, 248, 0.20);
+  --aura-3: rgba(45, 212, 191, 0.14);
+  --accent: #67E8F9;
+  --accent-btn: #22D3EE;
+  --accent-btn-text: #051626;
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #2DD4BF 100%);
+  --glow-soft: 0 4px 22px rgba(56, 189, 248, 0.32);
+  --border: rgba(103, 232, 249, 0.18);
+  --border-subtle: rgba(103, 232, 249, 0.09);
+  --border-strong: rgba(103, 232, 249, 0.30);
+  --radius-sm: 10px;
+  --radius-md: 15px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="sci-fi-purple"] {
+  --bg-canvas: #100B22;
+  --bg-surface: #1A1336;
+  --bg-glass: rgba(26, 19, 54, 0.72);
+  --bg-glass-strong: rgba(26, 19, 54, 0.91);
+  --surface-sheen: rgba(233, 213, 255, 0.16);
+  --aura-1: rgba(192, 132, 252, 0.24);
+  --aura-2: rgba(96, 165, 250, 0.18);
+  --aura-3: rgba(244, 114, 182, 0.14);
+  --accent: #D8B4FE;
+  --accent-btn: #A855F7;
+  --accent-grad: linear-gradient(135deg, #A855F7 0%, #60A5FA 100%);
+  --glow-soft: 0 4px 22px rgba(168, 85, 247, 0.32);
+  --border: rgba(216, 180, 254, 0.19);
+  --border-subtle: rgba(216, 180, 254, 0.09);
+  --border-strong: rgba(216, 180, 254, 0.32);
+  --radius-sm: 10px;
+  --radius-md: 15px;
+  --radius-lg: 18px;
+}
+
+html[data-theme="sci-fi-matrix"] {
+  --bg-canvas: #071614;
+  --bg-surface: #0D2420;
+  --bg-glass: rgba(13, 36, 32, 0.72);
+  --bg-glass-strong: rgba(13, 36, 32, 0.91);
+  --surface-sheen: rgba(167, 243, 208, 0.16);
+  --aura-1: rgba(52, 211, 153, 0.22);
+  --aura-2: rgba(56, 189, 248, 0.16);
+  --aura-3: rgba(167, 243, 208, 0.12);
+  --accent: #6EE7B7;
+  --accent-btn: #10B981;
+  --accent-btn-text: #051B16;
+  --accent-grad: linear-gradient(135deg, #34D399 0%, #38BDF8 100%);
+  --glow-soft: 0 4px 22px rgba(52, 211, 153, 0.30);
+  --border: rgba(110, 231, 183, 0.18);
+  --border-subtle: rgba(110, 231, 183, 0.09);
+  --border-strong: rgba(110, 231, 183, 0.30);
+  --radius-sm: 10px;
+  --radius-md: 15px;
+  --radius-lg: 18px;
+}
+
+/* 弥散仙雾星云画布背景 */
+body {
+  background:
+    radial-gradient(ellipse 68% 52% at 10% -8%, var(--aura-1), transparent 68%),
+    radial-gradient(ellipse 60% 48% at 92% 4%, var(--aura-2), transparent 66%),
+    radial-gradient(ellipse 52% 46% at 50% 108%, var(--aura-3), transparent 70%),
+    var(--bg-canvas);
+  background-attachment: fixed;
+}
+
+/* 轻透琉璃玻璃表面 + 丝绸顶部微光（容器不设 backdrop-filter，避免破坏内部 position: fixed 浮层包含块） */
+.topbar,
+.sidebar,
+.panel,
+.bottom-panel,
+.ops-summary-bar {
+  background: var(--bg-glass);
+  box-shadow: inset 0 1px 0 var(--surface-sheen), var(--shadow-sm);
+}
+
+.row-context-menu,
+dialog {
+  background: var(--bg-glass-strong);
+  box-shadow: inset 0 1px 0 var(--surface-sheen), var(--shadow-md);
+}
+
+/* 叶子浮层独立启用磨砂毛玻璃（内部无 position: fixed 子元素，零裁切风险） */
+.db-quick-menu,
+.theme-picker-menu,
+.row-context-menu .submenu {
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  box-shadow: inset 0 1px 0 var(--surface-sheen), var(--shadow-md);
+}
+
+/* 品牌徽标与主按钮流光柔渐变 */
+.brand-mark {
+  background: var(--accent-grad, var(--accent-btn));
+  box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  border-radius: 10px;
+}
+
+button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.current-database-file):not(.db-quick-item):not(.theme-picker-item):not(.ops-metric-link):not(.menu-trigger) {
+  background: var(--accent-grad, var(--accent-btn));
+  box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.current-database-file):not(.db-quick-item):not(.theme-picker-item):not(.ops-metric-link):not(.menu-trigger):hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: var(--glow-soft), 0 0 0 1px var(--accent-ring);
+}
+
+button.secondary {
+  background: var(--bg-glass);
+  border-color: var(--border);
+  box-shadow: inset 0 1px 0 var(--surface-sheen);
+}
+button.secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent-ring);
+}
+
+/* 顶栏路径胶囊与柔和状态光点 */
+.current-database-file {
+  border-radius: 999px;
+  padding: 0 11px;
+  background: var(--bg-glass);
+  border-color: var(--border);
+  box-shadow: inset 0 1px 0 var(--surface-sheen);
+}
+.current-database-file:hover:not(:disabled) {
+  box-shadow: 0 0 0 2px var(--accent-soft), inset 0 1px 0 var(--surface-sheen);
+}
+.badge::before {
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* 导航页签升级为柔和流光胶囊 */
+.tabs {
+  gap: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border-bottom: 0;
+  transition: background-color var(--transition), color var(--transition), box-shadow var(--transition);
+}
+.tab:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-ring), var(--glow-soft);
+}
+.tab .ui-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.86;
+}
+.tab.active .ui-icon {
+  opacity: 1;
+}
+
+/* 左侧表条目柔光激活态 */
+.table-entry {
+  border-radius: 9px;
+}
+.table-entry.active {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 var(--accent), inset 0 0 0 1px var(--accent-ring);
+}
+
+/* 纤细圆润线性图标统一样式 */
+.ui-icon {
+  stroke-width: 1.65;
+}
+.icon-label-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.icon-label-glyph .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 纯图标高可读紧凑按钮（底部曲线栏 / 侧栏字段栏 / 分页栏） */
+.icon-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0 !important;
+  border-radius: 8px;
+}
+.icon-pill-btn .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+.field-mini-btn.icon-pill-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+}
+.field-mini-btn.icon-pill-btn .ui-icon {
+  width: 13px;
+  height: 13px;
+}
+.pager-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pager-capsule input {
+  width: 44px;
+  height: 20px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pager-capsule input:focus {
+  box-shadow: none;
+  background: var(--bg-surface);
+  border-radius: 6px;
+}
+
+/* 严格守护表格内嵌子控件零边框规则 */
+.grid-wrap td input:not([type=checkbox]):not([type=radio]),
+.grid-wrap td select,
+.grid-wrap td textarea {
+  border-radius: 0 !important;
+  box-shadow: none;
+}
+.grid-wrap td input:not([type=checkbox]):not([type=radio]):focus,
+.grid-wrap td select:focus,
+.grid-wrap td textarea:focus {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+/* 柔和分隔轨微光 */
+.splitter::after {
+  opacity: 0.35;
+}
+.splitter:hover::after,
+.splitter.is-dragging::after {
+  box-shadow: 0 0 8px var(--accent);
 }

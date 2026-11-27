@@ -742,36 +742,117 @@ html[data-theme="editorial"] .topbar {
 
 /* 科幻三子风格专属全息微栅格底纹与克制辉光 */
 html[data-theme="sci-fi-cyan"] body,
-html[data-theme="sci-fi"] body {
-  background-color: #040812;
-  background-image:
-    linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
-  background-size: 28px 28px;
+/* 仙气 · 柔科幻美学升华层（去除生硬网格线，全 14 套主题统一柔和琉璃极光气质） */
+:root,
+html[data-theme="minimalist-light"] {
+  --bg-canvas: #F4F7FC;
+  --bg-glass: rgba(255, 255, 255, 0.78);
+  --surface-sheen: rgba(255, 255, 255, 0.92);
+  --aura-1: rgba(99, 179, 255, 0.22);
+  --aura-2: rgba(167, 139, 250, 0.16);
+  --aura-3: rgba(94, 234, 212, 0.14);
+  --accent: #4F7DF3;
+  --accent-btn: #557FF2;
+  --accent-grad: linear-gradient(135deg, #5B8AF5 0%, #7C6FF6 100%);
+  --glow-soft: 0 4px 16px rgba(91, 138, 245, 0.24);
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
 }
-html[data-theme="sci-fi-cyan"] .brand-mark,
-html[data-theme="sci-fi"] .brand-mark {
-  box-shadow: 0 0 14px rgba(0, 229, 255, 0.35);
+html[data-theme="arctic-frost"] {
+  --bg-glass: rgba(255, 255, 255, 0.76); --surface-sheen: rgba(255, 255, 255, 0.95);
+  --aura-1: rgba(56, 189, 248, 0.24); --aura-2: rgba(129, 140, 248, 0.16); --aura-3: rgba(45, 212, 191, 0.15);
+  --accent-grad: linear-gradient(135deg, #28A9E0 0%, #6384F7 100%); --glow-soft: 0 4px 18px rgba(40, 169, 224, 0.24);
+  --radius-sm: 10px; --radius-md: 15px; --radius-lg: 18px;
 }
-
-html[data-theme="sci-fi-purple"] body {
-  background-color: #090614;
-  background-image:
-    linear-gradient(rgba(192, 132, 252, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(192, 132, 252, 0.045) 1px, transparent 1px);
-  background-size: 28px 28px;
+html[data-theme="warm-paper"] {
+  --bg-glass: rgba(255, 253, 248, 0.80); --surface-sheen: rgba(255, 255, 255, 0.90);
+  --aura-1: rgba(244, 184, 134, 0.20); --aura-2: rgba(110, 206, 178, 0.16); --aura-3: rgba(196, 181, 253, 0.12);
+  --accent-grad: linear-gradient(135deg, #2B9367 0%, #38A89D 100%); --glow-soft: 0 4px 16px rgba(43, 147, 103, 0.20);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
 }
-html[data-theme="sci-fi-purple"] .brand-mark {
-  box-shadow: 0 0 14px rgba(192, 132, 252, 0.36);
+html[data-theme="slate-daylight"] {
+  --bg-glass: rgba(250, 252, 255, 0.78); --surface-sheen: rgba(255, 255, 255, 0.92);
+  --aura-1: rgba(125, 165, 245, 0.20); --aura-2: rgba(167, 139, 250, 0.15); --aura-3: rgba(103, 232, 249, 0.14);
+  --accent-grad: linear-gradient(135deg, #4B74E8 0%, #6E76F0 100%); --glow-soft: 0 4px 16px rgba(75, 116, 232, 0.22);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
 }
-
-html[data-theme="sci-fi-matrix"] body {
-  background-color: #040D08;
-  background-image:
-    linear-gradient(rgba(0, 230, 118, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 230, 118, 0.04) 1px, transparent 1px);
-  background-size: 28px 28px;
+html[data-theme="bento-grid"] {
+  --bg-glass: rgba(255, 255, 255, 0.80); --surface-sheen: rgba(255, 255, 255, 0.96);
+  --aura-1: rgba(96, 165, 250, 0.18); --aura-2: rgba(192, 132, 252, 0.14); --aura-3: rgba(94, 234, 212, 0.12);
+  --accent-grad: linear-gradient(135deg, #2B86F5 0%, #6C78F7 100%); --glow-soft: 0 4px 18px rgba(43, 134, 245, 0.22);
 }
-html[data-theme="sci-fi-matrix"] .brand-mark {
-  box-shadow: 0 0 14px rgba(0, 230, 118, 0.34);
+html[data-theme="editorial"] {
+  --bg-glass: rgba(255, 255, 255, 0.82); --surface-sheen: rgba(255, 255, 255, 0.94);
+  --aura-1: rgba(244, 114, 182, 0.13); --aura-2: rgba(167, 139, 250, 0.12); --aura-3: rgba(251, 191, 36, 0.09);
+  --accent-grad: linear-gradient(135deg, #BE3455 0%, #9D4EDD 100%); --glow-soft: 0 4px 16px rgba(190, 52, 85, 0.20);
+  --radius-sm: 9px; --radius-md: 13px; --radius-lg: 16px;
 }
+html[data-theme="precision-dark"], html[data-theme="dark"] {
+  --bg-canvas: #0B1020; --bg-glass: rgba(18, 26, 47, 0.72); --surface-sheen: rgba(224, 242, 254, 0.12);
+  --aura-1: rgba(56, 189, 248, 0.16); --aura-2: rgba(167, 139, 250, 0.15); --aura-3: rgba(45, 212, 191, 0.10);
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%); --glow-soft: 0 4px 20px rgba(56, 189, 248, 0.28);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
+}
+html[data-theme="ocean-slate"] {
+  --bg-glass: rgba(15, 34, 59, 0.72); --surface-sheen: rgba(186, 230, 253, 0.13);
+  --aura-1: rgba(56, 189, 248, 0.20); --aura-2: rgba(45, 212, 191, 0.14); --aura-3: rgba(129, 140, 248, 0.14);
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #2DD4BF 100%); --glow-soft: 0 4px 20px rgba(45, 212, 191, 0.26);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
+}
+html[data-theme="nord-dark"] {
+  --bg-glass: rgba(40, 48, 66, 0.74); --surface-sheen: rgba(236, 239, 244, 0.12);
+  --aura-1: rgba(136, 192, 208, 0.18); --aura-2: rgba(180, 142, 173, 0.16); --aura-3: rgba(143, 188, 187, 0.12);
+  --accent-grad: linear-gradient(135deg, #88C0D0 0%, #81A1C1 100%); --glow-soft: 0 4px 18px rgba(136, 192, 208, 0.24);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
+}
+html[data-theme="industrial-amber"] {
+  --bg-canvas: #16131A; --bg-glass: rgba(32, 27, 38, 0.76); --surface-sheen: rgba(254, 243, 199, 0.13);
+  --aura-1: rgba(251, 191, 36, 0.15); --aura-2: rgba(244, 114, 182, 0.12); --aura-3: rgba(167, 139, 250, 0.10);
+  --accent-grad: linear-gradient(135deg, #FBBF24 0%, #F472B6 100%); --glow-soft: 0 4px 18px rgba(251, 191, 36, 0.25);
+  --radius-sm: 10px; --radius-md: 14px; --radius-lg: 18px;
+}
+html[data-theme="glassmorphism"] {
+  --bg-glass: rgba(255, 255, 255, 0.08); --surface-sheen: rgba(255, 255, 255, 0.18);
+  --aura-1: rgba(96, 165, 250, 0.24); --aura-2: rgba(192, 132, 252, 0.22); --aura-3: rgba(94, 234, 212, 0.16);
+  --accent-grad: linear-gradient(135deg, #60A5FA 0%, #C084FC 100%); --glow-soft: 0 6px 22px rgba(139, 92, 246, 0.30);
+}
+html[data-theme="sci-fi-cyan"], html[data-theme="sci-fi"] {
+  --bg-canvas: #061021; --bg-glass: rgba(12, 26, 51, 0.70); --surface-sheen: rgba(165, 243, 252, 0.16);
+  --aura-1: rgba(34, 211, 238, 0.22); --aura-2: rgba(129, 140, 248, 0.20); --aura-3: rgba(45, 212, 191, 0.14);
+  --accent-grad: linear-gradient(135deg, #38BDF8 0%, #2DD4BF 100%); --glow-soft: 0 4px 22px rgba(56, 189, 248, 0.32);
+  --radius-sm: 10px; --radius-md: 15px; --radius-lg: 18px;
+}
+html[data-theme="sci-fi-purple"] {
+  --bg-canvas: #100B22; --bg-glass: rgba(26, 19, 54, 0.72); --surface-sheen: rgba(233, 213, 255, 0.16);
+  --aura-1: rgba(192, 132, 252, 0.24); --aura-2: rgba(96, 165, 250, 0.18); --aura-3: rgba(244, 114, 182, 0.14);
+  --accent-grad: linear-gradient(135deg, #A855F7 0%, #60A5FA 100%); --glow-soft: 0 4px 22px rgba(168, 85, 247, 0.32);
+  --radius-sm: 10px; --radius-md: 15px; --radius-lg: 18px;
+}
+html[data-theme="sci-fi-matrix"] {
+  --bg-canvas: #071614; --bg-glass: rgba(13, 36, 32, 0.72); --surface-sheen: rgba(167, 243, 208, 0.16);
+  --aura-1: rgba(52, 211, 153, 0.22); --aura-2: rgba(56, 189, 248, 0.16); --aura-3: rgba(167, 243, 208, 0.12);
+  --accent-grad: linear-gradient(135deg, #34D399 0%, #38BDF8 100%); --glow-soft: 0 4px 22px rgba(52, 211, 153, 0.30);
+  --radius-sm: 10px; --radius-md: 15px; --radius-lg: 18px;
+}
+body {
+  background:
+    radial-gradient(ellipse 68% 52% at 10% -8%, var(--aura-1), transparent 68%),
+    radial-gradient(ellipse 60% 48% at 92% 4%, var(--aura-2), transparent 66%),
+    radial-gradient(ellipse 52% 46% at 50% 108%, var(--aura-3), transparent 70%),
+    var(--bg-canvas) !important;
+  background-attachment: fixed !important;
+}
+.topbar, .panel, dialog {
+  background: var(--bg-glass);
+  box-shadow: inset 0 1px 0 var(--surface-sheen), var(--shadow-sm);
+}
+.brand-mark {
+  background: var(--accent-grad, var(--accent-btn));
+  box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+button:not(.secondary):not(.danger):not(.danger-outline):not(.icon):not(.table-item) {
+  background: var(--accent-grad, var(--accent-btn));
+  box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+.ui-icon { stroke-width: 1.65; }

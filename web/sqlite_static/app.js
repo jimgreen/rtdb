@@ -69,22 +69,22 @@ const darkThemes = new Set([
   "sci-fi-purple",
   "sci-fi-matrix"
 ]);
-// 各视觉风格专属色盲友好 6 色工程序列
+// 各视觉风格专属色盲友好 6 色仙气柔科幻序列
 const chartPalettes = {
-  "minimalist-light": ["#2563EB", "#D97706", "#0D9488", "#DC2626", "#7C3AED", "#64748B"],
-  "arctic-frost": ["#0284C7", "#0D9488", "#D97706", "#DC2626", "#6366F1", "#4B6A82"],
-  "warm-paper": ["#15803D", "#B45309", "#0369A1", "#B91C1C", "#7C3AED", "#6B6255"],
-  "slate-daylight": ["#1D4ED8", "#047857", "#B45309", "#DC2626", "#6D28D9", "#475569"],
-  "bento-grid": ["#0071E3", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#6E6E73"],
-  "editorial": ["#9F1239", "#1D4ED8", "#0F766E", "#A16207", "#6D28D9", "#52525B"],
-  "precision-dark": ["#38BDF8", "#FBBF24", "#34D399", "#FB7185", "#A78BFA", "#94A3B8"],
-  "ocean-slate": ["#38BDF8", "#34D399", "#FBBF24", "#FB7185", "#A78BFA", "#8EB2CE"],
-  "nord-dark": ["#88C0D0", "#A3BE8C", "#EBCB8B", "#BF616A", "#B48EAD", "#81A1C1"],
-  "industrial-amber": ["#F59E0B", "#34D399", "#38BDF8", "#F87171", "#C084FC", "#B5AA9A"],
-  "glassmorphism": ["#60A5FA", "#FBBF24", "#34D399", "#F472B6", "#A78BFA", "#94A3B8"],
-  "sci-fi-cyan": ["#00E5FF", "#00E6A8", "#FFB020", "#FF4D6D", "#A855F7", "#7DA2C4"],
-  "sci-fi-purple": ["#C084FC", "#2DD4BF", "#FBBF24", "#FB7185", "#60A5FA", "#A695C9"],
-  "sci-fi-matrix": ["#00E676", "#38BDF8", "#FBBF24", "#FF5C77", "#A78BFA", "#7EB396"]
+  "minimalist-light": ["#4F7DF3", "#8B6FF6", "#14B8A6", "#F59E0B", "#EC4899", "#64748B"],
+  "arctic-frost": ["#0EA5E9", "#6366F1", "#14B8A6", "#F59E0B", "#EC4899", "#64748B"],
+  "warm-paper": ["#2B9367", "#D97706", "#3B82F6", "#A855F7", "#E11D48", "#6B6255"],
+  "slate-daylight": ["#4B74E8", "#7C6FF6", "#0D9488", "#D97706", "#E11D48", "#64748B"],
+  "bento-grid": ["#2B86F5", "#7C6FF6", "#10B981", "#F59E0B", "#EC4899", "#6E6E73"],
+  "editorial": ["#BE3455", "#7C3AED", "#0F766E", "#D97706", "#2563EB", "#64748B"],
+  "precision-dark": ["#67D4FA", "#A78BFA", "#5EEAD4", "#FCD34D", "#F9A8D4", "#94A3B8"],
+  "ocean-slate": ["#5EEAD4", "#67D4FA", "#A78BFA", "#FCD34D", "#FB7185", "#93C5FD"],
+  "nord-dark": ["#88C0D0", "#A3BE8C", "#B48EAD", "#EBCB8B", "#F4A4B4", "#81A1C1"],
+  "industrial-amber": ["#FCD34D", "#F472B6", "#67E8F9", "#A78BFA", "#6EE7B7", "#D4C8B8"],
+  "glassmorphism": ["#7DD3FC", "#C4B5FD", "#5EEAD4", "#F9A8D4", "#FDE047", "#94A3B8"],
+  "sci-fi-cyan": ["#67E8F9", "#5EEAD4", "#A5B4FC", "#FCD34D", "#F9A8D4", "#93C5FD"],
+  "sci-fi-purple": ["#D8B4FE", "#7DD3FC", "#5EEAD4", "#F9A8D4", "#FCD34D", "#A5B4FC"],
+  "sci-fi-matrix": ["#6EE7B7", "#67E8F9", "#A5B4FC", "#FCD34D", "#F9A8D4", "#86EFAC"]
 };
 function normalizeTheme(value) {
   const mapped = uiThemeAliases[value] || value;
@@ -906,10 +906,17 @@ function updateEditActions() {
     dataDot.title = hasAny ? [drafts ? `${drafts} 条待新增` : "", count ? `${count} 格待保存` : ""].filter(Boolean).join(" · ") : "";
   }
   if (el("preview-cell-edits")) el("preview-cell-edits").hidden = !hasAny;
-  el("save-cell-edits").hidden = !hasAny;
+  const saveCellBtn = el("save-cell-edits");
+  saveCellBtn.hidden = !hasAny;
   el("discard-cell-edits").hidden = !hasAny;
-  el("save-cell-edits").textContent = drafts ? `保存修改（新增 ${drafts} 条）` : `保存改单元格（${count}）`;
-  el("chart-edit-hint").textContent = [drafts ? `${drafts} 条新增记录待保存` : "", count ? `${count} 个单元格已修改` : ""].filter(Boolean).join(" · ") || "未选择修改";
+  const saveLabel = saveCellBtn.querySelector(".btn-label") || saveCellBtn;
+  saveLabel.textContent = drafts ? `保存 (+${drafts})` : `保存 (${count})`;
+  const hintText = [drafts ? `+${drafts} 待新增` : "", count ? `${count} 格待保存` : ""].filter(Boolean).join(" · ");
+  const hintEl = el("chart-edit-hint");
+  if (hintEl) {
+    hintEl.textContent = hintText;
+    hintEl.hidden = !hintText;
+  }
   updateRecordsToolbar();
   updateAutoRefreshStatus();
 }
@@ -1714,11 +1721,14 @@ const localEfile = {
     if (closeBtn) closeBtn.hidden = !active;
     const newTableBtn = el("new-table");
     if (newTableBtn) {
-      newTableBtn.textContent = this.isExcel() ? (t("localFile.newSheet") || "＋ 新建 Sheet") : (t("localFile.newTable") || "＋ 新建表");
+      const target = newTableBtn.querySelector(".btn-label") || newTableBtn;
+      const raw = this.isExcel() ? (t("localFile.newSheet") || "新建 Sheet") : (t("localFile.newTable") || "新建表");
+      target.textContent = raw.replace(/^[＋+]\s*/, "");
     }
     const delSchemaBtn = el("delete-schema");
     if (delSchemaBtn) {
-      delSchemaBtn.textContent = this.isExcel()
+      const target = delSchemaBtn.querySelector(".btn-label") || delSchemaBtn;
+      target.textContent = this.isExcel()
         ? (t("localFile.deleteSheet") || "删除 Sheet")
         : active
           ? (t("localFile.deleteTable") || "删除表")
@@ -1861,8 +1871,13 @@ function toggleBottomFullscreen(forceOff = false) {
   root.classList.toggle("bottom-fullscreen", next);
   const btn = el("bottom-toggle-fullscreen");
   if (btn) {
-    btn.textContent = next ? (t("st.btnExitFullscreen") || "还原") : (t("st.btnFullscreen") || "全屏");
+    const label = next ? (t("st.btnExitFullscreen") || "还原") : (t("st.btnFullscreen") || "全屏");
+    btn.title = next ? `${label} (Esc)` : `${label} (Esc 退出)`;
+    btn.setAttribute("aria-label", label);
     btn.setAttribute("aria-pressed", String(next));
+    btn.innerHTML = next
+      ? '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>'
+      : '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
   }
   requestAnimationFrame(() => {
     drawChart();
