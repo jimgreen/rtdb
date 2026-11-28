@@ -470,6 +470,24 @@ function chineseName(item) {
   const label = String(item.chn_name ?? "").trim();
   return label && !["null", "\\n"].includes(label.toLowerCase()) ? label : item.eng_name || "";
 }
+/** 构造单列上下堆叠的中英文名称：相同不显示英文名，其一为空则仅显示非空项 */
+function buildBilingualNameStack(chnRaw, engRaw, containerClass, chnClass, engClass) {
+  const clean = (v) => {
+    const s = String(v ?? "").trim();
+    return s && !["null", "\\n"].includes(s.toLowerCase()) ? s : "";
+  };
+  const chn = clean(chnRaw);
+  const eng = clean(engRaw);
+  const wrap = node("span", null, containerClass);
+  if (chn && eng && chn !== eng) {
+    wrap.append(node("span", chn, chnClass), node("small", eng, engClass));
+  } else if (chn) {
+    wrap.append(node("span", chn, chnClass));
+  } else if (eng) {
+    wrap.append(node("span", eng, chnClass));
+  }
+  return wrap;
+}
 function action(text, handler, className = "link") {
   const button = node("button", text, className); button.type = "button"; button.onclick = handler; return button;
 }
@@ -1581,8 +1599,13 @@ function renderTables() {
     checkbox.onchange = () => checkbox.checked ? state.checkedTables.add(item.name) : state.checkedTables.delete(item.name);
     const button = action("", () => run(async () => { if (await discardSchema() && await discardCellEdits()) await selectTable(item.name); }), "table-item");
     button.disabled = unavailable;
-    const label = node("span", null, "table-name");
-    label.append(node("span", chineseName(item.definition?.head || { eng_name: item.name, chn_name: "" }), "table-name-chn"), node("small", item.name, "table-name-eng"));
+    const label = buildBilingualNameStack(
+      item.definition?.head?.chn_name,
+      item.name,
+      "table-name",
+      "table-name-chn",
+      "table-name-eng"
+    );
     button.append(label, node("span", item.error ? "异常" : item.row_count == null ? "—" : item.row_count.toLocaleString(), "count"));
     button.title = item.error || item.name; entry.append(checkbox, button); target.append(entry);
   }
@@ -2438,7 +2461,14 @@ function renderFields() {
     };
     const type = node("small", displayColumnType(column), "field-type");
     type.title = `数据类型：${column.data_type || "str"}`;
-    item.append(checkbox, node("span", chineseName(column), "field-name-chn"), node("small", column.eng_name, "field-name-eng"), type, node("b", column.primary_key ? "PK" : "", "key-tag"));
+    const nameStack = buildBilingualNameStack(
+      column.chn_name,
+      column.eng_name,
+      "field-name",
+      "field-name-chn",
+      "field-name-eng"
+    );
+    item.append(checkbox, nameStack, type, node("b", column.primary_key ? "PK" : "", "key-tag"));
     target.append(item);
   }
   updateFieldCount();
@@ -5930,8 +5960,8 @@ const chartLayout = setupSplitter({ id: "chart-splitter", panelId: "bottom-panel
 setupSplitter({ id: "table-list-splitter", panelId: "table-list", axis: "y", defaultSize: 180,
   minimum: () => 72, maximum: () => Math.max(120, el("table-sidebar").clientHeight - 250),
   collapseThreshold: 44, cssVariable: "--table-list-height", collapsedClass: "table-list-collapsed" });
-const sidebarLayout = setupSplitter({ id: "sidebar-splitter", panelId: "table-sidebar", axis: "x", defaultSize: window.innerWidth <= 720 ? 0 : 248,
-  minimum: () => 176, maximum: () => Math.min(480, document.querySelector(".layout").clientWidth - 320),
+const sidebarLayout = setupSplitter({ id: "sidebar-splitter", panelId: "table-sidebar", axis: "x", defaultSize: window.innerWidth <= 720 ? 0 : 204,
+  minimum: () => 156, maximum: () => Math.min(480, document.querySelector(".layout").clientWidth - 320),
   collapseThreshold: 56, cssVariable: "--sidebar-width", collapsedClass: "sidebar-collapsed" });
 setupSplitter({ id: "query-splitter", panelId: "query-panel", axis: "y", defaultSize: 48,
   minimum: () => 44, maximum: () => 52,
