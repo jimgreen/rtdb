@@ -2505,7 +2505,7 @@ html.chart-collapsed .bottom-panel { flex-basis: 0; padding: 0; border: 0; visib
 
 /* 3. 便当盒网格（Bento Grid）：宽圆角卡片 + 胶囊主按钮 */
 html[data-theme="bento-grid"] .topbar { border-bottom-width: 1px; }
-html[data-theme="bento-grid"] button:not(.tab):not(.table-item):not(.icon):not(.link):not(.ghost):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item) {
+html[data-theme="bento-grid"] :where(button:not(.tab):not(.table-item):not(.icon):not(.link):not(.ghost):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn):not([role="menuitem"]):not([role="menuitemradio"]):not([role="option"])) {
   border-radius: 9999px;
   padding-left: 14px;
   padding-right: 14px;
@@ -4262,15 +4262,16 @@ dialog {
   border-radius: 10px;
 }
 
-button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn) {
+/* 使用 :where() 零特异性施加主按钮流光渐变，确保永不覆盖右键菜单/表头/列表等专用按钮 */
+:where(button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn):not([role="menuitem"]):not([role="menuitemradio"]):not([role="option"])) {
   background: var(--accent-grad, var(--accent-btn));
   box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
-button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn):hover:not(:disabled) {
+:where(button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.link):not(.icon):not(.tab):not(.table-item):not(.topbar-icon-btn):not(.legend-toggle):not(.workspace-tree-choice):not(.menu-trigger):not(#sql-history-toggle):not(.sql-drawer-toggle):not(.current-database-file):not(.db-quick-item):not(.field-mini-btn):not(.ops-metric-link):not(.theme-picker-btn):not(.theme-picker-item):not(.theme-lang-btn):not([role="menuitem"]):not([role="menuitemradio"]):not([role="option"])):hover:not(:disabled) {
   filter: brightness(1.06);
   box-shadow: var(--glow-soft), 0 0 0 1px var(--accent-ring);
 }
-/* 显式豁免表头排序按钮、右键菜单项与 SQL 历史下拉项，杜绝被主按钮流光底误伤 */
+/* 显式守护表头排序按钮、右键菜单项与 SQL 历史下拉项的自然背景 */
 th button,
 .row-context-menu button,
 .submenu button,
@@ -4280,6 +4281,7 @@ th button,
 }
 .row-context-menu button:hover:not(:disabled),
 .submenu button:hover:not(:disabled) {
+  background: var(--bg-hover);
   filter: none;
   box-shadow: none;
 }

@@ -838,7 +838,7 @@ body {
   background: var(--accent-grad, var(--accent-btn));
   box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
-button:not(.secondary):not(.danger):not(.danger-outline):not(.icon):not(.table-item) {
+:where(button:not(.secondary):not(.danger):not(.danger-outline):not(.icon):not(.table-item):not([role="menuitem"])) {
   background: var(--accent-grad, var(--accent-btn));
   box-shadow: var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
